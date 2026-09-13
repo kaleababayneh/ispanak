@@ -47,3 +47,24 @@ Sütunlar: `url` (anahtar `key=***` olarak redakte edilmiş), `params`
 retry | failed`).
 
 Anahtar bu dosyalarda **hiçbir zaman** ham biçimde bulunmaz.
+
+## Senaryo serileri (plan 0.6)
+
+| Büyüklük | series_id | Frekans | Birim | kind | agg | cum_type | Kapsam |
+|---|---|---|---|---|---|---|---|
+| Konut kredisi faiz oranı | evds:TP.KTF12 | HAFTALIK(CUMA) | % ağırlıklı ort. | rate | avg | none | 2002-01 → 2026-09 |
+| Konut fiyat endeksi | evds:TP.KFE.TR | AYLIK | endeks | index | avg | none | 2010-01 → 2026-07 |
+| TÜFE | evds:TP.TUKFIY2025.GENEL | AYLIK | endeks 2025=100 | index | avg | none | 2021-01 → 2026-08 |
+| Konut kredisi bakiyesi | bddk:aylik:tuketici:konut:TL:sektor | AYLIK | milyon TL | stock | last | none | BDDK (1.5) |
+| İpotekli konut satışı | evds:doğrulanacak | AYLIK | adet | flow | sum | doğrulanacak | |
+
+**Faiz serisi seçimi:** TP.KTF12 (akım) seçildi, TP.BKR.TRY.18 (stok) değil.
+Akım = o hafta açılan yeni kredilerin faizi; stok = mevcut portföyün ortalaması.
+Senaryo yeni kredi davranışını sorguluyor; stok serisi faiz değişimini aylar
+sonra yansıtır ve aranan ilişkiyi gizler.
+
+**TÜFE:** zincirleme GEREKMİYOR. TP.TUKFIY2025.GENEL 2021-01'den itibaren dolu
+(TÜİK geriye doğru hesaplamış). Eski TP.FG.J0 (2003=100) arşiv, 2026-01'de bitiyor,
+kullanılmayacak. Doğrulama: iki serinin oranı sabit (2025-12: 31.832, 2026-01:
+31.831) ve aylık değişimleri aynı (%4.84) — yeni seri eskinin yeniden bazlanmış hali.
+deflate aracı doğrudan bu seriyi kullanır, baz 2025=100.
