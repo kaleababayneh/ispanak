@@ -1,0 +1,279 @@
+"""EVDS v3 (TCMB) ingest client: metadata catalog build.
+
+Bronze layer only: no aggregation, no unit conversion, no NaN handling.
+Bulk per-datagroup-per-year data fetch (with truncation detection) is a
+separate follow-up piece and is not implemented here.
+"""
+
+import json
+import random
+import re
+import time
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pandas as pd
+import requests
+
+from lakehouse_agent.config import Settings
+
+BASE_URL = "https://evds3.tcmb.gov.tr/igmevdsms-dis/"
+
+# Path-style segments, verified 12-13 Sep 2026 with live requests (200 +
+# application/json). Metadata endpoints take the form "<name>/<params>";
+# there is no "?" anywhere and params are "&"-joined.
+CATEGORIES_PATH = "categories/type=json"
+DATAGROUPS_PATH = "datagroups/mode=0&type=json"
+SERIELIST_PATH_TMPL = "serieList/code={code}&type=json"
+
+RATE_LIMIT_RANGE = (0.3, 0.5)  # seconds, slept before every single attempt
+MAX_RETRIES = 3
+RETRYABLE_STATUS = {
+    429,
+    500,
+    502,
+    503,
+    504,
+}  # 403 excluded — retrying an auth error is pointless
+REQUEST_TIMEOUT = 30
+
+BRONZE_ROOT = Path("data/bronze/evds")
+CATALOG_CACHE_ROOT = BRONZE_ROOT / "_catalog_cache"
+CATEGORIES_SNAPSHOT_PATH = BRONZE_ROOT / "categories.parquet"
+DATAGROUPS_SNAPSHOT_PATH = BRONZE_ROOT / "datagroups.parquet"
+CATALOG_PATH = BRONZE_ROOT / "catalog.parquet"
+FETCH_LOG_JSONL_PATH = BRONZE_ROOT / "fetch_log.jsonl"  # true append target
+FETCH_LOG_PARQUET_PATH = BRONZE_ROOT / "fetch_log.parquet"  # compacted output
+
+
+class EvdsRedirectError(RuntimeError):
+    """Raised when EVDS responds with a 3xx status. Redirects are never followed."""
+
+
+class EvdsAuthError(RuntimeError):
+    """Raised on 403 Forbidden — an invalid or missing API key. Never retried."""
+
+
+class EvdsRequestError(RuntimeError):
+    """Raised when a request fails (non-2xx, non-3xx, non-403) or exhausts all retries."""
+
+
+@dataclass(frozen=True)
+class ApiCall:
+    url: str
+    params: str
+    http_status: int
+    row_count: int | None
+    fetched_at: str
+    outcome: str
+
+
+def build_url(path: str) -> str:
+    """Join BASE_URL with a pre-formatted path-style segment (e.g. "categories/type=json").
+
+    Deliberately does not use requests' params= kwarg, which would produce a
+    `?key=value` query string — EVDS v3 does not accept that form and the
+    parameters must be built into `path` by the caller instead.
+    """
+    return BASE_URL + path
+
+
+def redact_url(url: str) -> str:
+    """Mask any `key=...` occurrence in a URL, for logging/storage only.
+
+    Never applied to the actual outgoing request — the key travels in the
+    HTTP header, never in the URL, but any URL that is logged or persisted
+    (e.g. in fetch_log) must never be able to leak it either.
+    """
+    return re.sub(r"key=[^&]*", "key=***", url)
+
+
+def _log_call(call: ApiCall) -> None:
+    """Append one JSON line to fetch_log.jsonl.
+
+    Parquet has no append; rewriting the whole parquet file on every one of
+    several thousand calls would be O(n^2). Real compaction to
+    fetch_log.parquet happens once, via compact_fetch_log().
+    """
+    BRONZE_ROOT.mkdir(parents=True, exist_ok=True)
+    with FETCH_LOG_JSONL_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(asdict(call), ensure_ascii=False) + "\n")
+
+
+def compact_fetch_log() -> Path:
+    """Rebuild fetch_log.parquet from fetch_log.jsonl.
+
+    Call once at the end of a catalog build or bulk fetch run — not after
+    every individual call.
+    """
+    if not FETCH_LOG_JSONL_PATH.exists():
+        return FETCH_LOG_PARQUET_PATH
+    lines = FETCH_LOG_JSONL_PATH.read_text(encoding="utf-8").splitlines()
+    rows = [json.loads(line) for line in lines if line]
+    pd.DataFrame(rows).to_parquet(FETCH_LOG_PARQUET_PATH, index=False)
+    return FETCH_LOG_PARQUET_PATH
+
+
+def _authenticated_get(path: str, settings: Settings) -> list | dict:
+    """Single authenticated GET against EVDS v3. Returns the parsed JSON payload.
+
+    - auth: `key` HTTP header (never the URL)
+    - allow_redirects=False; any 3xx -> EvdsRedirectError
+    - 403 -> immediate EvdsAuthError, no retry (an auth error will not fix itself)
+    - status in RETRYABLE_STATUS -> up to MAX_RETRIES attempts, exponential backoff
+    - a random RATE_LIMIT_RANGE sleep happens before every attempt
+    - every attempt (success or failure) is logged via _log_call
+    """
+    url = build_url(path)
+    logged_url = redact_url(url)
+    last_status: int | None = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        time.sleep(random.uniform(*RATE_LIMIT_RANGE))
+        response = requests.get(
+            url,
+            headers=settings.evds_auth_header(),
+            allow_redirects=False,
+            timeout=REQUEST_TIMEOUT,
+        )
+        last_status = response.status_code
+        fetched_at = datetime.now(UTC).isoformat()
+
+        if 300 <= response.status_code < 400:
+            _log_call(
+                ApiCall(
+                    logged_url, path, response.status_code, None, fetched_at, "redirect"
+                )
+            )
+            raise EvdsRedirectError(
+                f"EVDS redirected ({response.status_code}): {logged_url}"
+            )
+
+        if response.status_code == 403:
+            _log_call(ApiCall(logged_url, path, 403, None, fetched_at, "auth_error"))
+            raise EvdsAuthError(
+                "EVDS anahtarı geçersiz veya eksik (Profilim > API Key Kopyala)."
+            )
+
+        if response.status_code == 200:
+            payload = response.json()
+            row_count = len(payload) if isinstance(payload, list) else None
+            _log_call(ApiCall(logged_url, path, 200, row_count, fetched_at, "ok"))
+            return payload
+
+        if response.status_code in RETRYABLE_STATUS and attempt < MAX_RETRIES:
+            _log_call(
+                ApiCall(
+                    logged_url, path, response.status_code, None, fetched_at, "retry"
+                )
+            )
+            time.sleep(2 ** (attempt - 1))
+            continue
+
+        _log_call(
+            ApiCall(logged_url, path, response.status_code, None, fetched_at, "failed")
+        )
+        raise EvdsRequestError(
+            f"EVDS request failed ({response.status_code}): {logged_url}"
+        )
+
+    raise EvdsRequestError(
+        f"EVDS request failed after {MAX_RETRIES} attempts (last status {last_status})"
+    )
+
+
+def fetch_categories(settings: Settings) -> pd.DataFrame:
+    return pd.DataFrame(_authenticated_get(CATEGORIES_PATH, settings))
+
+
+def fetch_datagroups(settings: Settings) -> pd.DataFrame:
+    return pd.DataFrame(_authenticated_get(DATAGROUPS_PATH, settings))
+
+
+def fetch_serie_list(datagroup_code: str, settings: Settings) -> pd.DataFrame:
+    path = SERIELIST_PATH_TMPL.format(code=datagroup_code)
+    return pd.DataFrame(_authenticated_get(path, settings))
+
+
+def build_catalog(settings: Settings, *, force: bool = False) -> Path:
+    """Build data/bronze/evds/catalog.parquet: one row per series, joined
+    with its datagroup and category metadata.
+
+    Idempotent at every level: categories/datagroups snapshots, per-datagroup
+    serieList caches, and the final catalog are each skipped if they already
+    exist and force=False — so a crash partway through ~680 serieList calls
+    does not force a full re-fetch on retry, and a second full run makes
+    zero HTTP calls.
+    """
+    if CATALOG_PATH.exists() and not force:
+        return CATALOG_PATH
+
+    BRONZE_ROOT.mkdir(parents=True, exist_ok=True)
+    CATALOG_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+
+    if CATEGORIES_SNAPSHOT_PATH.exists() and not force:
+        categories = pd.read_parquet(CATEGORIES_SNAPSHOT_PATH)
+    else:
+        categories = fetch_categories(settings)
+        categories.to_parquet(CATEGORIES_SNAPSHOT_PATH, index=False)
+
+    if DATAGROUPS_SNAPSHOT_PATH.exists() and not force:
+        datagroups = pd.read_parquet(DATAGROUPS_SNAPSHOT_PATH)
+    else:
+        datagroups = fetch_datagroups(settings)
+        datagroups.to_parquet(DATAGROUPS_SNAPSHOT_PATH, index=False)
+
+    datagroup_codes = datagroups["DATAGROUP_CODE"].tolist()
+    for code in datagroup_codes:
+        cache_file = CATALOG_CACHE_ROOT / f"{code}.parquet"
+        if cache_file.exists() and not force:
+            continue
+        series = fetch_serie_list(code, settings)
+        series.to_parquet(cache_file, index=False)
+
+    series_frames = [
+        pd.read_parquet(CATALOG_CACHE_ROOT / f"{code}.parquet")
+        for code in datagroup_codes
+    ]
+    all_series = (
+        pd.concat(series_frames, ignore_index=True) if series_frames else pd.DataFrame()
+    )
+
+    catalog = all_series.merge(
+        datagroups, on="DATAGROUP_CODE", how="left", suffixes=("", "_dg")
+    )
+    catalog = catalog.merge(
+        categories, on="CATEGORY_ID", how="left", suffixes=("", "_cat")
+    )
+    catalog.to_parquet(CATALOG_PATH, index=False)
+
+    compact_fetch_log()
+    return CATALOG_PATH
+
+
+def build_column_rename_map(serie_codes: Iterable[str]) -> dict[str, str]:
+    """{underscore_form: original_SERIE_CODE} for the given catalog codes.
+
+    Built from an exact list of known codes rather than a blind "_" -> "."
+    replace: a multi-segment code like TP.ISTIRAKBS.A1 becomes
+    TP_ISTIRAKBS_A1, and only a lookup against the catalog's own SERIE_CODE
+    values can invert that unambiguously.
+    """
+    return {code.replace(".", "_"): code for code in serie_codes}
+
+
+def denormalize_response_columns(
+    df: pd.DataFrame, serie_codes: Iterable[str]
+) -> pd.DataFrame:
+    """Rename EVDS response columns (dots turned into underscores, e.g.
+    TP_ISTIRAKBS_A1) back to their catalog SERIE_CODE form (TP.ISTIRAKBS.A1).
+
+    Columns not present in the rename map (e.g. "Tarih", "UNIXTIME") pass
+    through untouched. This is the single place in the codebase this
+    reversal happens — lake/silver.py (a later PR) must import and reuse it
+    rather than reimplementing the logic.
+    """
+    rename_map = build_column_rename_map(serie_codes)
+    return df.rename(columns=rename_map)

@@ -1,0 +1,32 @@
+[
+  {
+    "DATAGROUP_CODE": "bie_istirakbs",
+    "CATEGORY_ID": 450108.0,
+    "DATAGROUP_NAME": "İştirakler - Bankacılık Sektörü",
+    "DATAGROUP_NAME_ENG": "Participations and Subsidiaries - Banking Sector",
+    "FREQUENCY": 9.0,
+    "FREQUENCY_STR": "AYLIK",
+    "DATASOURCE": "BANKALAR",
+    "METADATA_LINK": "http://www.tcmb.gov.tr/wps/wcm/connect/f3ad1a37-6d59-4a0b-b0d7-09b51cd7a73f/MetaveriAPB2018.pdf",
+    "START_DATE": "01-10-2007",
+    "END_DATE": "01-07-2026",
+    "NOTE": "",
+    "BIRIMI": "Bin TL",
+    "LAST_UPDATED": "01-08-2026"
+  },
+  {
+    "DATAGROUP_CODE": "bie_dbb",
+    "CATEGORY_ID": 1001.0,
+    "DATAGROUP_NAME": "Banka Kredileri Eğilim Anketi",
+    "DATAGROUP_NAME_ENG": "Bank Loans Tendency Survey",
+    "FREQUENCY": 12.0,
+    "FREQUENCY_STR": "3 AYLIK",
+    "DATASOURCE": "TCMB",
+    "METADATA_LINK": "http://www.tcmb.gov.tr/wps/wcm/connect/example/dbb-metadata.pdf",
+    "START_DATE": "01-01-2012",
+    "END_DATE": "01-07-2026",
+    "NOTE": "",
+    "BIRIMI": "Yüzde",
+    "LAST_UPDATED": "01-08-2026"
+  }
+]
