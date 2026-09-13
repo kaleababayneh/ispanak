@@ -1,0 +1,8 @@
+.env
+.venv/
+data/bronze/
+data/silver/
+*.lance/
+__pycache__/
+smoke_out/
+smoke_out/
