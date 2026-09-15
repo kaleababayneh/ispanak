@@ -1,8 +1,15 @@
 .env
 .venv/
-data/bronze/
-data/silver/
+
+# Uretilen verinin tamami git disi: bronze/silver/gold, katalog indeksi,
+# demo aninda cekilen adhoc tablolar ve kullanim loglari.
+# (data/gold commit edilsin mi sorusu A'ya soruldu; cevap "evet" olursa
+#  buraya bir "!data/gold/" istisnasi eklenir.)
+data/
 *.lance/
+
 __pycache__/
 smoke_out/
-smoke_out/
+
+# Kisiye ozel Claude Code talimatlari; ortak CLAUDE.md commit edilir.
+CLAUDE.local.md
