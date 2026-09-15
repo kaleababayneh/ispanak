@@ -41,9 +41,6 @@ class ToolSpec:
     #: over what range, roughly how many calls.
     approval_preview: Callable[[BaseModel, ToolContext], dict[str, Any]] | None = None
 
-    creates_table: bool = False
-    sets_active: bool = False
-
     #: Set when `preview` comes back as a ranked candidate list. The loop reads
     #: it to decide whether the series-choice gate applies. Declared here rather
     #: than matched on the tool's name so renaming a tool cannot silently

@@ -15,3 +15,9 @@ smoke_out/
 CLAUDE.local.md
 data/gold/
 *.log
+
+# test araclarinin urettikleri
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/

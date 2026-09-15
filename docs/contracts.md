@@ -127,6 +127,15 @@ bu ucuz bir sigorta.
 
 `table_ref=None` aktif tablo demektir. `"active"` diye özel bir değer yok.
 
+Modele giden araç mesajı **2000 karakterle sınırlı**; aşarsa kesilir ve sonuna
+`... (kisaltildi)` yazılır. Konuşkan bir aracın konuşmanın geri kalanını
+bağlamdan itmemesi için. Uzun çıktı, aracın daha iyi özetlemesi gerektiğinin
+işareti.
+
+Araç kaydında **ne ürettiğini beyan eden alan yok.** Yeni tablo ve yeni sütun
+farkını döngü, aracın gerçekte yazdıklarından hesaplıyor; beyan ile gerçeğin
+ayrışması sessiz bir yanlışa yol açardı.
+
 ---
 
 ## 5. Oturum durumu

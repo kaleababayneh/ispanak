@@ -112,3 +112,11 @@ Sonuç:  ingest ağ hatasında durmuyor, logla-atla-devam ediyor; başarısız l
    tabloyu sildiğinde -- ki tam olarak bunu yapacak -- sonraki tablo
    kullanımdaki bir numarayı alıp üstüne yazıyordu. Artık en yüksek numaradan
    devam ediyor; silme numarayı serbest bırakmıyor.
+
+## Araç kaydından iki ölü alan çıkarıldı
+`ToolSpec` üzerinde `creates_table` ve `sets_active` bayrakları vardı ve hiçbir
+yer okumuyordu. Döngü bu iki bilgiyi zaten aracın gerçekte yazdıklarından
+hesaplıyor (`ctx.written`, `ctx.new_active`) -- beyana değil gerçeğe bakmak
+bilinçli bir tercihti. Okunmayan bir beyan bırakmak, birinin onu doldurup bir
+etki beklemesine davetiye; kaldırıldı. `brief_name` duruyor çünkü sunumun altı
+aracıyla bizim fonksiyonlarımızı eşleyecek `docs/tools.md` ona dayanacak.
