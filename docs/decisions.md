@@ -251,3 +251,74 @@ Değerler artık anlık görüntüye kopyalanıyor. Tablolar için aynı şey ge
 değil: `table()` zaten kopya veriyor -- ama sığ, yani hücre içinde duran bir
 nesne oturumunkiyle aynı nesne. Gold sözleşmesinde iç içe tablo yok; docstring
 artık bunu söylüyor.
+## Onay beklemesi tur bütçesinden düşülüyor
+Bağlam: Bütçe (180 sn) `active_s` üzerinden ölçülüyor ama ilk yazımda fetch onayı
+        adımın içinde kalıyordu; `_act` adımın başında saati alıp sonunda farkı
+        `active_s`'e ekliyordu. Jüri kartı 60 sn okusa o 60 sn çalışma sayılırdı.
+Karar:  `SessionState.approval_wait_s` eklendi. `_ask` yalnız insanı bekleme
+        süresini oraya yazıyor, `_act` içindeki `working_s()` bu farkı hem
+        `active_s`'ten hem adımın `duration_ms`'inden düşüyor.
+Sonuç:  Onay kapısı ile zaman sınırı aynı anda var olabiliyor. Sahte saatle
+        ölçülen test: kart 500 sn açık kalıyor, tur düşmüyor, `active_s < 180`.
+
+## Argüman yeniden deneme sayacı araç adına göre, çağrı kimliğine göre değil
+Bağlam: `arg_retries` sözlüğü `call.id` ile anahtarlanıyordu.
+Sorun:  Model her araç çağrısına yeni bir kimlik veriyor. Sayaç tam da saymak
+        istediği yeniden denemede sıfır okuyor, yani "hatayı bir kez geri ver"
+        kuralı hiç devreye girmiyor, model aynı argümanları sonsuza dek
+        deneyebiliyordu. Tekrar-çağrı koruması ancak üçüncü denemede yakalıyordu.
+Karar:  Anahtar `call.name`.
+Sonuç:  İkinci başarısız denemede modele "bu argümanlarla tekrar deneme" gidiyor.
+
+## Araç uyarıları cevap prompt'una taşınıyor
+Bağlam: `answer.md`'deki `{{warnings}}` yer tutucusunu `_collected_warnings`
+        dolduruyordu ama fonksiyon adım hata kodlarını topluyordu ("timeout").
+        `ToolResult.warnings` hiçbir yerde biriktirilmiyordu.
+Sonuç:  "Haftalık seri aylık ortalamaya çevrildi" gibi cümlenin anlamını
+        değiştiren bir uyarı cevaba hiç ulaşmıyordu; planlayıcı prompt'unun
+        8. kuralı karşılıksız kalıyordu.
+Karar:  `SessionState.warnings` eklendi; `_merge_context` hem aracın kendi
+        uyarılarını hem döngünün ürettiği "mevcut sütunlar değişti" uyarısını
+        oraya yazıyor. Uyarılar ve başarısız adımlar ayrı ayrı sınırlanıyor,
+        yoksa dört başarısız adım uyarıları listeden itiyor.
+
+## Sahte araç katmanında sütun adı kuralı
+Bağlam: Sahte `get_series`, sütun adını `series_id.split(":")[-1]` ile üretiyordu.
+Sorun:  EVDS kimliğinde doğru (`evds:TP.KTF12` -> `TP_KTF12`) ama BDDK kimliğinde
+        iki nokta hiyerarşi ayracı: `bddk:aylik:tuketici:konut:TL:sektor` -> `sektor`.
+        Bütün tüketici kredisi serileri tek ada çökerdi.
+Karar:  Yalnız kaynak öneki atılıyor, kalan ayraçlar alt çizgiye dönüyor.
+Açık:   Gerçek `wide()` sütun adlarını A'nın belirlemesi gerekiyor (istek listesi
+        madde 5). Cevap gelince değişecek tek yer `_column_name`.
+
+## Cevapsız araç çağrısı: oturumu bitiren iki hata
+OpenAI protokolünde bir asistan mesajı araç çağırıyorsa o `tool_call_id` için bir
+araç mesajı gelmek zorunda. Gelmezse **bir sonraki** istek 400 döner. Mesaj
+geçmişi turlar arası taşındığı için bu, turu değil oturumun tamamını bitiriyor.
+Döngünün iki yerinde oluyordu:
+
+1. Adım sınırı veya süre bütçesi dolduğunda döngü duruyordu ama modelin son araç
+   çağrısı cevapsız kalıyordu. Tur yarım kalmakla kalmıyor, cevabı yazma çağrısı
+   da patlıyordu.
+2. Onay geri çağrısı hata verirse (tarayıcı kapandı, kart zaman aşımına uğradı)
+   aynı yetim çağrı oluşuyordu.
+
+Karar:  `_answer_abandoned_calls` cevabı yazmadan önce geçmişi tarayıp cevapsız
+        her çağrıya "bu araç çalıştırılmadı" mesajı yazıyor; onay hatası ise
+        başarısız bir adım olarak kaydediliyor. İkisi de test edildi, hem de
+        genel bir `orphan_call_ids` yardımcısıyla erken biten her testte.
+
+## Döngüde diğer düzeltmeler (aynı inceleme)
+- Başarısız dönen bir aracın (`ok=False`) yazdıkları artık oturuma karışmıyor;
+  zaman aşımına uğrayan adımla aynı kural.
+- Seri seçimi kapısı `spec.name == "search_catalog"` yerine `returns_candidates`
+  bayrağına bakıyor. Bir aracı yeniden adlandırmak bir insan onayını sessizce
+  devre dışı bırakmamalı.
+- Doğrulayıcı `asyncio.to_thread` içinde çalışıyor: bugün `NullVerifier` olduğu
+  için zararsız ama 5. aşamada model çağıracak ve arayüzü dondururdu.
+- `describe_table` okunamayan bir dönem sütunu yüzünden başarılı bir adımı
+  düşüremiyor.
+- Başarısız adımlar da `step_start`/`step_end` yayınlıyor. Hatalı argüman ve
+  iptal edilen çekim jürinin en çok göreceği iki şey; olay yayınlanmayınca
+  arayüzde kapanmayan bir adım kartı, yani donmuş bir ekran kalıyordu.
+- `llm.chat` artık isimli argümanlarla çağrılıyor.

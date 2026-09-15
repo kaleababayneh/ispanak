@@ -153,6 +153,10 @@ draft_answer, verification, approvals`).
 
 `lineage` anahtarı: `"{table_ref}.{column}"`.
 
+**Zaman muhasebesi.** Bütçe `active_s` üzerinden ölçülüyor ve insan beklemesi ona
+girmiyor: `approval_wait_s` yalnız onay kartının açık kaldığı süreyi tutuyor,
+adımın çalışma süresinden düşülüyor. Jüri kartı okurken tur düşmesin diye.
+
 Aktif tablo kuralı: `get_series(into="new")`, `run_sql`, `ingest` ve `read_url`
 aktif tabloyu değiştirir; analiz sonucu tabloları değiştirmez.
 
@@ -236,8 +240,15 @@ Kullanım logu `data/logs/llm_usage.jsonl`, her mantıksal çağrı için tek sa
 Kimlikler İngilizce çünkü kodda karşılaştırılıyor; etiketler Türkçe çünkü
 kullanıcı onları okuyor.
 
+Araç kaydında iki bayrak kapıyı tetikler: `approval="fetch"` ve
+`returns_candidates=True`. Araç adına bakılmıyor — araç yeniden adlandırıldığında
+bir insan onayının sessizce devre dışı kalması mümkün olmamalı.
+
 Onay geri çağrısı **async ve engelleyici**. Onay beklerken tur süresi bütçesi
-işlemez, yoksa jüri düşünürken tur düşer.
+işlemez, yoksa jüri düşünürken tur düşer. Geri çağrı **hata verirse** (tarayıcı
+kapandı, kart zaman aşımına uğradı) araç çalıştırılmamış sayılır ve çağrıya yine
+de bir araç mesajı yazılır: cevapsız bir `tool_call_id` sonraki isteği protokol
+hatasına düşürür ve oturumun kalanını da götürür.
 
 ---
 
