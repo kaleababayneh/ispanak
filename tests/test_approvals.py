@@ -13,7 +13,7 @@ import pytest
 
 from lakehouse_agent.agent import approvals
 from lakehouse_agent.agent.context import ToolContext
-from lakehouse_agent.agent.state import SessionState
+from lakehouse_agent.agent.state import ApprovalDecision, SessionState
 from lakehouse_agent.contracts import QualityReport, ToolResult
 from lakehouse_agent.testing.fake_llm import FakeLLM
 from lakehouse_agent.testing.fake_tools import (
@@ -267,6 +267,22 @@ def test_a_series_choice_is_reported_back_as_a_person_speaking(state):
     message = approvals.decision_message(request, decision)
     assert "evds:TP.KTF12" in message
     assert "tekrar katalog aramasi yapma" in message
+
+
+def test_changing_the_assumption_carries_the_person_s_own_words_forward(state):
+    """The third quality option is not "continue" or "cancel" but "I disagree
+    with how you read this". Whatever they typed has to reach the model, or the
+    button does nothing."""
+    request = approvals.needs_quality_gate(_quality(missing_pct=50.0), state, 1)
+    decision = ApprovalDecision(
+        request_id=request.request_id,
+        choice=approvals.CHOICE_CHANGE_ASSUMPTION,
+        note="Eksik aylari bos birak, sifir sayma.",
+    )
+    message = approvals.decision_message(request, decision)
+
+    assert "varsayimi degistirdi" in message
+    assert "sifir sayma" in message
 
 
 def test_continuing_past_a_quality_warning_obliges_the_answer_to_mention_it(state):

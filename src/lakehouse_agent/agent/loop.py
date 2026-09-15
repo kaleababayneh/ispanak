@@ -51,7 +51,7 @@ from lakehouse_agent.agent.state import (
 )
 from lakehouse_agent.config import AgentSettings
 from lakehouse_agent.contracts import ToolResult, Usage
-from lakehouse_agent.llm import LLM, LlmError, ToolCall
+from lakehouse_agent.llm import LLM, LlmError, MiaLLM, ToolCall
 from lakehouse_agent.tools.registry import ToolRegistry
 
 DATA_RANGE = "2021-01 – 2026-06"
@@ -755,7 +755,7 @@ async def _post_run_approvals(
     state: SessionState, deps: AgentDeps, spec: Any, result: ToolResult, step_no: int
 ) -> None:
     """The two gates that can only be judged after seeing what came back."""
-    if getattr(spec, "returns_candidates", False):
+    if spec.returns_candidates:
         request = approval_rules.needs_series_choice(
             result, state, step_no, ratio=deps.config.ambiguity_ratio
         )
@@ -963,32 +963,93 @@ def _fake_deps(question: str) -> AgentDeps:
     )
 
 
+def _live_deps() -> AgentDeps:
+    """Real model, fake tools.
+
+    The one thing the offline suite cannot tell us: whether the model actually
+    picks the right tool, fills its arguments from the schema, and writes
+    sensible Turkish. The tools stay fake so a failure here is unambiguous -- it
+    is the model or the prompt, never the data layer.
+    """
+    from dotenv import find_dotenv, load_dotenv
+
+    from lakehouse_agent.testing.fake_tools import make_fake_registry
+
+    # An entrypoint, so it is allowed to load .env. `usecwd` because otherwise
+    # dotenv searches next to this file instead of next to the project.
+    load_dotenv(find_dotenv(usecwd=True))
+
+    from lakehouse_agent.config import get_agent_settings
+
+    settings = get_agent_settings()
+    return AgentDeps(
+        llm=MiaLLM(settings),
+        registry=make_fake_registry(),
+        settings=settings,
+        sink=JsonlSink(),
+    )
+
+
+def _summarise(state: SessionState, result: TurnResult) -> None:
+    """A human-readable recap on stderr, so stdout stays pure JSONL."""
+    print("", file=sys.stderr)
+    for step in state.steps:
+        mark = "ok" if step.ok is not False else "HATA"
+        detail = f" [{step.tool}]" if step.tool else ""
+        print(
+            f"  {step.step_no:>2}. {step.node:<8}{detail:<18} {mark:<4} "
+            f"{step.duration_ms:>6} ms  {step.summary[:60]}",
+            file=sys.stderr,
+        )
+    print(
+        f"\n  sure {result.duration_ms} ms | token "
+        f"{result.usage.prompt_tokens}+{result.usage.completion_tokens} | "
+        f"onay {result.approvals} | kesinti {result.truncated_reason or 'yok'}",
+        file=sys.stderr,
+    )
+    print(f"\n  CEVAP: {result.answer}\n", file=sys.stderr)
+
+
 def _cli(argv: list[str] | None = None) -> int:
-    """`python -m lakehouse_agent.agent.loop --fake --question "..."`"""
+    """`python -m lakehouse_agent.agent.loop --fake --question "..."`
+
+    Two modes. `--fake` is offline and deterministic: the smoke test the suite
+    relies on. `--live` swaps in the real model but keeps the fake tools, which
+    is the only way to see whether MIA chooses correctly before the real tools
+    exist.
+    """
     import argparse
 
     parser = argparse.ArgumentParser(description="Agent dongusunu tek tur calistirir")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
         "--fake",
         action="store_true",
-        help="Sahte model ve sahte araclarla calistir (ag yok)",
+        help="Sahte model ve sahte araclar; ag yok, sonuc her zaman ayni",
+    )
+    mode.add_argument(
+        "--live",
+        action="store_true",
+        help="Gercek MIA modeli, sahte araclar; MIA_API_KEY gerekli",
     )
     parser.add_argument("--question", default="Konut kredisi faizi nasil seyretti?")
     args = parser.parse_args(argv)
 
-    if not args.fake:
-        print(
-            "Gercek arac katmani henuz hazir degil; su an yalnizca --fake destekleniyor."
-        )
+    state = initial_state("cli")
+    try:
+        deps = _live_deps() if args.live else _fake_deps(args.question)
+    except Exception as exc:  # noqa: BLE001 - a missing key is a normal outcome
+        print(f"Ayarlar okunamadi: {exc}", file=sys.stderr)
+        print("MIA_API_KEY .env dosyasinda tanimli mi?", file=sys.stderr)
         return 2
 
-    state = initial_state("cli")
-    deps = _fake_deps(args.question)
     try:
         result = asyncio.run(run_turn(state, deps, args.question))
     except AgentError as exc:
         print(json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False))
         return 1
+
+    _summarise(state, result)
     return 0 if result.answer else 1
 
 

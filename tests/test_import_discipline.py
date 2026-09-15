@@ -60,6 +60,7 @@ def test_llm_module_does_import_openai():
 FAKE_IMPORT_ALLOWLIST = {
     ("agent/loop.py", "_fake_script"),
     ("agent/loop.py", "_fake_deps"),
+    ("agent/loop.py", "_live_deps"),
 }
 
 

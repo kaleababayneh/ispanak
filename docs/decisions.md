@@ -322,3 +322,25 @@ Karar:  `_answer_abandoned_calls` cevabı yazmadan önce geçmişi tarayıp ceva
   iptal edilen çekim jürinin en çok göreceği iki şey; olay yayınlanmayınca
   arayüzde kapanmayan bir adım kartı, yani donmuş bir ekran kalıyordu.
 - `llm.chat` artık isimli argümanlarla çağrılıyor.
+## CLI'da iki mod: --fake ve --live
+Bağlam: Çevrimdışı test paketi bir şeyi söyleyemiyor -- model gerçekten doğru
+        aracı seçiyor mu, şemadan argümanları doğru dolduruyor mu, Türkçesi
+        tutarlı mı?
+Karar:  `--fake` (sahte model + sahte araç, ağ yok, deterministik) ve `--live`
+        (gerçek MIA + sahte araç). Araçlar iki modda da sahte; böylece canlı
+        modda bir hata çıktığında sebebi tek: model ya da prompt, veri katmanı
+        değil. Varsayılan mod yok, biri açıkça seçilmek zorunda: canlı
+        varsayılan olsa masum görünen bir komut kota harcardı, sahte varsayılan
+        olsa insan modeli test ettiğini sanırdı.
+
+Canlı ölçüm (15 Eyl, planın 18 Eylül'e koyduğu duman testi): "2021-2025 arası
+konut kredisi faiz oranını getir ve aylık farkını hesapla" sorusu tek turda
+bitti. Model search_catalog -> get_series -> transform_table sırasını kendi
+kurdu, `TP_KTF12` sütun adını araç çıktısından birebir kopyaladı, 12,6 saniye,
+dokuz adım, sıfır onay, kesinti yok. Cevap kaynağı belirtti ve haftalık seriyi
+aylık okuduğunu kendisi yazdı.
+
+Ölçülen bağlam maliyeti: tek turda dört model çağrısı toplam 11.556 prompt
+token. Sahte araçların şemaları küçük; gerçek araçlarla ve üç turlu bir
+oturumda bu rakam ciddi biçimde büyüyecek. Mesaj geçmişi kırpma kararı bu yüzden
+arayüz aşamasına bırakıldı, ama unutulmamalı.

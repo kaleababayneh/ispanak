@@ -188,8 +188,6 @@ def make_get_series() -> ToolSpec:
         args_model=GetSeriesArgs,
         fn=run,
         brief_name="Lakehouse",
-        creates_table=True,
-        sets_active=True,
     )
 
 
@@ -416,8 +414,6 @@ def make_ingest() -> ToolSpec:
         brief_name="Lakehouse",
         approval="fetch",
         approval_preview=preview,
-        creates_table=True,
-        sets_active=True,
     )
 
 
@@ -453,8 +449,6 @@ def make_quality_table(*, missing_pct: float = 20.0) -> ToolSpec:
         description_tr="Test icin kalite sorunlu tablo ureten arac.",
         args_model=EmptyArgs,
         fn=run,
-        creates_table=True,
-        sets_active=True,
     )
 
 

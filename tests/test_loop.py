@@ -17,8 +17,9 @@ import pandas as pd
 import pytest
 
 from lakehouse_agent.agent.events import ListSink
-from lakehouse_agent.agent.loop import AgentConfig, AgentDeps, run_turn
+from lakehouse_agent.agent.loop import AgentConfig, AgentDeps, AgentError, run_turn
 from lakehouse_agent.agent.state import ApprovalDecision, initial_state
+from lakehouse_agent.llm import LlmServerError
 from lakehouse_agent.testing.fake_llm import FakeLLM, ScriptExhausted
 from lakehouse_agent.testing.fake_tools import make_fake_registry
 
@@ -760,6 +761,64 @@ def test_a_preview_with_missing_values_still_serialises(capsys):
     assert "NaN" not in json.dumps(updates[-1], allow_nan=False)
 
 
+def test_a_model_failure_ends_the_turn_honestly_instead_of_half_answering():
+    """MIA goes down mid-turn. It will, at some point, in front of someone.
+
+    The turn cannot be salvaged -- there is no answer without the model -- but
+    it has to end as a stated failure with a `done` event, not as a traceback
+    the interface has to guess at.
+    """
+
+    def raises(exc):
+        def reply(messages, tools, thinking):
+            raise exc
+
+        return reply
+
+    sink = ListSink()
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            raises(LlmServerError("MIA 503")),
+        ],
+        sink=sink,
+    )
+
+    with pytest.raises(AgentError, match="MIA 503"):
+        turn(state, deps)
+
+    assert state.truncated_reason == "llm_error"
+    assert sink.last("error").payload["kind"] == "LlmServerError"
+    assert sink.types()[-1] == "done"
+    # The step that did succeed is still in the session.
+    assert state.tables
+
+
+def test_no_prompt_placeholder_ever_reaches_the_model_unfilled():
+    """`render` leaves an unknown `{{name}}` in place, visibly and on purpose.
+
+    Visibly to us, that is -- if nobody looks, the model just reads the literal
+    braces and quietly loses whatever that slot was supposed to tell it. Adding
+    a placeholder to planner.md without wiring it up is a one-line change that
+    nothing else would catch.
+    """
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    turn(state, deps)
+
+    for call in deps.llm.calls:
+        system = call["messages"][0]["content"]
+        assert "{{" not in system, f"{call['tag']} prompt'unda dolmamis yer tutucu var"
+
+
 # --------------------------------------------------------------------------
 # The scenario
 # --------------------------------------------------------------------------
@@ -851,9 +910,28 @@ def test_the_fake_cli_writes_one_json_event_per_line_and_ends_with_done(capsys):
     assert all(line["session_id"] == "cli" for line in lines)
 
 
-def test_the_cli_refuses_to_pretend_the_real_tools_exist(capsys):
-    """Without `--fake` there is nothing to run yet, and it says so."""
+def test_the_cli_makes_you_say_whether_you_want_the_real_model(capsys):
+    """`--fake` and `--live` differ by whether real quota is spent.
+
+    Defaulting to either one would be wrong: a default of live would make an
+    innocent-looking command hit MIA, and a default of fake would let someone
+    believe they had tested against the model when they had not.
+    """
     from lakehouse_agent.agent.loop import _cli
 
-    assert _cli([]) == 2
-    assert "yalnizca --fake" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exit_info:
+        _cli([])
+    assert exit_info.value.code == 2
+    assert "--fake" in capsys.readouterr().err
+
+
+def test_live_mode_says_what_is_missing_instead_of_traceback(capsys, monkeypatch):
+    """The most likely first run: no key. It has to be a sentence, not a stack."""
+    from lakehouse_agent.agent.loop import _cli
+
+    monkeypatch.setattr(
+        "lakehouse_agent.config.get_agent_settings",
+        lambda: (_ for _ in ()).throw(RuntimeError("MIA_API_KEY yok")),
+    )
+    assert _cli(["--live"]) == 2
+    assert "MIA_API_KEY" in capsys.readouterr().err
