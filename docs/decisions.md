@@ -99,3 +99,16 @@ Karar:  %99.2 kapsam (3384/4068 parquet) yeterli kabul edildi. Timeout'u artır�
         Senaryo ve eval serilerinin hiçbiri bu gruplarda değil.
 Sonuç:  ingest ağ hatasında durmuyor, logla-atla-devam ediyor; başarısız liste
         fetch_log'da ve docs/data_quality.md'de görünür.
+
+## Tablo okuma ve tablo numaralandırma: iki sessiz hata
+İkisi de sahte katmanla yeşil geçen, gerçek araçlarla patlayacak hatalardı.
+
+1. `ToolContext.table()` içinde `written.get(k) or _tables.get(k)` vardı.
+   DataFrame'in doğruluk değeri yok; `or` ilk dal bir şey bulduğu anda
+   `ValueError` fırlatıyor. Yani bir aracın aynı adımda yazdığı tabloyu geri
+   okuması imkânsızdı. Hiçbir sahte araç bunu yapmadığı için testler görmedi.
+   Üyelik kontrolüne çevrildi ve testi yazıldı.
+2. `new_table_ref` tablo *sayısına* göre numara veriyordu. Kalite kapısı bir
+   tabloyu sildiğinde -- ki tam olarak bunu yapacak -- sonraki tablo
+   kullanımdaki bir numarayı alıp üstüne yazıyordu. Artık en yüksek numaradan
+   devam ediyor; silme numarayı serbest bırakmıyor.

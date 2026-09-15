@@ -135,7 +135,9 @@ bu ucuz bir sigorta.
 checkpointer gerekmiyor.
 
 Alanlar: `messages, tables, active_table, lineage, steps, sources, charts, usage`
-artı tur defteri (`turn_no, step_no, active_s, truncated_reason, approvals`).
+artı tur defteri (`turn_no, step_no, steps_this_turn, active_s, approval_wait_s,
+pending_calls, arg_retries, call_signatures, warnings, truncated_reason,
+draft_answer, verification, approvals`).
 
 `lineage` anahtarı: `"{table_ref}.{column}"`.
 
