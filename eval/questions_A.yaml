@@ -1,0 +1,53 @@
+# A şeridi eval soruları (plan 5.1) — seri bulma + dönüşüm kategorileri
+# Beklenen değerler gerçek gold verisinden, 16 Eylül
+
+- id: A1
+  question: "Konut kredisi faiz oranı son 12 ayda nasıl seyretti?"
+  category: seri_bulma
+  expected_series: ["evds:TP.KTF12"]
+  expected_tools: [search_catalog, get_series]
+  checks:
+    - cevapta_gecmeli: "ağırlıklı ortalama"
+
+- id: A2
+  question: "Konut fiyat endeksini 2021-01 = 100 olacak şekilde endeksle."
+  category: donusum
+  expected_series: ["evds:TP.KFE.TR"]
+  expected_tools: [search_catalog, get_series, transform_table]
+  checks:
+    - deger: {sutun: "kfe_endeks", donem: "2021-01", beklenen: 100, tolerans_yuzde: 1}
+
+- id: A3
+  question: "İpotekli konut satışlarının toplam konut satışları içindeki payı nedir?"
+  category: donusum
+  expected_series: ["evds:TP.AKONUTSAT2.KTRTOPLAM", "evds:TP.AKONUTSAT1.KTRTOPLAM"]
+  expected_tools: [get_series, transform_table]
+
+- id: A4
+  question: "Konut kredisi bakiyesini enflasyondan arındır, reel değeri göster."
+  category: donusum
+  expected_series: ["evds:TP.HPBITABLO6.3", "evds:TP.TUKFIY2025.GENEL"]
+  expected_tools: [get_series, transform_table]
+  checks:
+    - cevapta_gecmeli: "reel"
+    - cevapta_gecmeli: "baz"
+
+- id: A5
+  question: "Konut kredisi faizi haftalık yayınlanıyor, aylık ortalamasını ver."
+  category: donusum
+  expected_series: ["evds:TP.KTF12"]
+  expected_tools: [get_series]
+  not: "rate kind -> ortalama ile toplulaştırılmalı, toplam DEĞİL"
+
+- id: A6
+  question: "Tüketici fiyat endeksi 2021 başından bugüne yüzde kaç arttı?"
+  category: seri_bulma
+  expected_series: ["evds:TP.TUKFIY2025.GENEL"]
+  expected_tools: [search_catalog, get_series, transform_table]
+
+- id: A7
+  question: "Konut kredisi bakiyesinin 2021 verisi var mı?"
+  category: reddetme
+  expected_tools: [search_catalog]
+  not: "Doğru cevap: mevcut seri (TP.HPBITABLO6.3) 2024-06'da başlıyor,
+        2021 verisi havuzda yok. Uydurmamalı."
