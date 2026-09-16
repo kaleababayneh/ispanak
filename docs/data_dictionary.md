@@ -111,3 +111,17 @@ topla). Gerçek 2022 aylık değerleri kontrol edildi (93K, 103K, 146K, ...,
 226K) — birbirine yakın büyüklükte, yıl içinde tekrar tekrar katlanmıyor;
 yani seri zaten aylık akım (flow), BDDK kâr-zarar kalemleri gibi ytd değil.
 `kind=flow, agg_method=sum, cum_type=none` bu yüzden doğru.
+
+## Senaryo doğrulaması (16 Eylül, gerçek veriyle)
+
+Faiz (TP.KTF12, aylık ortalama) düşerken konut kredisi bakiyesi
+(TP.HPBITABLO6.3) davranışı, 2024-06 – 2026-08 arası 27 ay:
+
+- NOMİNAL bakiyede daralma: **0 ay**
+- REEL bakiyede (TÜFE ile deflate, baz 2026-08) daralma: **9 ay**
+  2024-07, 2024-08, 2024-09, 2025-01, 2025-02, 2025-07, 2025-09,
+  2026-01, 2026-02
+
+Nominal bakışta hiçbir örüntü görünmüyor çünkü bakiye enflasyonla zaten
+artıyor. deflate aracının gerekçesi budur ve demoda bu karşılaştırma
+gösterilecek. En belirgin daralma 2026-01 (-19.5M reel).
