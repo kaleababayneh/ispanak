@@ -1,0 +1,144 @@
+"""Bronze (EVDS wide, one parquet per datagroup x year) -> silver (long, one
+row per series x period).
+
+Reuses `ingest.evds._parse_tarih` and `denormalize_response_columns` rather
+than reimplementing tarih parsing or the dot/underscore column reversal --
+those are owned by ingest/evds.py.
+"""
+
+from collections.abc import Iterable
+from datetime import date, timedelta
+
+import pandas as pd
+
+from lakehouse_agent.ingest.evds import (
+    CATALOG_PATH,
+    DATAGROUPS_DATA_ROOT,
+    _parse_tarih,
+    denormalize_response_columns,
+)
+
+OBSERVATION_COLUMNS = [
+    "series_id",
+    "period",
+    "freq",
+    "value",
+    "unit",
+    "source",
+    "fetched_at",
+]
+
+_MISSING_TOKENS = {"", "-", "n.a.", "n.a", "na", "NA"}
+
+
+def _to_float(raw: object) -> float:
+    """ "-"/""/"n.a." -> NaN. Never filled with 0 or interpolated (CLAUDE.md #2)."""
+    if raw is None:
+        return float("nan")
+    if isinstance(raw, int | float):
+        return float(raw)
+    text = str(raw).strip()
+    if text in _MISSING_TOKENS:
+        return float("nan")
+    return float(text)
+
+
+def _period_for(tarih: str, freq_str: str) -> date:
+    """Period = the first day of the period. Weekly Tarih values are the
+    anchor weekday (e.g. Friday for HAFTALIK(CUMA)) -- rounded down to that
+    week's Monday. Monthly/quarterly/yearly Tarih values already parse to
+    the first day of their period.
+    """
+    d = _parse_tarih(str(tarih))
+    if freq_str.upper().startswith("HAFTALIK"):
+        return d - timedelta(days=d.weekday())
+    return d
+
+
+def melt_bronze_datagroup(
+    bronze: pd.DataFrame,
+    serie_codes: Iterable[str],
+    freq_str: str,
+    unit: str | None,
+    *,
+    source: str = "evds",
+) -> pd.DataFrame:
+    """One bronze wide datagroup/year DataFrame -> long observation rows for
+    the given serie_codes (raw, undotted EVDS SERIE_CODE form). Columns of
+    `bronze` not in serie_codes (other series in the same datagroup, or
+    "Tarih"/"_fetched_at") are ignored/carried as id columns.
+    """
+    serie_codes = list(serie_codes)
+    denormalized = denormalize_response_columns(bronze, serie_codes)
+    value_cols = [c for c in serie_codes if c in denormalized.columns]
+    if not value_cols:
+        return pd.DataFrame(columns=OBSERVATION_COLUMNS)
+
+    id_cols = ["Tarih"]
+    has_fetched_at = "_fetched_at" in denormalized.columns
+    if has_fetched_at:
+        id_cols.append("_fetched_at")
+
+    long = denormalized.melt(
+        id_vars=id_cols,
+        value_vars=value_cols,
+        var_name="_code",
+        value_name="_raw_value",
+    )
+    long["period"] = long["Tarih"].map(lambda t: _period_for(t, freq_str))
+    long["series_id"] = source + ":" + long["_code"]
+    long["value"] = long["_raw_value"].map(_to_float)
+    long["freq"] = freq_str
+    long["unit"] = unit
+    long["source"] = source
+    long["fetched_at"] = long["_fetched_at"] if has_fetched_at else None
+
+    return long[OBSERVATION_COLUMNS]
+
+
+def _dedupe_latest_fetch(long: pd.DataFrame) -> pd.DataFrame:
+    """Same (series_id, period) fetched more than once (e.g. a week
+    straddling two year-chunk requests) -> keep the row with the latest
+    fetched_at."""
+    long = long.sort_values("fetched_at")
+    long = long.drop_duplicates(subset=["series_id", "period"], keep="last")
+    return long.sort_values(["series_id", "period"]).reset_index(drop=True)
+
+
+def build_silver_observations(
+    series_ids: Iterable[str], *, source: str = "evds"
+) -> pd.DataFrame:
+    """series_ids in "evds:SERIE.CODE" form. Looks up each series'
+    DATAGROUP_CODE / FREQUENCY_STR / BIRIMI in the bronze catalog, melts
+    every cached bronze year file for that datagroup, and returns one long
+    frame matching the observations.parquet contract (kind/cum_type are not
+    catalog fields -- gold.py attaches those from the scenario mapping).
+    """
+    prefix = f"{source}:"
+    raw_codes = {sid[len(prefix) :] for sid in series_ids if sid.startswith(prefix)}
+    if not raw_codes:
+        return pd.DataFrame(columns=OBSERVATION_COLUMNS)
+
+    catalog = pd.read_parquet(CATALOG_PATH)
+    catalog = catalog[catalog["SERIE_CODE"].isin(raw_codes)]
+
+    frames = []
+    for datagroup_code, group in catalog.groupby("DATAGROUP_CODE"):
+        serie_codes = group["SERIE_CODE"].tolist()
+        freq_str = group["FREQUENCY_STR"].iloc[0]
+        unit = group["BIRIMI"].iloc[0] if "BIRIMI" in group.columns else None
+
+        year_dir = DATAGROUPS_DATA_ROOT / datagroup_code
+        for path in sorted(year_dir.glob("*.parquet")):
+            bronze = pd.read_parquet(path)
+            frames.append(
+                melt_bronze_datagroup(
+                    bronze, serie_codes, freq_str, unit, source=source
+                )
+            )
+
+    if not frames:
+        return pd.DataFrame(columns=OBSERVATION_COLUMNS)
+
+    long = pd.concat(frames, ignore_index=True)
+    return _dedupe_latest_fetch(long)

@@ -13,3 +13,6 @@ smoke_out/
 
 # Kisiye ozel Claude Code talimatlari; ortak CLAUDE.md commit edilir.
 CLAUDE.local.md
+smoke_out/
+data/gold/
+data/gold/

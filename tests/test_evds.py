@@ -242,6 +242,188 @@ def test_build_catalog_assembles_and_is_idempotent(monkeypatch, tmp_path):
 # --- Settings: never reads .env directly -------------------------------------
 
 
+# --- _parse_tarih: one case per frequency family ----------------------------
+
+
+def test_parse_tarih_daily_weekly_business_day_format():
+    assert evds._parse_tarih("01-01-2024") == evds.date(2024, 1, 1)
+    assert evds._parse_tarih("04-10-2024") == evds.date(2024, 10, 4)
+
+
+def test_parse_tarih_monthly_format_no_leading_zero():
+    assert evds._parse_tarih("2024-1") == evds.date(2024, 1, 1)
+    assert evds._parse_tarih("2024-12") == evds.date(2024, 12, 1)
+
+
+def test_parse_tarih_quarterly_format():
+    assert evds._parse_tarih("2024-Q1") == evds.date(2024, 1, 1)
+    assert evds._parse_tarih("2024-Q3") == evds.date(2024, 7, 1)
+
+
+def test_parse_tarih_yearly_format():
+    assert evds._parse_tarih("2024") == evds.date(2024, 1, 1)
+
+
+def test_parse_tarih_rejects_unknown_format():
+    with pytest.raises(ValueError):
+        evds._parse_tarih("not-a-date")
+
+
+# --- detect_truncation -------------------------------------------------------
+
+
+def test_detect_truncation_false_for_weekly_group_overrunning_year_end():
+    # 2024 requested; last row spills into the next year's first Friday --
+    # that is normal (Friday-anchored weeks don't align to Dec 31), not truncation.
+    df = pd.DataFrame({"Tarih": ["05-01-2024", "27-12-2024", "03-01-2025"]})
+    assert evds.detect_truncation(df, evds.date(2024, 1, 1)) is False
+
+
+def test_detect_truncation_true_when_earliest_rows_silently_dropped():
+    # Measured incident: 2021-2026 requested, response started 2023-12-20.
+    df = pd.DataFrame({"Tarih": ["20-12-2023", "27-12-2023"]})
+    assert evds.detect_truncation(df, evds.date(2021, 1, 1)) is True
+
+
+def test_detect_truncation_false_for_empty_dataframe():
+    assert evds.detect_truncation(pd.DataFrame(), evds.date(2024, 1, 1)) is False
+
+
+# --- fetch_datagroup_year ----------------------------------------------------
+
+
+def test_fetch_datagroup_year_is_idempotent_skips_http_when_cached(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(monkeypatch)
+    out_path = evds._datagroup_year_path("bie_kfe", 2024)
+    out_path.parent.mkdir(parents=True)
+    pd.DataFrame({"Tarih": ["2024-1"], "TP_KFE_TR": ["150.0"]}).to_parquet(out_path)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("should not hit the network when cached")
+
+    monkeypatch.setattr(evds, "_authenticated_get", fail_if_called)
+
+    result = evds.fetch_datagroup_year("bie_kfe", 2024, settings)
+
+    assert result.outcome == "cached"
+
+
+def test_fetch_datagroup_year_writes_parquet_on_ok(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(monkeypatch)
+    rows = [
+        {"Tarih": "2024-1", "TP_KFE_TR": "150.0"},
+        {"Tarih": "2024-2", "TP_KFE_TR": "151.0"},
+    ]
+    monkeypatch.setattr(evds, "_authenticated_get", lambda *_a, **_k: rows)
+
+    result = evds.fetch_datagroup_year("bie_kfe", 2024, settings)
+
+    assert result.outcome == "ok"
+    df = pd.read_parquet(result.path)
+    assert len(df) == 2
+    assert "_fetched_at" in df.columns
+
+
+def test_fetch_datagroup_year_empty_response_writes_no_parquet(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(evds, "_authenticated_get", lambda *_a, **_k: [])
+
+    result = evds.fetch_datagroup_year("bie_hpbitablo6", 2021, settings)
+
+    assert result.outcome == "empty"
+    assert not evds._datagroup_year_path("bie_hpbitablo6", 2021).exists()
+
+
+def test_fetch_datagroup_year_truncated_response_writes_no_parquet(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(monkeypatch)
+    rows = [{"Tarih": "20-12-2023", "TP_KTF12": "40.0"}]
+    monkeypatch.setattr(evds, "_authenticated_get", lambda *_a, **_k: rows)
+
+    result = evds.fetch_datagroup_year("bie_kt100h", 2021, settings)
+
+    assert result.outcome == "truncated"
+    assert not evds._datagroup_year_path("bie_kt100h", 2021).exists()
+
+
+def test_fetch_datagroup_year_network_error_is_caught_and_reported(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(monkeypatch)
+
+    def raise_connection_error(*_args, **_kwargs):
+        raise evds.requests.exceptions.ConnectionError("boom")
+
+    monkeypatch.setattr(evds, "_authenticated_get", raise_connection_error)
+
+    result = evds.fetch_datagroup_year("bie_kfe", 2024, settings)
+
+    assert result.outcome == "failed"
+
+
+def test_fetch_datagroup_year_403_propagates_and_is_not_swallowed(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(monkeypatch)
+
+    def raise_auth_error(*_args, **_kwargs):
+        raise evds.EvdsAuthError("nope")
+
+    monkeypatch.setattr(evds, "_authenticated_get", raise_auth_error)
+
+    with pytest.raises(evds.EvdsAuthError):
+        evds.fetch_datagroup_year("bie_kfe", 2024, settings)
+
+
+# --- fetch_datagroups_years: continues past failures, stops on 403 ----------
+
+
+def test_fetch_datagroups_years_continues_past_failed_groups(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(monkeypatch)
+
+    def fake_authenticated_get(path, _settings):
+        if "bie_broken" in path:
+            raise evds.requests.exceptions.Timeout("slow")
+        return [{"Tarih": "2024-1", "X": "1.0"}]
+
+    monkeypatch.setattr(evds, "_authenticated_get", fake_authenticated_get)
+
+    results = evds.fetch_datagroups_years(["bie_broken", "bie_kfe"], [2024], settings)
+
+    outcomes = {r.datagroup_code: r.outcome for r in results}
+    assert outcomes["bie_broken"] == "failed"
+    assert outcomes["bie_kfe"] == "ok"
+
+
+def test_fetch_datagroups_years_stops_immediately_on_403(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(monkeypatch)
+    calls = []
+
+    def fake_authenticated_get(path, _settings):
+        calls.append(path)
+        raise evds.EvdsAuthError("nope")
+
+    monkeypatch.setattr(evds, "_authenticated_get", fake_authenticated_get)
+
+    with pytest.raises(evds.EvdsAuthError):
+        evds.fetch_datagroups_years(["bie_a", "bie_b"], [2024], settings)
+
+    assert calls == [
+        "datagroup=bie_a&startDate=01-01-2024&endDate=31-12-2024&type=json"
+    ]
+
+
 def test_settings_reads_only_process_environment_not_dotenv_file(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".env").write_text(

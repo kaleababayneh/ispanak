@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "openai>=3,<4",
+    "duckdb>=1.5.5",
     "pandas>=3.0.5",
     "pyarrow>=25.0.1",
     "pydantic-settings>=2.15.0",
