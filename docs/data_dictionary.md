@@ -125,3 +125,21 @@ Faiz (TP.KTF12, aylık ortalama) düşerken konut kredisi bakiyesi
 Nominal bakışta hiçbir örüntü görünmüyor çünkü bakiye enflasyonla zaten
 artıyor. deflate aracının gerekçesi budur ve demoda bu karşılaştırma
 gösterilecek. En belirgin daralma 2026-01 (-19.5M reel).
+
+## Analiz araçları — gerçek veriyle göz kontrolü (16 Eylül)
+
+detect_changes, TP.KTF12 (konut kredisi faizi) serisinde kırılmayı
+**2023-07** olarak buldu: ortalama %18.7 → %40.4, eğim +0.089 → -0.080.
+TCMB'nin Haziran 2023'te sıkılaşmaya dönüşüyle örtüşüyor.
+
+detect_anomalies aynı seride 2023-03..06 aylarını "beklenenin altında"
+işaretledi — sıkılaşma öncesi baskılanmış faiz dönemi.
+
+TP.KFE.TR: kırılma 2023-03, anomali 2023-09/10 (enflasyonun endekse yansıması).
+
+TP.AKONUTSAT1.KTRTOPLAM: anomali ve kırılma YOK. Seri güçlü mevsimsel
+(Aralık zirve, Ocak dip) ama trend kırılması içermiyor; STL mevsimselliği
+ayıklamış, yanlış alarm üretmemiş.
+
+Bilinen kusur: yüzde_değişim kırılma anındaki sıçramayı değil, iki dönem
+ortalaması arasındaki farkı veriyor (KFE'de %230). Düzeltilecek.
