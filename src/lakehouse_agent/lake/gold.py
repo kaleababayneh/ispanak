@@ -12,8 +12,15 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
+from lakehouse_agent.ingest import bddk_monthly
 from lakehouse_agent.ingest.evds import CATALOG_PATH
-from lakehouse_agent.lake.silver import build_silver_observations
+from lakehouse_agent.lake.silver import (
+    BDDK_SOURCE,
+    build_bddk_silver_observations,
+    build_silver_observations,
+)
+
+BDDK_METADATA_URL = "https://www.bddk.org.tr/BultenAylik/"
 
 GOLD_ROOT = Path("data/gold")
 OBSERVATIONS_PATH = GOLD_ROOT / "observations.parquet"
@@ -115,16 +122,86 @@ def build_series_catalog(
     return pd.DataFrame(rows, columns=SERIES_CATALOG_COLUMNS)
 
 
-def build_gold(series_ids: Iterable[str], *, source: str = "evds") -> tuple[Path, Path]:
-    """Assemble silver -> observations.parquet + series_catalog.parquet."""
+def build_bddk_series_catalog(series_ids: Iterable[str]) -> pd.DataFrame:
+    """series_catalog.parquet rows for BDDK series_ids, sourced directly from
+    ingest/bddk_rows.yaml -- there is no BDDK equivalent of the EVDS bronze
+    catalog to join against, the yaml mapping IS the metadata.
+    """
+    wanted = {sid for sid in series_ids if sid.startswith("bddk:")}
+    row_defs = {rd.series_id: rd for rd in bddk_monthly.load_row_definitions()}
+
+    rows = []
+    for series_id in wanted:
+        row_def = row_defs.get(series_id)
+        if row_def is None:
+            raise KeyError(f"{series_id} için ingest/bddk_rows.yaml'da eşleme yok")
+        rows.append(
+            {
+                "series_id": series_id,
+                "name_tr": row_def.satir_etiketi,
+                "name_en": None,
+                "source": BDDK_SOURCE,
+                "freq": "AYLIK",
+                "unit": row_def.unit,
+                "kind": row_def.kind,
+                "agg_method": "last" if row_def.kind == "stock" else None,
+                "cum_type": row_def.cum_type,
+                "start_date": None,
+                "end_date": None,
+                "topic": None,
+                "tags": None,
+                "metadata_url": BDDK_METADATA_URL,
+                "notes": None,
+            }
+        )
+    return pd.DataFrame(rows, columns=SERIES_CATALOG_COLUMNS)
+
+
+def default_series_ids() -> list[str]:
+    """Full known series universe: every EVDS SCENARIO_SERIES key + every
+    BDDK bddk_rows.yaml row. Used by the `python -m lakehouse_agent.lake.gold`
+    (and `.silver`) CLI convenience entrypoints so both process EVDS and
+    BDDK together instead of silently defaulting to EVDS-only.
+    """
+    return list(SCENARIO_SERIES.keys()) + [
+        row_def.series_id for row_def in bddk_monthly.load_row_definitions()
+    ]
+
+
+def build_gold(series_ids: Iterable[str]) -> tuple[Path, Path]:
+    """Assemble silver -> observations.parquet + series_catalog.parquet.
+
+    series_ids may mix "evds:" and "bddk:" prefixes -- each source's silver
+    + catalog builder runs independently and the results are concatenated.
+    """
     series_ids = list(series_ids)
     GOLD_ROOT.mkdir(parents=True, exist_ok=True)
 
-    observations = build_silver_observations(series_ids, source=source)
+    evds_ids = [sid for sid in series_ids if sid.startswith("evds:")]
+    bddk_ids = [sid for sid in series_ids if sid.startswith("bddk:")]
+
+    obs_frames = []
+    catalog_frames = []
+    if evds_ids:
+        obs_frames.append(build_silver_observations(evds_ids, source="evds"))
+        catalog_frames.append(build_series_catalog(evds_ids, source="evds"))
+    if bddk_ids:
+        obs_frames.append(build_bddk_silver_observations(bddk_ids))
+        catalog_frames.append(build_bddk_series_catalog(bddk_ids))
+
+    observations = (
+        pd.concat(obs_frames, ignore_index=True)
+        if obs_frames
+        else pd.DataFrame(columns=OBSERVATIONS_COLUMNS)
+    )
     observations = observations.reindex(columns=OBSERVATIONS_COLUMNS)
     observations.to_parquet(OBSERVATIONS_PATH, index=False)
 
-    catalog = build_series_catalog(series_ids, source=source)
+    catalog = (
+        pd.concat(catalog_frames, ignore_index=True)
+        if catalog_frames
+        else pd.DataFrame(columns=SERIES_CATALOG_COLUMNS)
+    )
     catalog.to_parquet(SERIES_CATALOG_PATH, index=False)
 
     if GOLD_DB_PATH.exists():
@@ -238,3 +315,21 @@ def run_sql(
         return con.execute(stripped, list(params) if params else []).df()
     finally:
         con.close()
+
+
+if __name__ == "__main__":
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    logger = logging.getLogger(__name__)
+
+    ids = default_series_ids()
+    obs_path, catalog_path = build_gold(ids)
+    logger.info(
+        "gold yazıldı: %s, %s (%d seri: evds=%d bddk=%d)",
+        obs_path,
+        catalog_path,
+        len(ids),
+        sum(1 for i in ids if i.startswith("evds:")),
+        sum(1 for i in ids if i.startswith("bddk:")),
+    )

@@ -143,3 +143,35 @@ ayıklamış, yanlış alarm üretmemiş.
 
 Bilinen kusur: yüzde_değişim kırılma anındaki sıçramayı değil, iki dönem
 ortalaması arasındaki farkı veriyor (KFE'de %230). Düzeltilecek.
+
+## Katalog arama indeksi (`lake/catalog.py`, plan 2.5)
+
+`data/bronze/evds/catalog.parquet` 53792 satır — agent'ın arayacağı ham
+kapsam bu kadar büyük olunca embedding maliyeti kabul edilemez hale geliyor
+(tek worker'la ~242 dk, ölçüldü). `filter_catalog()` bu yüzden önce kapsamı
+daraltıyor: arşiv serileri, 2025-06'dan önce bitmiş (ölü) seriler, senaryo
+dışı frekanslar, IMF ülke serileri (`bie_imfcpind`, `bie_imfgdpusdn`) ve
+"konutsat" gruplarının il kırılımları (yalnız TOPLAM kalıyor) çıkarılıyor.
+Sonuç: **53792 → 19646 seri**.
+
+`embed_with_cache()` metni sha256 hash'iyle `data/catalog_emb_cache/`
+altında diske önbelleğe alıyor — aynı metin iki kez embed edilmiyor,
+8 worker paralel çalışıyor. Vektör hiç yoksa veya embedding tamamen
+başarısız olursa `search_catalog(use_vector=False)` yalnızca LanceDB
+full-text index'i (FTS) ile çalışıyor; eş anlamlı yakalama zayıflıyor
+ama arama tamamen durmuyor.
+
+## Senaryo doğrulaması — tam BDDK serisiyle (17 Eylül)
+
+Faiz (TP.KTF12, aylık ort.) düşerken konut kredisi bakiyesi
+(bddk:aylik:tuketici:konut:TL:sektor) davranışı, 2021-01 – 2026-06, 66 ay:
+
+- NOMİNAL bakiyede daralma: **4 ay**
+- REEL bakiyede (TÜFE ile deflate) daralma: **23 ay**
+
+Gözlemlerin üçte birinden fazlası nominal veriyle görünmez. deflate aracının
+gerekçesi budur; demoda bu karşılaştırma gösterilecek.
+En belirgin daralmalar: 2024-01 (-64k reel), 2023-12 (-34k), 2026-01 (-23k).
+
+Not: 16 Eylül'de aynı analiz kısa EVDS serisiyle (TP.HPBITABLO6.3, 2024-06'dan)
+27 ayda 9 sonucu vermişti. BDDK serisi aralığı 2021'e uzatınca örüntü güçlendi.

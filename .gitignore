@@ -16,3 +16,9 @@ CLAUDE.local.md
 smoke_out/
 data/gold/
 data/gold/
+data/
+*.log
+build_index.py
+data/
+*.log
+build_index.py
