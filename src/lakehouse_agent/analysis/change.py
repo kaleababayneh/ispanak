@@ -14,10 +14,25 @@ def _slope(values: np.ndarray) -> float:
     return float(np.polyfit(x, values, 1)[0])
 
 
-def _pct_change(before_mean: float, after_mean: float) -> float:
-    if before_mean == 0:
+def _pct_change(before: float, after: float) -> float:
+    if before == 0:
         return float("nan")
-    return (after_mean - before_mean) / abs(before_mean) * 100
+    return (after - before) / abs(before) * 100
+
+
+def _instant_jump_pct(values: np.ndarray, break_idx: int) -> float:
+    """Percent change between the value AT the breakpoint and the value the
+    period immediately before it -- the actual single-period jump.
+
+    Distinct on purpose from `seviye_degisim_yuzde` (before/after MEAN
+    comparison): a slow drift either side of the break can make the two
+    section means differ by a lot with almost no jump at the break itself.
+    Measured bug: KFE reported "%230.3 değişim" from mean-to-mean alone,
+    which reads as an implausible single-period spike ("endeks bir ayda
+    %230 mü arttı?") -- it wasn't one. Reporting both numbers, labeled,
+    resolves the ambiguity instead of picking one.
+    """
+    return _pct_change(values[break_idx - 1], values[break_idx])
 
 
 def detect_changes(
@@ -39,8 +54,11 @@ def detect_changes(
     within one period of the true change.
 
     Returns one row per breakpoint (tarih, ortalama_öncesi, ortalama_sonrası,
-    eğim_öncesi, eğim_sonrası, yüzde_değişim), computed on the original
-    (non-standardized) values, plus a two-sentence Turkish summary.
+    eğim_öncesi, eğim_sonrası, seviye_degisim_yuzde, sicrama_yuzde), computed
+    on the original (non-standardized) values, plus a two-sentence Turkish
+    summary that names both percentages separately -- see
+    `seviye_degisim_yuzde` vs `sicrama_yuzde` below, they answer different
+    questions and reporting only one is misleading.
     """
     if method != "pelt":
         raise ValueError(f"Bilinmeyen method: {method!r}")
@@ -76,7 +94,8 @@ def detect_changes(
                 "ortalama_sonrası": after_mean,
                 "eğim_öncesi": _slope(before),
                 "eğim_sonrası": _slope(after),
-                "yüzde_değişim": _pct_change(before_mean, after_mean),
+                "seviye_degisim_yuzde": _pct_change(before_mean, after_mean),
+                "sicrama_yuzde": _instant_jump_pct(values, b),
             }
         )
 
@@ -88,17 +107,20 @@ def detect_changes(
             "ortalama_sonrası",
             "eğim_öncesi",
             "eğim_sonrası",
-            "yüzde_değişim",
+            "seviye_degisim_yuzde",
+            "sicrama_yuzde",
         ],
     )
 
     if result.empty:
         summary = "Seride kırılma tespit edilmedi. Seviye ve eğim boyunca istikrarlı."
     else:
-        worst = result.iloc[result["yüzde_değişim"].abs().idxmax()]
+        worst = result.iloc[result["seviye_degisim_yuzde"].abs().idxmax()]
         summary = (
             f"Seride {len(result)} kırılma noktası tespit edildi. "
-            f"En büyük değişim {worst['tarih']} döneminde, %{worst['yüzde_değişim']:.1f} ile gerçekleşti."
+            f"En büyük seviye değişimi {worst['tarih']} döneminde: "
+            f"öncesi/sonrası ortalama %{worst['seviye_degisim_yuzde']:.1f}, "
+            f"kırılma anındaki tek dönem sıçraması %{worst['sicrama_yuzde']:.1f}."
         )
 
     return result, summary

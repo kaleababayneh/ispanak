@@ -203,8 +203,12 @@ def make_detect_changes() -> ToolSpec:
             "ortalama_sonrası": "kırılma sonrası bölümün ortalaması",
             "eğim_öncesi": "kırılma öncesi bölümün doğrusal regresyon eğimi",
             "eğim_sonrası": "kırılma sonrası bölümün doğrusal regresyon eğimi",
-            "yüzde_değişim": (
+            "seviye_degisim_yuzde": (
                 "(ortalama_sonrası - ortalama_öncesi) / |ortalama_öncesi| × 100"
+            ),
+            "sicrama_yuzde": (
+                "kırılma anındaki değer ile bir önceki dönemin değeri arasındaki "
+                "yüzde değişim (anlık sıçrama, ortalama farkı değil)"
             ),
         }
         columns = [

@@ -89,3 +89,13 @@ Sonuç:  A'nın katalog gömme işi güvenli; llm.embed() istediği kadar metin 
 Ayrıca OCR canlı doğrulandı (15 Eyl): geçerli bir PNG ile 314 ms, çıktıda
 rehberin bahsettiği <|det|> yerleşim etiketleri var. Yani Unlimited-OCR yolu
 uçtan uca çalışıyor; web araçları aşamasında yeniden keşfedilmesi gerekmiyor.
+## EVDS tam çekim kapsamı
+Bağlam: 678 veri grubu x 6 yıl = 4068 çağrı hedeflendi. 34 çağrı kalıcı olarak
+        timeout verdi (read timeout=30); ikinci tur da aynı grupları getiremedi.
+        Başarısız gruplar ağırlıklı olarak bie_pydibs / bie_sekbily01a gibi
+        günlük ve çok serili DİBS/bilanço grupları — yanıt boyutu 30 sn'de dönmüyor.
+Karar:  %99.2 kapsam (3384/4068 parquet) yeterli kabul edildi. Timeout'u artırıp
+        tekrar denemek yerine kapsam kalite raporunda açıkça belgelenecek.
+        Senaryo ve eval serilerinin hiçbiri bu gruplarda değil.
+Sonuç:  ingest ağ hatasında durmuyor, logla-atla-devam ediyor; başarısız liste
+        fetch_log'da ve docs/data_quality.md'de görünür.

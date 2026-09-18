@@ -3,6 +3,7 @@ synthetic series with a known break location."""
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from lakehouse_agent.analysis import change
 
@@ -31,6 +32,49 @@ def test_detect_changes_finds_level_break_within_one_period():
     assert abs((detected - expected).days) <= 31
     assert result.iloc[0]["ortalama_öncesi"] < result.iloc[0]["ortalama_sonrası"]
     assert "kırılma" in summary
+
+
+def test_seviye_degisim_and_sicrama_differ_for_a_slow_drift_then_jump():
+    """The KFE bug: a series that drifts steadily before AND after a level
+    shift reports a large ortalama-to-ortalama seviye_degisim_yuzde (the two
+    section means are far apart mostly because of the drift, not because of
+    a single-period spike), while sicrama_yuzde -- the value at the break
+    vs. the value right before it -- reports the much smaller real jump.
+    Measured (KFE): mean-to-mean %230.3 vs. a small actual one-period move.
+    """
+    n = 60
+    break_idx = 30
+    before = 10.0 + np.arange(break_idx) * 0.3
+    after = 20.0 + np.arange(n - break_idx) * 0.3
+    values = np.concatenate([before, after])
+    series = pd.DataFrame({"period": _periods(n), "value": values})
+
+    result, summary = change.detect_changes(series, min_size=10)
+
+    assert len(result) >= 1
+    # The headline row is whichever breakpoint has the largest seviye_degisim_yuzde
+    # (that's what the summary picks too) -- its sicrama_yuzde must be much smaller.
+    worst = result.iloc[result["seviye_degisim_yuzde"].abs().idxmax()]
+    assert abs(worst["seviye_degisim_yuzde"]) > 3 * abs(worst["sicrama_yuzde"])
+    assert "seviye_degisim_yuzde" not in summary  # summary is prose, not a column dump
+    assert "seviye" in summary and "sıçrama" in summary
+    assert f"%{worst['seviye_degisim_yuzde']:.1f}" in summary
+    assert f"%{worst['sicrama_yuzde']:.1f}" in summary
+
+
+def test_sicrama_yuzde_is_pct_change_between_break_and_prior_period():
+    n = 40
+    break_idx = 20
+    values = np.concatenate([np.full(break_idx, 10.0), np.full(n - break_idx, 15.0)])
+    series = pd.DataFrame({"period": _periods(n), "value": values})
+
+    result, _ = change.detect_changes(series, min_size=10)
+
+    assert len(result) >= 1
+    row = result.iloc[0]
+    # A clean step: value right at the break (15.0) vs. right before (10.0).
+    assert row["sicrama_yuzde"] == pytest.approx(50.0)
+    assert row["seviye_degisim_yuzde"] == pytest.approx(50.0)
 
 
 def test_detect_changes_finds_slope_break_within_one_period():

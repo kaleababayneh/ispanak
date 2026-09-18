@@ -141,8 +141,12 @@ TP.AKONUTSAT1.KTRTOPLAM: anomali ve kırılma YOK. Seri güçlü mevsimsel
 (Aralık zirve, Ocak dip) ama trend kırılması içermiyor; STL mevsimselliği
 ayıklamış, yanlış alarm üretmemiş.
 
-Bilinen kusur: yüzde_değişim kırılma anındaki sıçramayı değil, iki dönem
-ortalaması arasındaki farkı veriyor (KFE'de %230). Düzeltilecek.
+**Düzeltildi (18 Eylül):** `yüzde_değişim` tek sütun kırılma anındaki
+sıçramayı değil, iki dönem ortalaması arasındaki farkı veriyordu (KFE'de
+%230.3 — jüri "endeks bir ayda %230 mü arttı?" diye sorardı). İkiye
+ayrıldı: `seviye_degisim_yuzde` (eski hesap, ortalamalar arası fark) ve
+`sicrama_yuzde` (kırılma tarihindeki değer ile bir önceki dönemin değeri
+arasındaki gerçek tek dönem sıçraması). Özet metni ikisini ayrı ayrı adlandırıyor.
 
 ## Katalog arama indeksi (`lake/catalog.py`, plan 2.5)
 

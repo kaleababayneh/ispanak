@@ -263,7 +263,8 @@ def test_detect_changes_finds_level_break(analysis_tools):
         "ortalama_sonrası",
         "eğim_öncesi",
         "eğim_sonrası",
-        "yüzde_değişim",
+        "seviye_degisim_yuzde",
+        "sicrama_yuzde",
     }
     assert all(c.tool == "detect_changes" for c in result.columns)
 
