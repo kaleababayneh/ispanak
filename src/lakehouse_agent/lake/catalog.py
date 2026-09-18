@@ -43,6 +43,25 @@ _mia_client: OpenAI | None = (
     OpenAI(api_key=_mia_api_key, base_url=MIA_BASE_URL) if _mia_api_key else None
 )
 
+# Qwen3-Embedding is ASYMMETRIC: a search query needs this instruction
+# prefix, a document does not. Measured 17 Sep 2026 on the real 19646-row
+# index, manual cosine similarity, query "konut kredisi faiz oranı":
+#   prefixsiz -> "Market ve Alışveriş Merkezleri" 0.710, "Yemek" 0.685  [ÇÖP]
+#   prefixli  -> "TP.KBK.TRY.18 Konut Kredisi" 0.649, "TP.KTF12" 0.641  [DOĞRU]
+# Same pattern for "enflasyon": prefixsiz top hit "P3.Mevduat TL"; prefixli
+# surfaces the actual enflasyon series. Without the prefix the query vector
+# lands in a different region of the embedding space than the (unprefixed)
+# document vectors, so similarity scores are close to noise.
+#
+# The 19646 indexed document vectors were built WITHOUT this prefix and
+# stay that way -- re-embedding them would throw away the 17855-vector disk
+# cache and cost real MIA calls for nothing. Only query-side embedding
+# (`is_query=True`) gets the prefix; document embedding never does.
+QUERY_INSTRUCTION_PREFIX = (
+    "Instruct: Given a web search query, retrieve relevant passages that "
+    "answer the query\nQuery: "
+)
+
 CATALOG_EMB_CACHE_DIR = Path("data/catalog_emb_cache")
 EMBEDDING_DIM = 4096  # Qwen3-Embedding-8B
 
@@ -118,15 +137,24 @@ def build_search_text(row: pd.Series) -> str:
     )
 
 
-def _embed_batch(texts: list[str]) -> np.ndarray:
+def _embed_batch(texts: list[str], is_query: bool = False) -> np.ndarray:
     """Real MIA call -- replace with `lakehouse_agent.llm.embed` once track B
     ships it. Qwen3-Embedding-8B, dim 4096; measured 17.3s/batch of 64 on a
     single worker (hence the 8-worker parallelism in `embed_with_cache`).
+
+    `is_query=True` prepends QUERY_INSTRUCTION_PREFIX to every text (see the
+    measurement above the constant's definition) -- use it ONLY for the
+    search query itself. Document/catalog-row embedding (the default,
+    `is_query=False`) must never get this prefix: the indexed vectors were
+    built without it, and this model's asymmetric scheme specifically wants
+    an unprefixed corpus against a prefixed query, not both prefixed.
     """
     if _mia_client is None:
         raise RuntimeError(
             "MIA_API_KEY ortam değişkeni ayarlı değil; embed edilemiyor."
         )
+    if is_query:
+        texts = [QUERY_INSTRUCTION_PREFIX + text for text in texts]
     resp = _mia_client.embeddings.create(
         model=MIA_EMBEDDING_MODEL, input=texts, encoding_format="float"
     )
@@ -229,14 +257,27 @@ def embed_with_cache(
 
 def build_catalog_index(
     df: pd.DataFrame,
-    table_path: str | Path,
+    db_uri: str | Path,
     *,
+    table_name: str = "catalog",
     cache_dir: Path = CATALOG_EMB_CACHE_DIR,
     embed_fn=_embed_batch,
     with_vectors: bool = True,
 ) -> lancedb.table.Table:  # noqa: F821 -- lazy import below
     """Filter, build search text, optionally embed, and write a LanceDB
     table with a full-text index on `text`.
+
+    `db_uri` is a LanceDB **database directory** (created if missing), not a
+    table path -- LanceDB itself names the table's on-disk dataset
+    `<db_uri>/<table_name>.lance`. Passing something like ".../catalog.lance"
+    as `db_uri` with the default `table_name` used to silently create
+    ".../catalog.lance/catalog.lance" (`db_uri`'s parent as the DB, `.name`
+    as the table) -- a caller reconnecting to the exact `db_uri` they passed
+    in then saw an empty database. `db_uri` is now used as-is, so reconnecting
+    to it is symmetric:
+
+        >>> catalog.build_catalog_index(filtered_df, "data/catalog.lance")
+        >>> lancedb.connect("data/catalog.lance").open_table("catalog").count_rows()
     """
     import lancedb
     from lancedb.index import FTS
@@ -252,8 +293,8 @@ def build_catalog_index(
         if failed:
             logger.warning("build_catalog_index: %d satır vektörsüz kaldı", len(failed))
 
-    db = lancedb.connect(str(Path(table_path).parent))
-    table = db.create_table(Path(table_path).name, filtered, mode="overwrite")
+    db = lancedb.connect(str(db_uri))
+    table = db.create_table(table_name, filtered, mode="overwrite")
     table.create_index("text", config=FTS())
     return table
 
@@ -268,6 +309,24 @@ def _reciprocal_rank_fusion(
     return sorted(scores, key=scores.get, reverse=True)
 
 
+def _exact_code_match(table: lancedb.table.Table, query: str) -> pd.DataFrame:  # noqa: F821
+    """Direct, table-wide lookup for `query` as a literal SERIE_CODE.
+
+    Deliberately independent of the FTS/vector top-k hit lists: a dotted
+    code like "TP.KTF12" is not natural-language text, so nothing guarantees
+    it ranks inside either search's top-k window on a 19646-row index (that
+    was the bug -- checking only the already-fetched hits meant this path
+    almost never fired). A `.where()` filter scans the whole table instead.
+    """
+    escaped = query.strip().replace("'", "''")
+    return (
+        table.search()
+        .where(f"UPPER(SERIE_CODE) = UPPER('{escaped}')")
+        .limit(1)
+        .to_pandas()
+    )
+
+
 def search_catalog(
     query: str,
     table: lancedb.table.Table,  # noqa: F821
@@ -280,15 +339,26 @@ def search_catalog(
 
     Falls back to full-text-only when `use_vector=False` or the table has
     no `vector` column. A query starting with "TP." gets its exact
-    SERIE_CODE match pinned to the top of the results.
+    SERIE_CODE match pinned to the top of the results, found by scanning the
+    whole table (`_exact_code_match`), not just the top-k hit lists.
+
+    The query vector is embedded with `is_query=True` (Qwen3-Embedding's
+    asymmetric instruction prefix, see `QUERY_INSTRUCTION_PREFIX`) -- the
+    indexed document vectors have no prefix, so this must not either.
     """
     has_vector_column = "vector" in table.schema.names
+
+    exact_hit = None
+    if query.strip().upper().startswith("TP."):
+        hit = _exact_code_match(table, query)
+        if not hit.empty:
+            exact_hit = hit
 
     fts_hits = table.search(query, query_type="fts").limit(top_k * 2).to_pandas()
     fts_ranking = list(fts_hits["SERIE_CODE"])
 
     if use_vector and has_vector_column:
-        query_vector = embed_fn([query])[0]
+        query_vector = embed_fn([query], is_query=True)[0]
         vector_hits = table.search(query_vector).limit(top_k * 2).to_pandas()
         vector_ranking = list(vector_hits["SERIE_CODE"])
         fused_codes = _reciprocal_rank_fusion([vector_ranking, fts_ranking])
@@ -297,11 +367,10 @@ def search_catalog(
         fused_codes = fts_ranking
         all_hits = fts_hits.drop_duplicates("SERIE_CODE")
 
-    if query.strip().upper().startswith("TP."):
-        exact = all_hits[all_hits["SERIE_CODE"].str.upper() == query.strip().upper()]
-        if not exact.empty:
-            exact_code = exact.iloc[0]["SERIE_CODE"]
-            fused_codes = [exact_code] + [c for c in fused_codes if c != exact_code]
+    if exact_hit is not None:
+        exact_code = exact_hit.iloc[0]["SERIE_CODE"]
+        all_hits = pd.concat([exact_hit, all_hits]).drop_duplicates("SERIE_CODE")
+        fused_codes = [exact_code] + [c for c in fused_codes if c != exact_code]
 
     ordered = fused_codes[:top_k]
     all_hits = all_hits.set_index("SERIE_CODE")

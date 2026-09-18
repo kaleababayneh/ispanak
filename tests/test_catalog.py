@@ -4,7 +4,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from lakehouse_agent.lake import catalog
 from lakehouse_agent.lake.catalog import (
+    QUERY_INSTRUCTION_PREFIX,
+    _exact_code_match,
     build_catalog_index,
     build_search_text,
     embed_with_cache,
@@ -114,8 +117,16 @@ def test_embed_with_cache_skips_previously_embedded_text(tmp_path):
     np.testing.assert_array_equal(vectors1, vectors2)
 
 
-def _fake_embed_deterministic(texts):
-    """Synthetic embedding: hash-based, deterministic, dim 8."""
+def _fake_embed_deterministic(texts, is_query: bool = False):
+    """Synthetic embedding: hash-based, deterministic, dim 8.
+
+    Honors `is_query` the same way the real `_embed_batch` does (prepend
+    the instruction prefix before hashing), so a query and a document with
+    otherwise-identical text still land on different fake vectors -- the
+    same asymmetry the real model has.
+    """
+    if is_query:
+        texts = [QUERY_INSTRUCTION_PREFIX + t for t in texts]
     out = []
     for t in texts:
         rng = np.random.default_rng(abs(hash(t)) % (2**32))
@@ -157,3 +168,105 @@ def test_search_catalog_fallback_without_vector(tmp_path):
     results = search_catalog("konut", table, top_k=5, use_vector=False)
     assert not results.empty
     assert "vector" not in results.columns
+
+
+class _FakeMiaResponseItem:
+    def __init__(self, embedding):
+        self.embedding = embedding
+
+
+class _FakeMiaResponse:
+    def __init__(self, n: int):
+        self.data = [_FakeMiaResponseItem([0.0] * 8) for _ in range(n)]
+
+
+class _FakeMiaClient:
+    """Spies on the `input=` list actually sent to MIA, without a real call."""
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+
+        class _Embeddings:
+            def create(inner_self, model, input, encoding_format):
+                self.calls.append(list(input))
+                return _FakeMiaResponse(len(input))
+
+        self.embeddings = _Embeddings()
+
+
+def test_embed_batch_prepends_instruction_prefix_only_for_queries(monkeypatch):
+    fake_client = _FakeMiaClient()
+    monkeypatch.setattr(catalog, "_mia_client", fake_client)
+
+    catalog._embed_batch(["konut kredisi"], is_query=False)
+    assert fake_client.calls[-1] == ["konut kredisi"]
+
+    catalog._embed_batch(["konut kredisi"], is_query=True)
+    assert fake_client.calls[-1] == [QUERY_INSTRUCTION_PREFIX + "konut kredisi"]
+
+
+def test_search_catalog_embeds_query_with_instruction_prefix(catalog_table):
+    """Regression: search_catalog must ask for the QUERY-side embedding
+    (is_query=True), never the document-side one -- Qwen3-Embedding is
+    asymmetric (see catalog.QUERY_INSTRUCTION_PREFIX)."""
+    calls = []
+
+    def spy_embed(texts, is_query=False):
+        calls.append((list(texts), is_query))
+        return _fake_embed_deterministic(texts, is_query=is_query)
+
+    search_catalog(
+        "konut kredisi faiz oranı", catalog_table, top_k=5, embed_fn=spy_embed
+    )
+
+    assert calls, "embed_fn hiç çağrılmadı"
+    texts, is_query = calls[0]
+    assert texts == ["konut kredisi faiz oranı"]
+    assert is_query is True
+
+
+def test_exact_code_match_finds_row_independent_of_ranking(tmp_path):
+    """Regression: the old code only looked for an exact SERIE_CODE match
+    inside the already-fetched FTS/vector top-k hit lists. Since
+    build_search_text() never puts SERIE_CODE into the indexed `text`
+    field, a code query like "TP.KTF12" has no reason to rank inside any
+    top-k window on a large table -- that's exactly why the pinning never
+    fired on the real 19646-row index. `_exact_code_match` must find the
+    row via a direct table-wide filter, regardless of top-k or ranking.
+    """
+    decoys = [_row(f"TP.DECOY{i}", serie_name=f"Alakasız Seri {i}") for i in range(30)]
+    target = _row("TP.KTF12", serie_name=SCENARIO_NAMES["TP.KTF12"])
+    df = pd.DataFrame([*decoys, target])
+    df = df.copy()
+    df["text"] = df.apply(build_search_text, axis=1)
+
+    import lancedb
+
+    db = lancedb.connect(str(tmp_path))
+    table = db.create_table("catalog_many_decoys", df, mode="overwrite")
+
+    result = _exact_code_match(table, "tp.ktf12")  # case-insensitive too
+
+    assert len(result) == 1
+    assert result.iloc[0]["SERIE_CODE"] == "TP.KTF12"
+
+
+def test_search_catalog_exact_match_wins_even_with_tiny_top_k(tmp_path):
+    decoys = [_row(f"TP.DECOY{i}", serie_name=f"Alakasız Seri {i}") for i in range(30)]
+    target = _row("TP.KTF12", serie_name=SCENARIO_NAMES["TP.KTF12"])
+    df = pd.DataFrame([*decoys, target])
+
+    table = build_catalog_index(
+        df,
+        tmp_path / "catalog.lance",
+        cache_dir=tmp_path / "emb_cache",
+        embed_fn=_fake_embed_deterministic,
+        with_vectors=True,
+    )
+
+    results = search_catalog(
+        "TP.KTF12", table, top_k=1, embed_fn=_fake_embed_deterministic
+    )
+
+    assert len(results) == 1
+    assert results.iloc[0]["SERIE_CODE"] == "TP.KTF12"
