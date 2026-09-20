@@ -29,16 +29,22 @@ import pytest
 from lakehouse_agent.contracts import SeriesNotFound
 from lakehouse_agent.testing import FakeLake
 
-#: The lake surface `docs/contracts.md` promises the agent lane.
-REQUIRED_FUNCTIONS = (
-    "get",
-    "wide",
-    "to_freq",
-    "search",
-    "catalog_lookup",
-    "prepare_table",
-    "profile_table",
-)
+#: The lake surface `docs/contracts.md` promises the agent lane, with the
+#: parameter names it promises for each. Names, not just presence: a `to_freq`
+#: that takes `(df, kind, freq)` satisfies "the function exists" while being
+#: uncallable by anything written against `(df, target, kind, agg_method)`, and
+#: the caller finds out at the call site rather than here.
+REQUIRED_SIGNATURES = {
+    "get": ["series_ids", "start", "end"],
+    "wide": ["series_ids", "start", "end", "freq"],
+    "to_freq": ["df", "target", "kind", "agg_method"],
+    "search": ["query", "k"],
+    "catalog_lookup": ["series_ids"],
+    "prepare_table": ["df", "hints"],
+    "profile_table": ["df"],
+}
+
+REQUIRED_FUNCTIONS = tuple(REQUIRED_SIGNATURES)
 
 #: Present in both implementations, so it can anchor a shape assertion.
 SHARED_SERIES = "evds:TP.KTF12"
@@ -99,9 +105,16 @@ def test_every_contracted_function_exists(lake):
     )
 
 
-def test_get_takes_series_ids_start_and_end(lake):
-    signature = inspect.signature(lake.get)
-    assert list(signature.parameters)[:3] == ["series_ids", "start", "end"]
+@pytest.mark.parametrize("name", REQUIRED_FUNCTIONS)
+def test_each_function_takes_the_contracted_parameters(lake, name):
+    """Checked per function, so a failure names the one that drifted."""
+    if not hasattr(lake, name):
+        pytest.skip(f"{name} yok; eksik imzalari test_every_contracted_* raporluyor")
+    actual = list(inspect.signature(getattr(lake, name)).parameters)
+    expected = REQUIRED_SIGNATURES[name]
+    assert actual[: len(expected)] == expected, (
+        f"{name}: sozlesme {expected} diyor, gelen {actual}"
+    )
 
 
 # --- what get() accepts ----------------------------------------------------

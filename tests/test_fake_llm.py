@@ -74,6 +74,18 @@ def test_every_call_is_recorded_with_its_arguments():
     assert call["session_id"] == "s1"
 
 
+def test_schema_and_tools_are_recorded_too():
+    """A loop test asserting "the planner asked for a schema, the observer did
+    not" reads these two fields; if they were dropped the assertion would pass
+    against a call that never carried them."""
+    llm = FakeLLM([FakeLLM.structured({"a": 1})])
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}}
+    llm.chat([{"role": "user", "content": "q"}], tools=[{"name": "t"}], schema=schema)
+    call = llm.calls[-1]
+    assert call["schema"] == schema
+    assert call["tools"] == [{"name": "t"}]
+
+
 def test_recorded_messages_are_copies_not_live_references():
     """A test asserting on `calls` after the loop mutated its own message list
     would otherwise read the mutated version and quietly agree with itself."""
@@ -119,6 +131,23 @@ def test_several_tool_calls_are_trimmed_in_both_places():
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "a"
     assert len(result.raw_message["tool_calls"]) == 1
+
+
+def test_a_tool_call_can_carry_content_alongside_it():
+    """MIA does emit both at once when thinking is on, and the loop has to keep
+    the text while still acting on the call."""
+    result = FakeLLM.tool_call("get_series", {}, content="Once seriyi getireyim.")
+    assert result.content == "Once seriyi getireyim."
+    assert result.tool_calls[0].name == "get_series"
+    assert result.as_message()["content"] == "Once seriyi getireyim."
+
+
+def test_call_ids_can_be_set_so_a_test_can_match_the_tool_message_back():
+    """Every tool message must answer a specific `tool_call_id`; a test that
+    checks the loop paired them needs to choose the id."""
+    result = FakeLLM.tool_calls([("a", {})], ids=["call_ozel"])
+    assert result.tool_calls[0].id == "call_ozel"
+    assert result.raw_message["tool_calls"][0]["id"] == "call_ozel"
 
 
 def test_bad_json_tool_call_reports_instead_of_raising():

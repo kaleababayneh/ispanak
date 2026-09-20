@@ -136,6 +136,35 @@ _OBSERVATION_COLUMNS = [
 
 _AGG_FOR_KIND = {"stock": "last", "flow": "sum", "rate": "mean", "index": "mean"}
 
+#: How coarse each frequency is. `to_freq` only ever moves up this scale.
+_FREQ_RANK = {"D": 0, "W": 1, "M": 2, "Q": 3, "A": 4}
+
+_YEAR_MONTH = re.compile(r"^\d{4}-\d{2}$")
+_YEAR_MONTH_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _window(start: str, end: str) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Parse the contract's `YYYY-MM` window, `YYYY-MM-DD` also accepted.
+
+    Validated rather than concatenated. `pd.Timestamp(start + "-01")` happily
+    accepts `"2021-1"` and `"2021-01-15"` too, quietly returning a different
+    window than the caller meant -- a typo then reads as a short result rather
+    than as an error. `YYYY-MM` covers the whole month on both ends, which is
+    what "2021-01 .. 2021-06" means to someone asking a question.
+    """
+
+    def one(value: str, *, is_end: bool) -> pd.Timestamp:
+        if _YEAR_MONTH.fullmatch(value):
+            stamp = pd.Timestamp(value + "-01")
+            return stamp + pd.offsets.MonthEnd(0) if is_end else stamp
+        if _YEAR_MONTH_DAY.fullmatch(value):
+            return pd.Timestamp(value)
+        raise ValueError(
+            f"Tarih bicimi 'YYYY-MM' (ya da 'YYYY-MM-DD') olmali, verilen: {value!r}"
+        )
+
+    return one(start, is_end=False), one(end, is_end=True)
+
 
 def _months() -> pd.DatetimeIndex:
     return pd.date_range(START + "-01", END + "-01", freq="MS")
@@ -289,6 +318,31 @@ def synthetic_observations() -> pd.DataFrame:
     return out[_OBSERVATION_COLUMNS]
 
 
+def _infer_freq(periods: pd.Series) -> str | None:
+    """Guess a series' own frequency from the gaps between its periods.
+
+    Returns None when there is too little to tell (fewer than two rows) or the
+    spacing matches nothing known -- the caller then allows the conversion
+    rather than refusing on a guess.
+    """
+    if len(periods) < 2:
+        return None
+    gap = pd.to_datetime(periods).sort_values().diff().dt.days.median()
+    if pd.isna(gap):
+        return None
+    if gap <= 2:
+        return "D"
+    if 6 <= gap <= 8:
+        return "W"
+    if 27 <= gap <= 32:
+        return "M"
+    if 88 <= gap <= 93:
+        return "Q"
+    if 360 <= gap <= 370:
+        return "A"
+    return None
+
+
 class FakeLake:
     """Same call signatures as the real data lane, synthetic numbers behind them."""
 
@@ -303,8 +357,7 @@ class FakeLake:
         if missing:
             raise SeriesNotFound(missing, "Once search_catalog ile arama yapin.")
 
-        lo = pd.Timestamp(start + "-01")
-        hi = pd.Timestamp(end + "-01") + pd.offsets.MonthEnd(0)
+        lo, hi = _window(start, end)
         frame = self._observations
         mask = (
             frame["series_id"].isin(series_ids)
@@ -372,14 +425,32 @@ class FakeLake:
                 f"Desteklenmeyen hedef frekans: {target!r}. "
                 f"Desteklenenler: {', '.join(sorted(offsets))}."
             )
+
+        source = _infer_freq(df["period"])
+        if source is not None and _FREQ_RANK[source] > _FREQ_RANK[target]:
+            # Both this module's docstring and docs/contracts.md say only
+            # high-to-low is supported; without this check the claim was only a
+            # comment. Resampling monthly rows to weeks does not invent numbers
+            # -- the empty weeks drop out -- but it relabels monthly
+            # observations as weekly ones, and everything downstream believes
+            # the label.
+            raise ValueError(
+                f"Yuksek frekansa cevirme desteklenmiyor: {source} -> {target}. "
+                "Dusuk frekanstan yuksege gitmek veri icat etmektir."
+            )
+
         offset = offsets[target]
-        grouped = (
-            df.set_index("period")["value"]
-            .resample(offset)
-            .agg(how)
-            .dropna()
-            .reset_index()
-        )
+        resampled = df.set_index("period")["value"].resample(offset)
+        if how == "sum":
+            # min_count=1, because `.sum()` of an empty window is 0.0, not NaN.
+            # A month with no observations would otherwise be reported as a
+            # real zero -- exactly the fabricated value CLAUDE.md #2 forbids,
+            # and the real `analysis/transforms.to_freq` gets this right.
+            aggregated = resampled.sum(min_count=1)
+        else:
+            aggregated = getattr(resampled, how)()
+
+        grouped = aggregated.dropna().reset_index()
         grouped["period"] = pd.to_datetime(grouped["period"])
         return grouped
 

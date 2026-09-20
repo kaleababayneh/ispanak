@@ -14,9 +14,11 @@ from lakehouse_agent.testing.fake_lake import (
     CPI_BASE_YEAR,
     CPI_SERIES,
     CREDIT_SERIES,
+    HPI_SERIES,
     PLANTED_RATE_DOWN_CREDIT_FLAT,
     RATE_SERIES,
     RATE_STOCK_SERIES,
+    _infer_freq,
 )
 
 OBSERVATION_COLUMNS = [
@@ -276,6 +278,128 @@ def test_wide_rejects_duplicate_series_ids(fake_lake):
     quietly break the one-column-per-series promise."""
     with pytest.raises(ValueError, match="tekrar"):
         fake_lake.wide([RATE_SERIES, RATE_SERIES], "2021-01", "2021-06")
+
+
+def test_to_freq_refuses_to_go_up_in_frequency(fake_lake):
+    """Monthly rows resampled to weeks do not invent numbers -- the empty weeks
+    drop out -- but they relabel monthly observations as weekly ones, and every
+    reader downstream trusts the label. Both this module and docs/contracts.md
+    say high-to-low only; before this check that was only prose."""
+    monthly = pd.DataFrame(
+        {
+            "period": pd.date_range("2021-01-01", periods=4, freq="MS"),
+            "value": [1.0, 2, 3, 4],
+        }
+    )
+    with pytest.raises(ValueError, match="Yuksek frekansa"):
+        fake_lake.to_freq(monthly, "W", "index", "avg")
+
+
+def test_wide_refuses_to_go_up_in_frequency(fake_lake):
+    with pytest.raises(ValueError, match="Yuksek frekansa"):
+        fake_lake.wide([HPI_SERIES], "2021-01", "2021-06", freq="W")
+
+
+def test_a_flow_month_with_no_observations_stays_missing(fake_lake):
+    """`.sum()` of an empty window is 0.0, not NaN, so a month with no data
+    would be reported as a real zero -- a fabricated number, and the one thing
+    CLAUDE.md #2 forbids outright."""
+    sparse = pd.DataFrame(
+        {
+            "period": pd.to_datetime(["2021-01-04", "2021-01-11", "2021-03-01"]),
+            "value": [10.0, 10.0, 5.0],
+        }
+    )
+    monthly = fake_lake.to_freq(sparse, "M", "flow", "sum")
+    months = monthly["period"].dt.strftime("%Y-%m").tolist()
+    assert months == ["2021-01", "2021-03"]
+    assert monthly["value"].tolist() == [20.0, 5.0]
+
+
+def test_to_freq_still_aggregates_downwards(fake_lake):
+    """The guard must not block the conversion the scenario actually needs."""
+    weekly = fake_lake.wide([RATE_SERIES], "2021-01", "2021-06")
+    assert len(weekly) == 6
+
+
+# --- accepted date formats -------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["2021-1", "21-01", "2021/01", "saçma", ""])
+def test_get_rejects_dates_that_are_not_the_contract_format(fake_lake, bad):
+    """Built by string concatenation, `"2021-1" + "-01"` parses fine and returns
+    a window the caller never asked for. A typo has to be an error, not a
+    quietly shorter result."""
+    with pytest.raises(ValueError, match="Tarih bicimi"):
+        fake_lake.get([RATE_SERIES], bad, "2021-06")
+
+
+def test_get_accepts_both_contract_formats(fake_lake):
+    assert not fake_lake.get([HPI_SERIES], "2021-01", "2021-03").empty
+    assert not fake_lake.get([HPI_SERIES], "2021-01-01", "2021-03-31").empty
+
+
+@pytest.mark.parametrize(
+    ("freq", "expected"),
+    [
+        ("D", "D"),
+        ("W-MON", "W"),
+        ("MS", "M"),
+        ("QS", "Q"),
+        ("YS", "A"),
+    ],
+)
+def test_infer_freq_reads_the_spacing_between_periods(freq, expected):
+    """The upsampling guard decides on this, so each rung of the ladder is
+    pinned: a `Q` misread as `M` would let a quarterly series be "aggregated"
+    to months, which is the exact conversion the guard exists to refuse."""
+    periods = pd.Series(pd.date_range("2021-01-01", periods=8, freq=freq))
+    assert _infer_freq(periods) == expected
+
+
+@pytest.mark.parametrize(
+    "periods",
+    [
+        pd.Series(pd.to_datetime(["2021-01-01"])),
+        pd.Series(pd.to_datetime(["2021-01-01", "2021-02-14", "2021-09-03"])),
+    ],
+    ids=["tek satir", "duzensiz araliklar"],
+)
+def test_infer_freq_says_it_does_not_know_rather_than_guessing(periods):
+    """None means "cannot tell", and the caller then allows the conversion.
+    Refusing on a guess would block a legitimate call on no evidence."""
+    assert _infer_freq(periods) is None
+
+
+def test_to_freq_allows_a_conversion_it_cannot_judge(fake_lake):
+    """Two rows are not enough to infer a frequency, so the guard stands down
+    instead of blocking."""
+    two = pd.DataFrame(
+        {"period": pd.to_datetime(["2021-01-01", "2021-02-01"]), "value": [1.0, 2.0]}
+    )
+    assert len(fake_lake.to_freq(two, "M", "index", "avg")) == 2
+
+
+def test_catalog_lookup_names_the_series_it_could_not_find(fake_lake):
+    """The loop turns this into a message the model can act on; an empty frame
+    would leave it reporting "no data" for what is really a typo."""
+    with pytest.raises(SeriesNotFound) as caught:
+        fake_lake.catalog_lookup([RATE_SERIES, "evds:BOYLE.BIR.SERI.YOK"])
+    assert "evds:BOYLE.BIR.SERI.YOK" in str(caught.value)
+
+
+def test_profile_table_says_so_when_the_frequency_is_irregular(fake_lake):
+    """This line is what a human reads on the quality card before approving a
+    table, so it has to have been run at least once."""
+    irregular = pd.DataFrame(
+        {
+            "period": pd.to_datetime(["2021-01-01", "2021-01-09", "2021-05-20"]),
+            "value": [1.0, 2.0, 3.0],
+        }
+    )
+    report = fake_lake.profile_table(irregular)
+    assert report.freq is None
+    assert any("Frekans" in issue for issue in report.issues), report.issues
 
 
 def test_to_freq_rejects_unsupported_frequencies(fake_lake):
