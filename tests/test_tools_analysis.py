@@ -16,6 +16,7 @@ import types
 
 import numpy as np
 import pandas as pd
+import pydantic
 import pytest
 
 _STUBBED_MODULES = [
@@ -94,9 +95,15 @@ class StubToolSpec:
 
 
 def _install_stub_modules():
+    # contracts.py itself has no heavy deps (only pydantic) -- reuse its real
+    # TableRef so the hallucination-shield pattern is actually exercised,
+    # not re-approximated here (SINGLE DEFINITION RULE, contracts.py).
+    from lakehouse_agent.contracts import TableRef as _real_table_ref
+
     contracts_mod = types.ModuleType("lakehouse_agent.contracts")
     contracts_mod.ColumnInfo = StubColumnInfo
     contracts_mod.ToolResult = StubToolResult
+    contracts_mod.TableRef = _real_table_ref
 
     agent_pkg = types.ModuleType("lakehouse_agent.agent")
     agent_context_mod = types.ModuleType("lakehouse_agent.agent.context")
@@ -149,6 +156,24 @@ def _monthly_periods(n: int):
     return pd.date_range("2020-01-01", periods=n, freq="MS")
 
 
+def test_detect_anomalies_args_rejects_hallucinated_table_ref(analysis_tools):
+    """Halüsinasyon kalkanı: table_ref contracts.py'nin TableRef'i olmalı
+    (^t\\d{2}_[a-z][a-z0-9_]{0,24}$) -- model uydurma bir ad verirse Pydantic
+    aracı hiç çalıştırmadan reddetmeli, düz str'de olduğu gibi sessizce
+    geçmemeli."""
+    from lakehouse_agent.tools.analysis import DetectAnomaliesArgs
+
+    with pytest.raises(pydantic.ValidationError):
+        DetectAnomaliesArgs(table_ref="konut_tablosu", column="TP_KTF12")
+
+
+def test_detect_changes_args_rejects_hallucinated_table_ref(analysis_tools):
+    from lakehouse_agent.tools.analysis import DetectChangesArgs
+
+    with pytest.raises(pydantic.ValidationError):
+        DetectChangesArgs(table_ref="konut_tablosu", column="TP_KTF12")
+
+
 def test_detect_anomalies_flags_point_anomaly(analysis_tools):
     n = 36
     values = 10.0 + np.sin(np.arange(n) * 2 * np.pi / 12)
@@ -196,6 +221,27 @@ def test_detect_anomalies_short_series_warns_about_iqr_fallback(analysis_tools):
 
     assert result.ok is True
     assert any("IQR" in w for w in result.warnings)
+
+
+def test_detect_anomalies_iqr_path_uses_tukey_formula_text(analysis_tools):
+    """B'nin ölçtüğü: IQR yolunda formül metni hâlâ STL/MAD diyordu, z de
+    (MAD sıfıra dejenere olduğu için) 0.00 gösteriyordu. Artık IQR yolunda
+    formül metni Tukey çitini adlandırıyor."""
+    n = 12
+    values = [10.0] * 11 + [100.0]
+    frame = pd.DataFrame({"period": _monthly_periods(n), "TP_KTF12": values})
+
+    from lakehouse_agent.tools.analysis import DetectAnomaliesArgs
+
+    ctx = _new_ctx(
+        analysis_tools, {"t01_get_series": frame}, active_table="t01_get_series"
+    )
+    args = DetectAnomaliesArgs(column="TP_KTF12")
+
+    result = analysis_tools.make_detect_anomalies().fn(args, ctx)
+
+    z_col = next(c for c in result.columns if c.name == "z")
+    assert "çit" in z_col.formula.lower() or "tukey" in z_col.formula.lower()
 
 
 def test_detect_anomalies_missing_column_returns_ok_false(analysis_tools):
@@ -267,6 +313,88 @@ def test_detect_changes_finds_level_break(analysis_tools):
         "sicrama_yuzde",
     }
     assert all(c.tool == "detect_changes" for c in result.columns)
+
+
+def test_detect_anomalies_wraps_unexpected_exception_as_ok_false(
+    analysis_tools, monkeypatch
+):
+    def _boom(series, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(analysis_tools, "detect_anomalies", _boom)
+
+    frame = pd.DataFrame({"period": _monthly_periods(10), "value_col": range(10)})
+    from lakehouse_agent.tools.analysis import DetectAnomaliesArgs
+
+    ctx = _new_ctx(
+        analysis_tools, {"t01_get_series": frame}, active_table="t01_get_series"
+    )
+    args = DetectAnomaliesArgs(column="value_col")
+
+    result = analysis_tools.make_detect_anomalies().fn(args, ctx)
+
+    assert result.ok is False
+    assert "boom" in result.summary
+
+
+def test_detect_changes_wraps_unexpected_exception_as_ok_false(
+    analysis_tools, monkeypatch
+):
+    def _boom(series):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(analysis_tools, "detect_changes", _boom)
+
+    frame = pd.DataFrame({"period": _monthly_periods(10), "value_col": range(10)})
+    from lakehouse_agent.tools.analysis import DetectChangesArgs
+
+    ctx = _new_ctx(
+        analysis_tools, {"t01_get_series": frame}, active_table="t01_get_series"
+    )
+    args = DetectChangesArgs(column="value_col")
+
+    result = analysis_tools.make_detect_changes().fn(args, ctx)
+
+    assert result.ok is False
+    assert "boom" in result.summary
+
+
+def test_detect_anomalies_derives_stl_period_from_column_freq(
+    analysis_tools, monkeypatch
+):
+    captured = {}
+
+    def spy(series, **kwargs):
+        captured.update(kwargs)
+        return (
+            pd.DataFrame(columns=["dönem", "gözlenen", "beklenen", "z", "yön"]),
+            "ok",
+        )
+
+    monkeypatch.setattr(analysis_tools, "detect_anomalies", spy)
+
+    n = 30
+    frame = pd.DataFrame(
+        {"period": _monthly_periods(n), "TP_KTF12": np.arange(n, dtype=float)}
+    )
+    from lakehouse_agent.tools.analysis import DetectAnomaliesArgs
+
+    lineage = {
+        "t01_get_series.TP_KTF12": StubColumnInfo(
+            source_series=["evds:TP.KTF12"], freq="W"
+        )
+    }
+    ctx = _new_ctx(
+        analysis_tools,
+        {"t01_get_series": frame},
+        active_table="t01_get_series",
+        lineage=lineage,
+    )
+    args = DetectAnomaliesArgs(column="TP_KTF12")
+
+    analysis_tools.make_detect_anomalies().fn(args, ctx)
+
+    assert captured.get("period") == 52
 
 
 def test_detect_changes_missing_column_returns_ok_false(analysis_tools):

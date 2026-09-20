@@ -482,7 +482,6 @@ requires-dist = [
     { name = "lancedb", specifier = ">=0.38.0" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "openai", specifier = ">=3,<4" },
-    { name = "openai", specifier = ">=3.14.1" },
     { name = "pandas", specifier = ">=3.0.5" },
     { name = "pyarrow", specifier = ">=25.0.1" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },

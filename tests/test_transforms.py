@@ -1,10 +1,12 @@
 """Tests for lakehouse_agent.analysis.transforms. Pure functions, no
 network/model/session -- small hand-computed examples only."""
 
+import logging
 import math
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from lakehouse_agent.analysis import transforms
 
@@ -57,6 +59,53 @@ def test_to_freq_flow_all_nan_window_stays_nan_not_zero():
     assert math.isnan(result["value"].iloc[0])
 
 
+def test_to_freq_period_stays_datetime64_not_object():
+    df = _series(
+        [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)], [10.0, 20.0, 30.0]
+    )
+
+    result, _ = transforms.to_freq(df, "stock", "QS")
+
+    assert pd.api.types.is_datetime64_any_dtype(result["period"])
+
+
+def test_to_freq_output_merges_with_datetime64_period_via_deflate():
+    """Regression: to_freq() used to downcast `period` to python `date`
+    objects (object dtype) via `.dt.date`; deflate/align_join's
+    pd.merge(..., on="period") then raised ValueError when the other side
+    was datetime64 -- B'nin ölçtüğü çökme."""
+    monthly = _series(
+        [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)], [10.0, 20.0, 30.0]
+    )
+    quarterly, _ = transforms.to_freq(monthly, "flow", "QS")
+    price_index = pd.DataFrame(
+        {"period": pd.to_datetime(["2024-01-01"]), "value": [100.0]}
+    )
+
+    result, _ = transforms.deflate(quarterly, price_index)
+
+    assert len(result) == 1
+    assert result["value"].iloc[0] == 60.0
+
+
+def test_to_freq_accepts_contract_freq_values_and_returns_period_first_day():
+    """B'nin ölçtüğü çökme: to_freq(df, "rate", "M") -> ValueError ("'M' is
+    no longer supported for offsets. Please use 'ME' instead."). Sözleşme
+    değerleri (D|W|M|Q|A, contracts.py Freq Literal) birinci sınıf kabul
+    edilmeli -- hiçbiri hata vermemeli, hepsinde period dönemin İLK günü
+    olmalı (ME/QE/YE değil)."""
+    base = list(pd.date_range("2024-01-01", periods=10, freq="D").date)
+    df = _series(base, [float(i) for i in range(10)])
+
+    for freq in ("D", "W", "M", "Q", "A"):
+        result, _ = transforms.to_freq(df, "rate", freq)
+        assert not result.empty, freq
+        first_period = result["period"].iloc[0]
+        # 2024-01-01 is itself a Monday -- every one of these frequencies'
+        # first bucket for this 10-day input starts on that exact date.
+        assert first_period.date() == date(2024, 1, 1), freq
+
+
 def test_to_freq_rejects_unknown_kind():
     df = _series([date(2024, 1, 1)], [1.0])
     try:
@@ -88,6 +137,32 @@ def test_deflate_missing_index_period_yields_nan_not_dropped_row():
     assert math.isnan(result["value"].iloc[1])
 
 
+def test_deflate_raises_on_frequency_mismatch():
+    """B'nin ölçtüğü: aylık nominal + haftalık endeks -> merge sessizce
+    9/12 NaN üretiyordu, hata yok. Artık gerçek frekans uyuşmazlığında
+    ValueError."""
+    nominal = _series([date(2024, m, 1) for m in range(1, 13)], [100.0] * 12)
+    price_index = _series(
+        list(pd.date_range("2024-01-01", periods=12, freq="W-MON").date),
+        [100.0] * 12,
+    )
+
+    with pytest.raises(ValueError):
+        transforms.deflate(nominal, price_index)
+
+
+def test_deflate_warns_on_unmatched_periods_same_frequency(caplog):
+    nominal = _series([date(2024, 1, 1), date(2024, 2, 1)], [100.0, 110.0])
+    price_index = _series([date(2024, 1, 1)], [100.0])
+
+    with caplog.at_level(logging.WARNING, logger="lakehouse_agent.analysis.transforms"):
+        result, _ = transforms.deflate(nominal, price_index)
+
+    assert len(result) == 2
+    assert math.isnan(result["value"].iloc[1])
+    assert any("eşleşmedi" in r.message for r in caplog.records)
+
+
 # --- rebase ---------------------------------------------------------------
 
 
@@ -110,6 +185,18 @@ def test_rebase_raises_when_base_period_not_in_series():
         pass
 
 
+def test_rebase_raises_when_base_value_is_zero():
+    df = _series([date(2024, 1, 1), date(2024, 2, 1)], [0.0, 50.0])
+    with pytest.raises(ValueError):
+        transforms.rebase(df, date(2024, 1, 1))
+
+
+def test_rebase_raises_when_base_value_is_nan():
+    df = _series([date(2024, 1, 1), date(2024, 2, 1)], [float("nan"), 50.0])
+    with pytest.raises(ValueError):
+        transforms.rebase(df, date(2024, 1, 1))
+
+
 # --- pct_change / yoy / diff ----------------------------------------------
 
 
@@ -126,12 +213,16 @@ def test_pct_change_matches_hand_computed_values():
 
 
 def test_yoy_uses_periods_per_year_as_the_lag():
+    # periods_per_year=12 (real monthly cadence): Jan2025/Feb2025's true
+    # 12-months-back counterpart is Jan2024/Feb2024 -- the calendar-based
+    # shift (not a row-position shift) finds them correctly even though
+    # Mar-Dec 2024 are entirely absent from this toy series.
     df = _series(
         [date(2024, 1, 1), date(2024, 2, 1), date(2025, 1, 1), date(2025, 2, 1)],
         [100.0, 110.0, 120.0, 132.0],
     )
 
-    result, _ = transforms.yoy(df, periods_per_year=2)
+    result, _ = transforms.yoy(df, periods_per_year=12)
 
     assert math.isnan(result["value"].iloc[0])
     assert math.isnan(result["value"].iloc[1])
@@ -149,6 +240,65 @@ def test_diff_matches_hand_computed_values():
     assert math.isnan(result["value"].iloc[0])
     assert result["value"].iloc[1] == 10.0
     assert result["value"].iloc[2] == -20.0
+
+
+def test_yoy_uses_calendar_shift_not_row_shift_missing_middle_period():
+    """B'nin ölçtüğü: eksiksiz seride yoy doğru; 1 ay eksikse pandas'ın
+    SATIR kaydırması bir sonraki dönemi yanlış aya eşliyordu. 2021-02 kasıtlı
+    eksik: 2022-01'in gerçek eşi (2021-01) var -> doğru; 2022-02'nin gerçek
+    eşi (2021-02) eksik -> NaN, eski koddaki gibi 2021-01'e YANLIŞ eşleşip
+    13.0 dönmüyor."""
+    periods = [
+        date(2021, 1, 1),
+        date(2021, 3, 1),
+        date(2021, 4, 1),
+        date(2021, 5, 1),
+        date(2021, 6, 1),
+        date(2021, 7, 1),
+        date(2021, 8, 1),
+        date(2021, 9, 1),
+        date(2021, 10, 1),
+        date(2021, 11, 1),
+        date(2021, 12, 1),
+        date(2022, 1, 1),
+        date(2022, 2, 1),
+    ]  # 2021-02 eksik
+    values = [
+        100.0,
+        102.0,
+        103.0,
+        104.0,
+        105.0,
+        106.0,
+        107.0,
+        108.0,
+        109.0,
+        110.0,
+        111.0,
+        112.0,
+        113.0,
+    ]
+    df = _series(periods, values)
+
+    result, _ = transforms.yoy(df, periods_per_year=12)
+    by_period = dict(zip(result["period"], result["value"], strict=True))
+
+    assert round(by_period[date(2022, 1, 1)], 6) == 12.0
+    assert math.isnan(by_period[date(2022, 2, 1)])
+
+
+def test_pct_change_sorts_input_reversed_rows_do_not_flip_the_sign():
+    df = _series(
+        [date(2024, 3, 1), date(2024, 2, 1), date(2024, 1, 1)],
+        [90.0, 100.0, 80.0],
+    )
+
+    result, _ = transforms.pct_change(df)
+    by_period = dict(zip(result["period"], result["value"], strict=True))
+
+    assert math.isnan(by_period[date(2024, 1, 1)])
+    assert round(by_period[date(2024, 2, 1)], 6) == 25.0
+    assert round(by_period[date(2024, 3, 1)], 6) == -10.0
 
 
 # --- align_join ------------------------------------------------------------

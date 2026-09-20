@@ -11,6 +11,7 @@ array (see ingest/bddk_monthly.py); silver picks the value out by
 """
 
 import json
+import logging
 import re
 from collections.abc import Iterable
 from datetime import date, timedelta
@@ -25,6 +26,8 @@ from lakehouse_agent.ingest.evds import (
     _parse_tarih,
     denormalize_response_columns,
 )
+
+logger = logging.getLogger(__name__)
 
 # Debug/inspection artifact only -- NOT part of the CLAUDE.md gold contract.
 # gold.py never reads this path; it calls build_silver_observations() /
@@ -45,9 +48,35 @@ OBSERVATION_COLUMNS = [
 
 _MISSING_TOKENS = {"", "-", "n.a.", "n.a", "na", "NA"}
 
+# Raw EVDS/BDDK FREQUENCY_STR -> the gold contract's Freq literal
+# (D|W|M|Q|A, contracts.py). HAFTALIK(*) (CUMA/ÇARŞAMBA anchor) is always W.
+FREQ_STR_TO_CONTRACT = {
+    "AYLIK": "M",
+    "GÜNLÜK": "D",
+    "İŞ GÜNÜ": "D",
+    "ÜÇ AYLIK": "Q",
+    "YILLIK": "A",
+}
+
+
+def map_freq(freq_str: str) -> str:
+    """Map a raw EVDS/BDDK FREQUENCY_STR to the gold contract's Freq literal.
+    Used by both observations (this module) and series_catalog (gold.py) so
+    the two tables never disagree on what a given frequency is called."""
+    upper = freq_str.strip().upper()
+    if upper.startswith("HAFTALIK"):
+        return "W"
+    try:
+        return FREQ_STR_TO_CONTRACT[upper]
+    except KeyError:
+        raise ValueError(f"Bilinmeyen frekans: {freq_str!r}") from None
+
 
 def _to_float(raw: object) -> float:
-    """ "-"/""/"n.a." -> NaN. Never filled with 0 or interpolated (CLAUDE.md #2)."""
+    """ "-"/""/"n.a." -> NaN. Never filled with 0 or interpolated (CLAUDE.md #2).
+    A token this doesn't recognize (typo, new EVDS missing-value spelling)
+    also becomes NaN, logged as a warning -- never crashes the whole ingest
+    run over one bad cell."""
     if raw is None:
         return float("nan")
     if isinstance(raw, int | float):
@@ -55,7 +84,11 @@ def _to_float(raw: object) -> float:
     text = str(raw).strip()
     if text in _MISSING_TOKENS:
         return float("nan")
-    return float(text)
+    try:
+        return float(text)
+    except ValueError:
+        logger.warning("_to_float: tanınmayan jeton NaN'a düşürüldü: %r", raw)
+        return float("nan")
 
 
 def _period_for(tarih: str, freq_str: str) -> date:
@@ -103,36 +136,45 @@ def melt_bronze_datagroup(
     long["period"] = long["Tarih"].map(lambda t: _period_for(t, freq_str))
     long["series_id"] = source + ":" + long["_code"]
     long["value"] = long["_raw_value"].map(_to_float)
-    long["freq"] = freq_str
+    long["freq"] = map_freq(freq_str)
     long["unit"] = unit
-    long["source"] = source
+    long["source"] = source.upper()
     long["fetched_at"] = long["_fetched_at"] if has_fetched_at else None
 
     return long[OBSERVATION_COLUMNS]
 
 
-def _dedupe_latest_fetch(long: pd.DataFrame) -> pd.DataFrame:
+def _dedupe_latest_fetch(long: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     """Same (series_id, period) fetched more than once (e.g. a week
     straddling two year-chunk requests) -> keep the row with the latest
-    fetched_at."""
+    fetched_at.
+
+    Returns (deduped, dropped_count). Plan 2.1 wants the dropped count
+    surfaced in the quality report; previously it was silently absorbed
+    here, before gold ever saw it -- gold's own duplicate count was
+    therefore structurally always 0, not a real "no duplicates" signal.
+    """
+    before = len(long)
     long = long.sort_values("fetched_at")
     long = long.drop_duplicates(subset=["series_id", "period"], keep="last")
-    return long.sort_values(["series_id", "period"]).reset_index(drop=True)
+    deduped = long.sort_values(["series_id", "period"]).reset_index(drop=True)
+    return deduped, before - len(deduped)
 
 
 def build_silver_observations(
     series_ids: Iterable[str], *, source: str = "evds"
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, int]:
     """series_ids in "evds:SERIE.CODE" form. Looks up each series'
     DATAGROUP_CODE / FREQUENCY_STR / BIRIMI in the bronze catalog, melts
-    every cached bronze year file for that datagroup, and returns one long
-    frame matching the observations.parquet contract (kind/cum_type are not
-    catalog fields -- gold.py attaches those from the scenario mapping).
+    every cached bronze year file for that datagroup, and returns
+    (long frame matching the observations.parquet contract, dropped
+    duplicate row count) -- kind/cum_type are not catalog fields, gold.py
+    attaches those from the scenario mapping.
     """
     prefix = f"{source}:"
     raw_codes = {sid[len(prefix) :] for sid in series_ids if sid.startswith(prefix)}
     if not raw_codes:
-        return pd.DataFrame(columns=OBSERVATION_COLUMNS)
+        return pd.DataFrame(columns=OBSERVATION_COLUMNS), 0
 
     catalog = pd.read_parquet(CATALOG_PATH)
     catalog = catalog[catalog["SERIE_CODE"].isin(raw_codes)]
@@ -153,7 +195,7 @@ def build_silver_observations(
             )
 
     if not frames:
-        return pd.DataFrame(columns=OBSERVATION_COLUMNS)
+        return pd.DataFrame(columns=OBSERVATION_COLUMNS), 0
 
     long = pd.concat(frames, ignore_index=True)
     return _dedupe_latest_fetch(long)
@@ -181,18 +223,25 @@ def _to_float_bddk(raw: object) -> float:
         return float("nan")
     if _TURKISH_NUMBER_RE.match(text):
         text = text.replace(".", "").replace(",", ".")
-    return float(text)
+    try:
+        return float(text)
+    except ValueError:
+        logger.warning("_to_float_bddk: tanınmayan jeton NaN'a düşürüldü: %r", raw)
+        return float("nan")
 
 
-def build_bddk_silver_observations(series_ids: Iterable[str]) -> pd.DataFrame:
+def build_bddk_silver_observations(
+    series_ids: Iterable[str],
+) -> tuple[pd.DataFrame, int]:
     """series_ids in "bddk:..." form. Reads every cached bronze month file
     (ingest/bddk_monthly.py), picks each row's value out of its raw
     `cell_json` by the cell_index declared in ingest/bddk_rows.yaml, and
-    returns one long frame matching the observations.parquet contract.
+    returns (long frame matching the observations.parquet contract,
+    dropped duplicate row count).
     """
     wanted = {sid for sid in series_ids if sid.startswith("bddk:")}
     if not wanted:
-        return pd.DataFrame(columns=OBSERVATION_COLUMNS)
+        return pd.DataFrame(columns=OBSERVATION_COLUMNS), 0
 
     row_defs = {rd.series_id: rd for rd in bddk_monthly.load_row_definitions()}
 
@@ -213,7 +262,7 @@ def build_bddk_silver_observations(series_ids: Iterable[str]) -> pd.DataFrame:
                 {
                     "series_id": r["series_id"],
                     "period": date(int(r["yil"]), int(r["ay"]), 1),
-                    "freq": "AYLIK",
+                    "freq": map_freq("AYLIK"),
                     "value": _to_float_bddk(cell[row_def.cell_index]),
                     "unit": row_def.unit,
                     "source": BDDK_SOURCE,
@@ -223,34 +272,30 @@ def build_bddk_silver_observations(series_ids: Iterable[str]) -> pd.DataFrame:
         frames.append(pd.DataFrame(rows, columns=OBSERVATION_COLUMNS))
 
     if not frames:
-        return pd.DataFrame(columns=OBSERVATION_COLUMNS)
+        return pd.DataFrame(columns=OBSERVATION_COLUMNS), 0
 
     long = pd.concat(frames, ignore_index=True)
     return _dedupe_latest_fetch(long)
 
 
 if __name__ == "__main__":
-    import logging
-
     from lakehouse_agent.lake.gold import default_series_ids
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    logger = logging.getLogger(__name__)
 
     all_ids = default_series_ids()
     evds_ids = [sid for sid in all_ids if sid.startswith("evds:")]
     bddk_ids = [sid for sid in all_ids if sid.startswith("bddk:")]
 
-    combined = pd.concat(
-        [
-            build_silver_observations(evds_ids, source="evds"),
-            build_bddk_silver_observations(bddk_ids),
-        ],
-        ignore_index=True,
-    )
+    evds_obs, evds_dropped = build_silver_observations(evds_ids, source="evds")
+    bddk_obs, bddk_dropped = build_bddk_silver_observations(bddk_ids)
+    combined = pd.concat([evds_obs, bddk_obs], ignore_index=True)
 
     SILVER_DEBUG_PATH.parent.mkdir(parents=True, exist_ok=True)
     combined.to_parquet(SILVER_DEBUG_PATH, index=False)
+    logger.info(
+        "silver (debug): %d mükerrer satır birleştirildi", evds_dropped + bddk_dropped
+    )
     logger.info(
         "silver (debug) yazıldı: %s (%d satır, evds=%d bddk=%d seri)",
         SILVER_DEBUG_PATH,

@@ -87,3 +87,40 @@ def test_detect_anomalies_rejects_unknown_method():
         raise AssertionError("expected ValueError")
     except ValueError:
         pass
+
+
+def test_detect_anomalies_calendar_gap_falls_back_to_iqr_no_false_positives():
+    """Regression: dropping rows before STL (instead of gridding onto the
+    calendar) compacts the series, so every point after a gap lands in the
+    wrong seasonal phase. Measured (n=36, seasonal amplitude 5, noise 0.1,
+    seed 1, months 15:21 removed): STL on the compacted series flags 4
+    false anomalies (maxabsz 7.41). Gridding detects the gap and falls back
+    to IQR on the genuinely observed points instead -- 0 anomalies."""
+    n = 36
+    t = np.arange(n)
+    values = 5 * np.sin(2 * np.pi * t / 12) + np.random.default_rng(1).normal(
+        scale=0.1, size=n
+    )
+    series = pd.DataFrame({"period": _monthly_periods(n), "value": values})
+    gapped = pd.concat([series.iloc[:15], series.iloc[21:]]).reset_index(drop=True)
+
+    flagged, summary = anomaly.detect_anomalies(gapped)
+
+    assert flagged.empty
+    assert anomaly.IQR_FALLBACK_NOTE in summary
+
+
+def test_detect_anomalies_iqr_path_reports_fence_distance_not_a_degenerate_mad_z():
+    """B'nin ölçtüğü: n=12, tek aykırı 100 -> işaretlendi ama z=0.00 (MAD
+    çoğunluk aynı değerde olduğu için sıfıra düşüyor; ham IQR da aynı
+    örnekte 0'a dejenere oluyor). Artık z yerine mutlak çit mesafesi
+    raporlanıyor -- işaretlenen noktada asla 0 olamaz."""
+    n = 12
+    values = [10.0] * 11 + [100.0]
+    periods = pd.date_range("2020-01-01", periods=n, freq="MS").date
+    series = pd.DataFrame({"period": periods, "value": values})
+
+    flagged, _ = anomaly.detect_anomalies(series)
+
+    assert len(flagged) == 1
+    assert flagged.iloc[0]["z"] > 0

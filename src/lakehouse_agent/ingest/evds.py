@@ -357,20 +357,41 @@ def detect_truncation(
     *,
     date_column: str = "Tarih",
     tolerance_days: int = 10,
+    total_count: int | None = None,
 ) -> bool:
-    """True only when the response's first row starts well after the
-    requested start -- the signature of the 1000-observation cap silently
-    dropping the earliest rows (measured: 2021-2026 requested, 2023-12-20
-    came back first).
+    """True only when the response is actually missing rows the server had
+    -- never when a series simply started partway through the requested
+    year. Measured regression: TP.HPBITABLO6.3 legitimately starts
+    2024-06-01; the old "first row far after expected_start" heuristic
+    alone flagged that whole year as truncated and its parquet was never
+    written, silently losing every real observation that year.
 
-    Deliberately checks the START only. A weekly/Friday-anchored group
-    legitimately overruns the requested year at the END (2024 requested,
-    last row 2025-01-03, measured) -- not truncation. An empty response is
-    also not truncation (series not started yet that year) -- callers must
-    check `df.empty` themselves before calling this, since an empty frame
-    has no row to compare.
+    Two independent signals, either is sufficient:
+    - `total_count` (the bulk endpoint's own "totalCount" field, see
+      `_row_count`) says more observations exist than were actually
+      returned -- the server's own word for it, checked first regardless of
+      row count.
+    - Fallback heuristic, only once row_count actually hits the
+      1000-observation cap AND the first row starts well after
+      `expected_start` -- the signature measured on the real cap incident
+      (2021-2026 requested, 2023-12-20 came back first). Below 1000 rows, a
+      late first date just means the series started late that year, not
+      truncation.
+
+    Deliberately checks the START only (not `total_count`'s own end-of-year
+    implications): a weekly/Friday-anchored group legitimately overruns the
+    requested year at the END (2024 requested, last row 2025-01-03,
+    measured) -- not truncation. An empty response is also not truncation
+    (series not started yet that year) -- callers must check `df.empty`
+    themselves before calling this, since an empty frame has no row to
+    compare.
     """
     if df.empty:
+        return False
+    row_count = len(df)
+    if total_count is not None and total_count > row_count:
+        return True
+    if row_count < 1000:
         return False
     first_date = _parse_tarih(str(df[date_column].iloc[0]))
     return (first_date - expected_start).days > tolerance_days
@@ -427,6 +448,7 @@ def fetch_datagroup_year(
         return YearFetchResult(datagroup_code, year, "empty", 0, None)
 
     row_count = len(df)
+    total_count = payload.get("totalCount") if isinstance(payload, dict) else None
     if row_count >= 1000:
         logger.warning(
             "%s/%s: %d satır döndü (1000 sınırına yakın/eşit) -- ilk tarih kontrol ediliyor",
@@ -435,7 +457,7 @@ def fetch_datagroup_year(
             row_count,
         )
 
-    if detect_truncation(df, expected_start):
+    if detect_truncation(df, expected_start, total_count=total_count):
         logger.warning(
             "%s/%s: kesme tespit edildi (ilk satır %s, beklenen %s) -- parquet yazılmadı",
             datagroup_code,

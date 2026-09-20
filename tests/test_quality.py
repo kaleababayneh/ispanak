@@ -16,7 +16,7 @@ def _obs(series_id, periods, values, *, fetched_at="2026-09-18T00:00:00+00:00"):
         {
             "series_id": series_id,
             "period": periods,
-            "freq": "AYLIK",
+            "freq": "M",
             "value": values,
             "unit": None,
             "source": "evds",
@@ -42,7 +42,7 @@ def test_build_quality_report_monthly_no_gaps():
                 "series_id": "evds:X",
                 "name_tr": "X serisi",
                 "source": "evds",
-                "freq": "AYLIK",
+                "freq": "M",
             }
         ]
     )
@@ -66,7 +66,7 @@ def test_build_quality_report_monthly_counts_gap_in_the_middle():
                 "series_id": "evds:X",
                 "name_tr": "X serisi",
                 "source": "evds",
-                "freq": "AYLIK",
+                "freq": "M",
             }
         ]
     )
@@ -85,14 +85,14 @@ def test_build_quality_report_never_counts_periods_before_series_own_start():
     all_weeks = _weekly("2024-01-01", 20)
     values = [np.nan] * 9 + [float(i) for i in range(11)]
     obs = _obs("evds:X", all_weeks, values)
-    obs["freq"] = "HAFTALIK(CUMA)"
+    obs["freq"] = "W"
     catalog = pd.DataFrame(
         [
             {
                 "series_id": "evds:X",
                 "name_tr": "X serisi",
                 "source": "evds",
-                "freq": "HAFTALIK(CUMA)",
+                "freq": "W",
             }
         ]
     )
@@ -109,14 +109,14 @@ def test_build_quality_report_weekly_counts_real_gap():
     weeks = _weekly("2024-01-01", 10)
     del weeks[5]
     obs = _obs("evds:X", weeks, list(range(9)))
-    obs["freq"] = "HAFTALIK(CUMA)"
+    obs["freq"] = "W"
     catalog = pd.DataFrame(
         [
             {
                 "series_id": "evds:X",
                 "name_tr": "X serisi",
                 "source": "evds",
-                "freq": "HAFTALIK(CUMA)",
+                "freq": "W",
             }
         ]
     )
@@ -135,7 +135,7 @@ def test_build_quality_report_counts_duplicate_periods():
                 "series_id": "evds:X",
                 "name_tr": "X serisi",
                 "source": "evds",
-                "freq": "AYLIK",
+                "freq": "M",
             }
         ]
     )
@@ -155,7 +155,7 @@ def test_build_quality_report_counts_iqr_outliers():
                 "series_id": "evds:X",
                 "name_tr": "X serisi",
                 "source": "evds",
-                "freq": "AYLIK",
+                "freq": "M",
             }
         ]
     )
@@ -173,7 +173,7 @@ def test_build_quality_report_empty_series_does_not_raise():
                 "series_id": "evds:X",
                 "name_tr": "X serisi",
                 "source": "evds",
-                "freq": "AYLIK",
+                "freq": "M",
             }
         ]
     )
@@ -191,6 +191,60 @@ def test_expected_periods_rejects_unsupported_frequency():
         quality._expected_periods("YILLIK", date(2021, 1, 1), date(2022, 1, 1))
 
 
+def test_expected_periods_supports_all_contract_frequencies():
+    for freq in ("D", "W", "M", "Q", "A"):
+        result = quality._expected_periods(freq, date(2021, 1, 1), date(2021, 12, 31))
+        assert date(2021, 1, 1) in result
+
+
+def test_render_quality_markdown_shows_real_dropped_duplicate_count():
+    """Regression: quality.py's per-series `duplicates` column is always 0
+    (silver already deduped before gold ever saw the data) -- the real
+    count now surfaces via the dropped_duplicates parameter."""
+    report = pd.DataFrame(
+        [
+            {
+                "series_id": "evds:X",
+                "name_tr": "X",
+                "source": "evds",
+                "freq": "M",
+                "start": date(2021, 1, 1),
+                "end": date(2021, 6, 1),
+                "n": 6,
+                "missing": 0,
+                "duplicates": 0,
+                "outliers": 0,
+                "last_updated": "2026-09-18T00:00:00+00:00",
+            }
+        ]
+    )
+
+    markdown = quality.render_quality_markdown(report, dropped_duplicates=3)
+
+    assert "3" in markdown
+    assert "mükerrer" in markdown
+
+
+def test_profile_table_computes_quality_report_from_contracts():
+    from lakehouse_agent.contracts import QualityReport
+
+    df = pd.DataFrame(
+        {
+            "period": [date(2024, 1, 1), date(2024, 2, 1), date(2024, 4, 1)],
+            "value": [10.0, 11.0, 12.0],
+        }
+    )
+
+    report = quality.profile_table(df, table_ref="t01_read_url")
+
+    assert isinstance(report, QualityReport)
+    assert report.table_ref == "t01_read_url"
+    assert report.rows == 3
+    assert report.date_range == ("2024-01", "2024-04")
+    assert report.freq == "M"
+    assert report.missing_periods == 1
+
+
 def test_render_quality_markdown_includes_warning_section_when_missing():
     report = pd.DataFrame(
         [
@@ -198,7 +252,7 @@ def test_render_quality_markdown_includes_warning_section_when_missing():
                 "series_id": "evds:X",
                 "name_tr": "X serisi",
                 "source": "evds",
-                "freq": "AYLIK",
+                "freq": "M",
                 "start": date(2021, 1, 1),
                 "end": date(2021, 6, 1),
                 "n": 5,
@@ -224,7 +278,7 @@ def test_render_quality_markdown_omits_warning_section_when_clean():
                 "series_id": "evds:X",
                 "name_tr": "X serisi",
                 "source": "evds",
-                "freq": "AYLIK",
+                "freq": "M",
                 "start": date(2021, 1, 1),
                 "end": date(2021, 6, 1),
                 "n": 6,
@@ -250,7 +304,7 @@ def test_render_quality_markdown_source_summary_aggregates_correctly():
                 "series_id": "evds:X",
                 "name_tr": "X",
                 "source": "evds",
-                "freq": "AYLIK",
+                "freq": "M",
                 "start": date(2021, 1, 1),
                 "end": date(2021, 6, 1),
                 "n": 6,
@@ -263,7 +317,7 @@ def test_render_quality_markdown_source_summary_aggregates_correctly():
                 "series_id": "bddk:y",
                 "name_tr": "Y",
                 "source": "BDDK-Aylik",
-                "freq": "AYLIK",
+                "freq": "M",
                 "start": date(2021, 1, 1),
                 "end": date(2021, 6, 1),
                 "n": 6,
@@ -288,7 +342,7 @@ def test_write_quality_report_writes_file(tmp_path):
                 "series_id": "evds:X",
                 "name_tr": "X",
                 "source": "evds",
-                "freq": "AYLIK",
+                "freq": "M",
                 "start": date(2021, 1, 1),
                 "end": date(2021, 6, 1),
                 "n": 6,

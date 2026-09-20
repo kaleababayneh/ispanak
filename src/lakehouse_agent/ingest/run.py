@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import logging
+import re
 import sys
 
 import pandas as pd
@@ -27,6 +28,20 @@ from lakehouse_agent.ingest import bddk_monthly, evds
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+_YEAR_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+def _parse_year_month(value: str) -> str:
+    """argparse `type=` for --since/--until: strict YYYY-MM, month 01-12.
+    Raising ArgumentTypeError makes argparse call parser.error() itself
+    (usage + message on stderr, exit 2) instead of a bare traceback on
+    something like "abc", or silently accepting an invalid month like
+    "2021-13" that `_year_range` would otherwise happily turn into [2021].
+    """
+    if not _YEAR_MONTH_RE.match(value):
+        raise argparse.ArgumentTypeError(f"{value!r} geçerli bir YYYY-MM değil")
+    return value
 
 
 def _year_range(since: str, until: str) -> list[int]:
@@ -41,8 +56,12 @@ def build_parser() -> argparse.ArgumentParser:
     scope = parser.add_mutually_exclusive_group()  # only meaningful for --source evds
     scope.add_argument("--datagroups", help="virgüllü DATAGROUP_CODE listesi")
     scope.add_argument("--all", action="store_true", help="tam katalog + tam çekim")
-    parser.add_argument("--since", required=True, help="YYYY-MM")
-    parser.add_argument("--until", required=True, help="YYYY-MM")
+    parser.add_argument(
+        "--since", required=True, type=_parse_year_month, help="YYYY-MM"
+    )
+    parser.add_argument(
+        "--until", required=True, type=_parse_year_month, help="YYYY-MM"
+    )
     parser.add_argument(
         "--force", action="store_true", help="var olan bronze dosyalarını yeniden çek"
     )
@@ -115,7 +134,13 @@ def _run_bddk(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # YYYY-MM strings compare correctly as plain strings (fixed-width,
+    # zero-padded) -- no need to parse them into dates for this check.
+    if args.since > args.until:
+        parser.error(f"--since ({args.since}) --until'dan ({args.until}) sonra olamaz")
 
     if args.source == "evds":
         return _run_evds(args)

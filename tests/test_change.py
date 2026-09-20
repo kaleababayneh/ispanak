@@ -1,6 +1,8 @@
 """Tests for lakehouse_agent.analysis.change. No network access --
 synthetic series with a known break location."""
 
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -130,6 +132,37 @@ def test_detect_changes_drops_nan_rows_before_computing():
     result, _ = change.detect_changes(series)
 
     assert len(result) >= 1
+
+
+def test_detect_changes_all_zero_before_mean_falls_back_without_crashing():
+    """Regression: kırılma öncesi bölüm ortalaması tam 0 ise
+    seviye_degisim_yuzde NaN olur (0'a bölme tanımsız); tüm kırılmalarda bu
+    doğruysa eski kod .abs().idxmax()'ı all-NaN kolonda çağırıp ValueError
+    fırlatıyordu -- B'nin BDDK'da 0 tabanlı bir seride ölçtüğü çökme."""
+    n = 40
+    break_idx = 20
+    values = np.concatenate([np.zeros(break_idx), np.full(n - break_idx, 100.0)])
+    series = pd.DataFrame({"period": _periods(n), "value": values})
+
+    result, summary = change.detect_changes(series, min_size=10)
+
+    assert len(result) >= 1
+    assert math.isnan(result.iloc[0]["seviye_degisim_yuzde"])
+    assert isinstance(summary, str) and summary
+
+
+def test_detect_changes_constant_series_returns_no_breakpoints_not_spurious_ones():
+    """B'nin ölçtüğü: sabit seride std==0 -> pen=log(n)*0=0 -> PELT 9 sıfır-
+    maliyetli kırılma üretiyordu, hepsi "%0.0" değişim. Sabit seride
+    kırılacak bir şey yok -- boş sonuç dönmeli."""
+    n = 60
+    values = np.full(n, 42.0)
+    series = pd.DataFrame({"period": _periods(n), "value": values})
+
+    result, summary = change.detect_changes(series)
+
+    assert result.empty
+    assert "sabit" in summary
 
 
 def test_detect_changes_rejects_unknown_method():

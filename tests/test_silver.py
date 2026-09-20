@@ -6,6 +6,7 @@ import math
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from lakehouse_agent.ingest import bddk_monthly, evds
 from lakehouse_agent.lake import silver
@@ -25,7 +26,8 @@ def test_melt_bronze_datagroup_monthly_basic():
     assert list(long["period"]) == [date(2024, 1, 1), date(2024, 2, 1)]
     assert list(long["value"]) == [150.0, 151.5]
     assert list(long["series_id"]) == ["evds:TP.KFE.TR", "evds:TP.KFE.TR"]
-    assert list(long["freq"]) == ["AYLIK", "AYLIK"]
+    assert list(long["freq"]) == ["M", "M"]
+    assert list(long["source"]) == ["EVDS", "EVDS"]
 
 
 def test_melt_bronze_datagroup_weekly_rounds_down_to_monday():
@@ -35,6 +37,7 @@ def test_melt_bronze_datagroup_weekly_rounds_down_to_monday():
     long = silver.melt_bronze_datagroup(bronze, ["TP.KTF12"], "HAFTALIK(CUMA)", "%")
 
     assert long["period"].iloc[0] == date(2024, 1, 1)
+    assert long["freq"].iloc[0] == "W"
 
 
 def test_melt_bronze_datagroup_missing_tokens_become_nan_not_zero():
@@ -70,10 +73,11 @@ def test_dedupe_latest_fetch_keeps_newest_fetched_at_row():
         }
     )
 
-    result = silver._dedupe_latest_fetch(long)
+    result, dropped = silver._dedupe_latest_fetch(long)
 
     assert len(result) == 1
     assert result["value"].iloc[0] == 999.0
+    assert dropped == 1
 
 
 def test_build_silver_observations_end_to_end(monkeypatch, tmp_path):
@@ -100,11 +104,12 @@ def test_build_silver_observations_end_to_end(monkeypatch, tmp_path):
         }
     ).to_parquet(year_dir / "2024.parquet", index=False)
 
-    result = silver.build_silver_observations(["evds:TP.KFE.TR"])
+    result, dropped = silver.build_silver_observations(["evds:TP.KFE.TR"])
 
     assert list(result["series_id"]) == ["evds:TP.KFE.TR", "evds:TP.KFE.TR"]
     assert list(result["period"]) == [date(2024, 1, 1), date(2024, 2, 1)]
     assert list(result["value"]) == [150.0, 151.5]
+    assert dropped == 0
 
 
 def test_build_silver_observations_no_matching_catalog_rows_returns_empty(
@@ -116,10 +121,11 @@ def test_build_silver_observations_no_matching_catalog_rows_returns_empty(
         columns=["SERIE_CODE", "DATAGROUP_CODE", "FREQUENCY_STR", "BIRIMI"]
     ).to_parquet(evds.CATALOG_PATH, index=False)
 
-    result = silver.build_silver_observations(["evds:TP.NOT.IN.CATALOG"])
+    result, dropped = silver.build_silver_observations(["evds:TP.NOT.IN.CATALOG"])
 
     assert result.empty
     assert list(result.columns) == silver.OBSERVATION_COLUMNS
+    assert dropped == 0
 
 
 def test_to_float_bddk_converts_turkish_format_but_not_native_numbers():
@@ -127,6 +133,28 @@ def test_to_float_bddk_converts_turkish_format_but_not_native_numbers():
     assert silver._to_float_bddk("1.234,5") == 1234.5
     assert math.isnan(silver._to_float_bddk("-"))
     assert math.isnan(silver._to_float_bddk(None))
+
+
+def test_to_float_unrecognized_token_becomes_nan_not_a_crash():
+    assert math.isnan(silver._to_float("N.A."))
+    assert math.isnan(silver._to_float("—"))
+
+
+def test_to_float_bddk_unrecognized_token_becomes_nan_not_a_crash():
+    assert math.isnan(silver._to_float_bddk("null"))
+    assert math.isnan(silver._to_float_bddk("—"))
+
+
+def test_map_freq_covers_all_contract_frequencies():
+    assert silver.map_freq("AYLIK") == "M"
+    assert silver.map_freq("HAFTALIK(CUMA)") == "W"
+    assert silver.map_freq("HAFTALIK(ÇARŞAMBA)") == "W"
+    assert silver.map_freq("GÜNLÜK") == "D"
+    assert silver.map_freq("İŞ GÜNÜ") == "D"
+    assert silver.map_freq("ÜÇ AYLIK") == "Q"
+    assert silver.map_freq("YILLIK") == "A"
+    with pytest.raises(ValueError):
+        silver.map_freq("BILINMEYEN")
 
 
 def _write_bddk_fixture(tmp_path):
@@ -170,7 +198,7 @@ def test_build_bddk_silver_observations_reads_value_by_cell_index(
     monkeypatch.chdir(tmp_path)
     _write_bddk_fixture(tmp_path)
 
-    result = silver.build_bddk_silver_observations(
+    result, dropped = silver.build_bddk_silver_observations(
         ["bddk:aylik:tuketici:konut:TL:sektor"]
     )
 
@@ -179,3 +207,5 @@ def test_build_bddk_silver_observations_reads_value_by_cell_index(
     assert list(result["value"]) == [594545.0]
     assert list(result["unit"]) == ["milyon TL"]
     assert list(result["source"]) == [silver.BDDK_SOURCE]
+    assert list(result["freq"]) == ["M"]
+    assert dropped == 0

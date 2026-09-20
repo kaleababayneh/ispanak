@@ -6,6 +6,9 @@ import numpy as np
 import pandas as pd
 import ruptures as rpt
 
+_MIN_SIGNAL_VAR = 1e-9  # below this, the series is constant -- pen would be ~0
+_MIN_PEN = 1e-6
+
 
 def _slope(values: np.ndarray) -> float:
     if len(values) < 2:
@@ -70,8 +73,29 @@ def detect_changes(
     std = values.std()
     signal = (values - values.mean()) / std if std != 0 else values - values.mean()
 
+    if signal.var() < _MIN_SIGNAL_VAR:
+        # Measured: a perfectly constant series (std==0) drove pen to
+        # exactly 0 (log(n)*0), and PELT inserted 9 zero-cost breakpoints,
+        # all reporting "%0.0" change -- nothing to break in a flat series.
+        empty = pd.DataFrame(
+            columns=[
+                "tarih",
+                "ortalama_öncesi",
+                "ortalama_sonrası",
+                "eğim_öncesi",
+                "eğim_sonrası",
+                "seviye_degisim_yuzde",
+                "sicrama_yuzde",
+            ]
+        )
+        return (
+            empty,
+            "Seri sabit (varyans yok); kırılma tespiti anlamsız, hiçbir kırılma raporlanmadı.",
+        )
+
     if pen is None:
         pen = float(np.log(n) * signal.var())
+    pen = max(pen, _MIN_PEN)
 
     # jump=1 (not ruptures' default of 5): the default only considers
     # breakpoint candidates on a 5-period grid, which can miss the true
@@ -115,7 +139,12 @@ def detect_changes(
     if result.empty:
         summary = "Seride kırılma tespit edilmedi. Seviye ve eğim boyunca istikrarlı."
     else:
-        worst = result.iloc[result["seviye_degisim_yuzde"].abs().idxmax()]
+        if result["seviye_degisim_yuzde"].notna().any():
+            worst = result.iloc[result["seviye_degisim_yuzde"].abs().idxmax()]
+        elif result["sicrama_yuzde"].notna().any():
+            worst = result.iloc[result["sicrama_yuzde"].abs().idxmax()]
+        else:
+            worst = result.iloc[0]
         summary = (
             f"Seride {len(result)} kırılma noktası tespit edildi. "
             f"En büyük seviye değişimi {worst['tarih']} döneminde: "

@@ -4,8 +4,21 @@ DuckDB view over both.
 Column names/order here are the CLAUDE.md contract other tracks code
 against -- do not rename or reorder without updating docs/contracts.md and
 asking first.
+
+The single entry point into this layer is `get()`/`wide()` -- do not read
+`observations.parquet`/`series_catalog.parquet` directly with
+`pd.read_parquet` and try to merge that against `get()`'s output on
+"period": parquet's own `period` column comes back as `object`/
+`datetime.date`, while `get()`/`wide()` (via DuckDB) return `datetime64[us]`.
+Merging the two silently matches ZERO rows (pandas raises no error joining
+across dtypes, it just finds no matches) -- see
+`test_reading_parquet_directly_yields_different_period_dtype_than_get`.
 """
 
+import calendar
+import json
+import logging
+import re
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -18,7 +31,10 @@ from lakehouse_agent.lake.silver import (
     BDDK_SOURCE,
     build_bddk_silver_observations,
     build_silver_observations,
+    map_freq,
 )
+
+logger = logging.getLogger(__name__)
 
 BDDK_METADATA_URL = "https://www.bddk.org.tr/BultenAylik/"
 
@@ -26,6 +42,7 @@ GOLD_ROOT = Path("data/gold")
 OBSERVATIONS_PATH = GOLD_ROOT / "observations.parquet"
 SERIES_CATALOG_PATH = GOLD_ROOT / "series_catalog.parquet"
 GOLD_DB_PATH = GOLD_ROOT / "catalog.duckdb"
+DEDUP_STATS_PATH = GOLD_ROOT / "dedup_stats.json"
 
 OBSERVATIONS_COLUMNS = [
     "series_id",
@@ -105,8 +122,8 @@ def build_series_catalog(
                 "series_id": series_id,
                 "name_tr": row.get("SERIE_NAME"),
                 "name_en": row.get("SERIE_NAME_ENG"),
-                "source": source,
-                "freq": row.get("FREQUENCY_STR"),
+                "source": source.upper(),
+                "freq": map_freq(row.get("FREQUENCY_STR")),
                 "unit": row.get("BIRIMI"),
                 "kind": mapping["kind"],
                 "agg_method": mapping["agg_method"],
@@ -141,7 +158,7 @@ def build_bddk_series_catalog(series_ids: Iterable[str]) -> pd.DataFrame:
                 "name_tr": row_def.satir_etiketi,
                 "name_en": None,
                 "source": BDDK_SOURCE,
-                "freq": "AYLIK",
+                "freq": map_freq("AYLIK"),
                 "unit": row_def.unit,
                 "kind": row_def.kind,
                 "agg_method": "last" if row_def.kind == "stock" else None,
@@ -168,6 +185,25 @@ def default_series_ids() -> list[str]:
     ]
 
 
+def _validate_columns(df: pd.DataFrame, expected: list[str], *, label: str) -> None:
+    """`df[expected]`/`.reindex(columns=expected)` silently turns a missing
+    or renamed source column into an all-NaN column with no error at all
+    (measured: silver writing "frekans" instead of "freq" produced a
+    completely NaN freq column, no exception). Fail loudly instead, naming
+    exactly what's wrong.
+    """
+    actual = set(df.columns)
+    missing = set(expected) - actual
+    extra = actual - set(expected)
+    if missing or extra:
+        parts = []
+        if missing:
+            parts.append(f"eksik sütun(lar): {sorted(missing)}")
+        if extra:
+            parts.append(f"fazla sütun(lar): {sorted(extra)}")
+        raise ValueError(f"{label}: şema uyuşmazlığı -- {', '.join(parts)}")
+
+
 def build_gold(series_ids: Iterable[str]) -> tuple[Path, Path]:
     """Assemble silver -> observations.parquet + series_catalog.parquet.
 
@@ -182,11 +218,16 @@ def build_gold(series_ids: Iterable[str]) -> tuple[Path, Path]:
 
     obs_frames = []
     catalog_frames = []
+    dropped_duplicates = 0
     if evds_ids:
-        obs_frames.append(build_silver_observations(evds_ids, source="evds"))
+        obs, dropped = build_silver_observations(evds_ids, source="evds")
+        obs_frames.append(obs)
+        dropped_duplicates += dropped
         catalog_frames.append(build_series_catalog(evds_ids, source="evds"))
     if bddk_ids:
-        obs_frames.append(build_bddk_silver_observations(bddk_ids))
+        obs, dropped = build_bddk_silver_observations(bddk_ids)
+        obs_frames.append(obs)
+        dropped_duplicates += dropped
         catalog_frames.append(build_bddk_series_catalog(bddk_ids))
 
     observations = (
@@ -194,7 +235,8 @@ def build_gold(series_ids: Iterable[str]) -> tuple[Path, Path]:
         if obs_frames
         else pd.DataFrame(columns=OBSERVATIONS_COLUMNS)
     )
-    observations = observations.reindex(columns=OBSERVATIONS_COLUMNS)
+    _validate_columns(observations, OBSERVATIONS_COLUMNS, label="observations")
+    observations = observations[OBSERVATIONS_COLUMNS]
     observations.to_parquet(OBSERVATIONS_PATH, index=False)
 
     catalog = (
@@ -202,7 +244,13 @@ def build_gold(series_ids: Iterable[str]) -> tuple[Path, Path]:
         if catalog_frames
         else pd.DataFrame(columns=SERIES_CATALOG_COLUMNS)
     )
+    _validate_columns(catalog, SERIES_CATALOG_COLUMNS, label="series_catalog")
+    catalog = catalog[SERIES_CATALOG_COLUMNS]
     catalog.to_parquet(SERIES_CATALOG_PATH, index=False)
+
+    DEDUP_STATS_PATH.write_text(
+        json.dumps({"dropped_duplicates": dropped_duplicates}), encoding="utf-8"
+    )
 
     if GOLD_DB_PATH.exists():
         GOLD_DB_PATH.unlink()  # views embed the parquet path; rebuild on every gold run
@@ -253,10 +301,38 @@ def connect() -> duckdb.DuckDBPyConnection:
     )
 
 
+_YEAR_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+
+
+def _normalize_start(value: str) -> str:
+    """ "YYYY-MM" -> that month's first day; "YYYY-MM-DD" passes through."""
+    if _YEAR_MONTH_RE.match(value):
+        return f"{value}-01"
+    return value
+
+
+def _normalize_end(value: str) -> str:
+    """ "YYYY-MM" -> that month's LAST day (not the 1st -- docs/contracts.md's
+    `get(..., end="2025-12")` must keep all of December, not drop it: DuckDB
+    parses "2025-12" as 2025-12-01, so `period <= "2025-12"` would silently
+    exclude every day after the 1st). "YYYY-MM-DD" passes through."""
+    if _YEAR_MONTH_RE.match(value):
+        year, month = (int(part) for part in value.split("-"))
+        last_day = calendar.monthrange(year, month)[1]
+        return f"{value}-{last_day:02d}"
+    return value
+
+
 def get(
     series_ids: Iterable[str], start: str | None = None, end: str | None = None
 ) -> pd.DataFrame:
-    """Long observations for series_ids, optionally restricted to [start, end] (period)."""
+    """Long observations for series_ids, optionally restricted to [start, end]
+    (period). `start`/`end` accept "YYYY-MM" (docs/contracts.md's signature)
+    as well as "YYYY-MM-DD" -- a bare month is normalized to that month's
+    first/last day respectively before hitting DuckDB, which otherwise
+    parses "YYYY-MM" as day 1 and (for `end`) silently drops the rest of
+    that month.
+    """
     ids = list(series_ids)
     if not ids:
         return pd.DataFrame(columns=OBSERVATIONS_COLUMNS)
@@ -266,10 +342,10 @@ def get(
     params: list = list(ids)
     if start is not None:
         clauses.append("period >= ?")
-        params.append(start)
+        params.append(_normalize_start(start))
     if end is not None:
         clauses.append("period <= ?")
-        params.append(end)
+        params.append(_normalize_end(end))
     where_sql = " AND ".join(clauses)
 
     con = connect()
@@ -282,46 +358,107 @@ def get(
         con.close()
 
 
+def _series_freqs(series_ids: list[str]) -> dict[str, str]:
+    """freq per series_id from series_catalog, for wide()'s mixed-frequency
+    diagnostic. Empty dict if series_ids is empty; callers should not fail
+    just because this diagnostic couldn't run."""
+    if not series_ids:
+        return {}
+    placeholders = ", ".join(["?"] * len(series_ids))
+    con = connect()
+    try:
+        rows = con.execute(
+            f"SELECT series_id, freq FROM series_catalog WHERE series_id IN ({placeholders})",
+            list(series_ids),
+        ).fetchall()
+    finally:
+        con.close()
+    return dict(rows)
+
+
 def wide(
     series_ids: Iterable[str], start: str | None = None, end: str | None = None
 ) -> pd.DataFrame:
-    """get(), pivoted to one column per series_id, indexed by period."""
-    long = get(series_ids, start, end)
+    """get(), pivoted to one column per series_id, indexed by period.
+
+    Series with different native frequencies rarely share exact period
+    values (a Monday-anchored weekly series vs. a 1st-of-month monthly
+    series) -- pivoting them together produces a table where almost every
+    row has only one column populated, unusable for a joint read even
+    though it succeeds without error. Measured:
+    wide(["evds:TP.KTF12", "evds:TP.TUKFIY2025.GENEL"], "2021-01",
+    "2025-12") -> 311 rows, no row with both columns filled (weekly vs.
+    monthly). The shape returned here is unchanged (other callers may
+    depend on it); a mismatch and the per-column fill rate are logged
+    instead so the problem is visible rather than a silent unusable table.
+    """
+    ids = list(series_ids)
+    long = get(ids, start, end)
     if long.empty:
         return long
-    return long.pivot(index="period", columns="series_id", values="value").reset_index()
+
+    result = long.pivot(
+        index="period", columns="series_id", values="value"
+    ).reset_index()
+
+    value_cols = [c for c in result.columns if c != "period"]
+    if len(value_cols) > 1:
+        freqs = _series_freqs(value_cols)
+        both_filled = int(result[value_cols].notna().all(axis=1).sum())
+        fill_counts = {c: int(result[c].notna().sum()) for c in value_cols}
+        if len(set(freqs.values()) - {None}) > 1:
+            logger.warning(
+                "wide(): istenen seriler farklı frekanslarda (%s) -- %d/%d "
+                "satırda tüm seriler birlikte dolu. Sütun başına dolu satır: %s",
+                freqs,
+                both_filled,
+                len(result),
+                fill_counts,
+            )
+        elif both_filled < len(result):
+            logger.info(
+                "wide(): %d/%d satırda tüm seriler birlikte dolu. Sütun "
+                "başına dolu satır: %s",
+                both_filled,
+                len(result),
+                fill_counts,
+            )
+    return result
 
 
 def run_sql(
     sql: str, params: Iterable | None = None, *, limit: int = 1000
 ) -> pd.DataFrame:
-    """Execute a read-only SELECT against the gold views.
+    """Execute a read-only SELECT (or WITH ... SELECT) against the gold views.
 
-    Only a single SELECT statement is accepted (no ";"-chaining); a missing
-    LIMIT is appended. This check is defense in depth, not the real
+    Only a single statement is accepted (no ";"-chaining). The query is
+    always wrapped as `SELECT * FROM (<query>) LIMIT n` -- unconditionally,
+    never based on checking whether "limit" appears in the text: that
+    substring check used to false-positive on a literal like
+    `WHERE unit <> 'limitless'` and skip appending LIMIT entirely, letting
+    the query return unbounded (measured). The wrap works whether or not
+    the inner query has its own LIMIT, and whether or not it's a WITH/CTE
+    (verified against DuckDB). This is defense in depth, not the real
     control -- `connect()`'s enable_external_access=false is what actually
-    stops file-read/exfiltration tricks (CLAUDE.md).
+    stops file-read/exfiltration tricks (CLAUDE.md); that stays untouched.
     """
     stripped = sql.strip().rstrip(";")
     if ";" in stripped:
         raise ValueError("run_sql: birden fazla ifade (;) kabul edilmez")
-    if not stripped.lower().startswith("select"):
-        raise ValueError("run_sql: sadece SELECT kabul edilir")
-    if "limit" not in stripped.lower():
-        stripped = f"{stripped} LIMIT {limit}"
+    if not stripped.lower().startswith(("select", "with")):
+        raise ValueError("run_sql: sadece SELECT (veya WITH ... SELECT) kabul edilir")
+
+    wrapped = f"SELECT * FROM ({stripped}) AS _run_sql_limited LIMIT {limit}"
 
     con = connect()
     try:
-        return con.execute(stripped, list(params) if params else []).df()
+        return con.execute(wrapped, list(params) if params else []).df()
     finally:
         con.close()
 
 
 if __name__ == "__main__":
-    import logging
-
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    logger = logging.getLogger(__name__)
 
     ids = default_series_ids()
     obs_path, catalog_path = build_gold(ids)

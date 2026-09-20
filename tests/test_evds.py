@@ -279,10 +279,26 @@ def test_detect_truncation_false_for_weekly_group_overrunning_year_end():
     assert evds.detect_truncation(df, evds.date(2024, 1, 1)) is False
 
 
-def test_detect_truncation_true_when_earliest_rows_silently_dropped():
-    # Measured incident: 2021-2026 requested, response started 2023-12-20.
-    df = pd.DataFrame({"Tarih": ["20-12-2023", "27-12-2023"]})
+def test_detect_truncation_true_when_row_count_hits_cap_and_first_date_is_late():
+    # Measured incident: 2021-2026 requested, 1000-row cap, response started 2023-12-20.
+    df = pd.DataFrame({"Tarih": ["20-12-2023"] * 1000})
     assert evds.detect_truncation(df, evds.date(2021, 1, 1)) is True
+
+
+def test_detect_truncation_false_for_legitimately_late_starting_series():
+    """Regression: TP.HPBITABLO6.3 measured to start 2024-06-01. The old
+    "first row far after expected_start" heuristic alone flagged this as
+    truncated -- with only a handful of rows (nowhere near the 1000 cap),
+    this is just a series that started late that year, not truncation."""
+    df = pd.DataFrame({"Tarih": ["01-06-2024", "08-06-2024", "15-06-2024"]})
+    assert evds.detect_truncation(df, evds.date(2024, 1, 1)) is False
+
+
+def test_detect_truncation_true_when_total_count_exceeds_returned_rows():
+    """En güçlü sinyal: yanıtın kendi totalCount alanı dönen satır sayısından
+    fazlaysa, ilk tarih 1000 satır eşiğine bakmadan kesme kabul edilir."""
+    df = pd.DataFrame({"Tarih": ["05-01-2021", "12-01-2021"]})
+    assert evds.detect_truncation(df, evds.date(2021, 1, 1), total_count=1500) is True
 
 
 def test_detect_truncation_false_for_empty_dataframe():
@@ -344,13 +360,39 @@ def test_fetch_datagroup_year_truncated_response_writes_no_parquet(
 ):
     monkeypatch.chdir(tmp_path)
     settings = _settings(monkeypatch)
-    rows = [{"Tarih": "20-12-2023", "TP_KTF12": "40.0"}]
-    monkeypatch.setattr(evds, "_authenticated_get", lambda *_a, **_k: rows)
+    payload = {
+        "totalCount": 1850,
+        "items": [{"Tarih": "20-12-2023", "TP_KTF12": "40.0"}] * 1000,
+    }
+    monkeypatch.setattr(evds, "_authenticated_get", lambda *_a, **_k: payload)
 
     result = evds.fetch_datagroup_year("bie_kt100h", 2021, settings)
 
     assert result.outcome == "truncated"
     assert not evds._datagroup_year_path("bie_kt100h", 2021).exists()
+
+
+def test_fetch_datagroup_year_legitimately_late_starting_series_writes_parquet(
+    monkeypatch, tmp_path
+):
+    """Regression: TP.HPBITABLO6.3 measured to start 2024-06-01 -- the old
+    "first row far after expected_start" heuristic alone flagged this whole
+    year as truncated and never wrote its parquet, silently losing every
+    real observation. row_count is nowhere near the 1000 cap, so this must
+    write successfully."""
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(monkeypatch)
+    rows = [
+        {"Tarih": "01-06-2024", "TP_HPBITABLO6_3": "100.0"},
+        {"Tarih": "08-06-2024", "TP_HPBITABLO6_3": "101.0"},
+    ]
+    monkeypatch.setattr(evds, "_authenticated_get", lambda *_a, **_k: rows)
+
+    result = evds.fetch_datagroup_year("bie_hpbitablo6", 2024, settings)
+
+    assert result.outcome == "ok"
+    assert result.path is not None
+    assert evds._datagroup_year_path("bie_hpbitablo6", 2024).exists()
 
 
 def test_fetch_datagroup_year_network_error_is_caught_and_reported(
