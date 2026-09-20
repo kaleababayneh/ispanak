@@ -124,3 +124,72 @@ def test_detect_anomalies_iqr_path_reports_fence_distance_not_a_degenerate_mad_z
 
     assert len(flagged) == 1
     assert flagged.iloc[0]["z"] > 0
+
+
+def _gap_series(n: int = 72, *, outlier_indices=(), outlier_delta: float = 30.0):
+    """A strongly seasonal monthly series, so losing the decomposition is
+    visible in the result rather than only in the method name."""
+    t = np.arange(n)
+    values = (
+        100
+        + t * 0.3
+        + 25 * np.sin(2 * np.pi * t / 12)
+        + np.random.default_rng(7).normal(scale=0.4, size=n)
+    )
+    for index in outlier_indices:
+        values[index] += outlier_delta
+    return pd.DataFrame({"period": _monthly_periods(n), "value": values})
+
+
+def test_a_single_missing_month_does_not_blind_the_detector():
+    """Measured before this path existed: the complete series finds all three
+    injected anomalies, and removing ONE month (1.4%) made the IQR fallback
+    find ZERO. Silence reads as a clean bill of health, which is worse than
+    the false alarms the gap check was added to prevent."""
+    injected = (17, 40, 61)
+    series = _gap_series(outlier_indices=injected)
+    expected_periods = {series["period"].iloc[i] for i in injected}
+
+    gapped = series.drop(index=[30]).reset_index(drop=True)
+    flagged, summary = anomaly.detect_anomalies(gapped)
+
+    assert expected_periods <= set(flagged["dönem"])
+    assert anomaly.IQR_FALLBACK_NOTE not in summary
+
+
+def test_an_interpolated_period_is_never_reported():
+    """The interpolation feeds the decomposition and nothing else. A period
+    that was never observed must not appear as a finding -- that would be a
+    fabricated observation reaching the caller, which is the line CLAUDE.md #2
+    actually draws."""
+    series = _gap_series(outlier_indices=(17, 40, 61))
+    dropped_period = series["period"].iloc[30]
+    gapped = series.drop(index=[30]).reset_index(drop=True)
+
+    flagged, _ = anomaly.detect_anomalies(gapped)
+
+    assert dropped_period not in set(flagged["dönem"])
+    assert set(flagged["dönem"]) <= set(gapped["period"])
+
+
+def test_too_many_gaps_still_fall_back_rather_than_interpolate():
+    """Past the ceiling the seasonal shape would rest mostly on interpolation,
+    so the honest answer is the weaker method plus a note saying so."""
+    series = _gap_series(outlier_indices=(17, 40, 61))
+    gapped = series.drop(index=range(20, 32)).reset_index(drop=True)
+
+    _, summary = anomaly.detect_anomalies(gapped)
+
+    assert anomaly.IQR_FALLBACK_NOTE in summary
+
+
+def test_the_summary_says_interpolation_was_used():
+    """A human reading the answer has to be able to tell that part of the
+    decomposition rested on filled-in values."""
+    series = _gap_series(outlier_indices=(17,))
+    gapped = series.drop(index=[30]).reset_index(drop=True)
+
+    _, summary = anomaly.detect_anomalies(gapped)
+
+    assert "ara değer" in summary
+    assert "gözlenen" in summary
