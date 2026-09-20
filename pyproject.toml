@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "openai>=3,<4",
     "pandas>=3.0.5",
     "pyarrow>=25.0.1",
     "pydantic-settings>=2.15.0",
@@ -24,4 +25,29 @@ dev = [
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "ruff>=0.16.7",
+]
+
+[tool.ruff]
+# 88 is ruff's default and what the existing files are already formatted to,
+# so `ruff format` never rewrites anyone else's code.
+line-length = 88
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["data"]
+
+[tool.ruff.lint]
+# E4/E7/E9 instead of all of E: E501 (line-too-long) is deliberately left out
+# because `ruff format` already owns line length, and the two disagree on
+# docstrings the formatter cannot split. I (imports), UP (modern syntax) and
+# B (bugbear) are the additions over ruff's default.
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["lakehouse_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -m 'not live'"
+markers = [
+    "live: hits the real MIA API; needs MIA_API_KEY. Run manually with -m live.",
 ]

@@ -17,3 +17,75 @@ Karar:  Zincirleme yapılmayacak. TP.TUKFIY2025.GENEL 2021-01 – 2026-08 aralı
         iki serinin oranı sabit (31.83) ve aylık yüzde değişimleri birebir aynı.
 Sonuç:  evds:TUFE_ZINCIR üretilmiyor. deflate doğrudan TP.TUKFIY2025.GENEL,
         baz 2025=100. Görev 2.3'ün zincirleme kısmı kapsam dışı.
+
+## MIA istemcisi: openai sürümü ve ölçülen API yüzeyi
+Bağlam: Kurulu openai sürümü 3.14.0 ve bağımlılığı httpx değil httpx2. İnternetteki
+        her örnek 1.x dönemine ait, yani istemci kurulumu ve parametre adları
+        varsayımla yazılamazdı.
+Karar:  Kod yazmadan önce API yüzeyi ölçüldü (15 Eyl 2026, canlı MIA).
+        Ölçülenler:
+          - OpenAI(api_key, base_url, timeout=float, max_retries=int) çalışıyor.
+          - chat.completions.create: tools, tool_choice, response_format,
+            extra_body, stream, temperature, max_tokens hepsi yerinde.
+          - İstisna sınıfları hâlâ openai.* altında; status_code __init__'te set
+            ediliyor; alt sınıflarda sınıf düzeyi varsayılan var (RateLimitError=429).
+          - Araç çağırma çalışıyor; tool_call id biçimi "chatcmpl-tool-<hex>".
+          - response_format=json_schema çalışıyor, strict bayrağıyla da hata vermiyor.
+          - Embedding boyutu 4096.
+          - models.list üç modeli döndürüyor ama max_model_len alanını vermiyor.
+          - Hatalı model kimliğine 403 dönüyor (404 değil).
+          - thinking=True: 2044 ms / 188 completion token.
+            thinking=False: 523 ms / 48 completion token. Yaklaşık 4 kat fark.
+          - thinking=True iken mesajda ek bir "reasoning" alanı geliyor.
+Sonuç:  pyproject'te openai>=3,<4 pinlendi. llm.py bu ölçüme göre yazıldı:
+        max_retries=0 (retry bizde, loglanıyor), as_message() yalnızca
+        {role, content, tool_calls} süzüyor (reasoning geri gönderilmiyor),
+        403 mesajı hem anahtarı hem model kimliğini işaret ediyor.
+
+## tools ve response_format aynı istekte
+Bağlam: MIA ikisini birlikte kabul ediyor (ölçüldü, hata vermiyor).
+Karar:  Buna rağmen llm.py ikisini birlikte gönderirse LlmInputError fırlatıyor.
+        Gerekçe: aynı çağrıda hem araç seçtirmek hem şemaya zorlamak anlamsız;
+        modelin hangisine uyacağı belirsiz ve bizim hiçbir akışımızda gerekmiyor.
+        Sunucu izin veriyor diye kullanmak, sessiz bir davranış farkını
+        keşfedilmemiş bırakmak demek.
+Sonuç:  Yasak bizim tarafımızda, sunucuda değil. İhtiyaç doğarsa tek satır kaldırılır.
+
+## Agent motoru: LangGraph yerine kendi döngümüz
+Bağlam: Mentor "agent motoru kendi kodunuz olmalı" dedi; LangGraph gibi açık kaynak
+        kütüphaneler serbest. Kurulu langgraph 1.2.11 ve internetteki örneklerin
+        tamamı 0.2.x dönemine ait.
+Karar:  Kendi async while döngümüz yazılacak. LangGraph, checkpointer ve interrupt()
+        kullanılmayacak, bağımlılık eklenmeyecek.
+Sonuç:  Tek süreçli Chainlit'te insan onayı engelleyici bir await ile çözülüyor;
+        checkpointer'ın çözdüğü problem (süreç dışı duraklatma) bizde yok.
+        Döngü async, LLM ve araçlar senkron; döngü onları asyncio.to_thread ile
+        çağırıyor, böylece arayüz donmuyor ve testler pytest-asyncio istemiyor.
+
+## Sahte katmanın yeri: tests/ değil src/lakehouse_agent/testing/
+Bağlam: FakeLLM ve FakeLake'i hem testler hem --fake CLI modu hem de ileride eval
+        koşturucusu kullanacak.
+Karar:  src/lakehouse_agent/testing/ altında, kurulu paketin parçası olarak.
+Sonuç:  src düzeninde tests/ kurulu pakete girmiyor; oradan import etmek pythonpath
+        hilesi gerektirir ve Docker imajında kırılır. Üretim modülleri bu paketi
+        import etmez; tek istisna CLI içindeki --fake bayrağına bağlı tembel import.
+
+## AgentSettings ayrı sınıf
+Bağlam: Settings sınıfı EVDS anahtarını zorunlu tutuyor ve bir testi anahtar yokken
+        hata bekliyor. Agent testlerinin EVDS anahtarıyla işi yok.
+Karar:  config.py'ye dokunulmadan, dosyanın altına ayrı bir AgentSettings eklendi.
+Sonuç:  Veri şeridinin sözleşmesi değişmedi, merge çakışması riski yok, agent
+        testleri anahtarsız ortamda yeşil.
+
+## Embedding partileme ve OCR doğrulaması
+Bağlam: llm.embed() önce tek istekte tüm listeyi gönderiyordu. A'nın kataloğu
+        678 veri grubu, on binlerce seri; gömme işini o yapacak.
+Ölçüm:  MIA'da 1 metin 0,4 sn; 256 metin 5,6 sn; 1024 metin 22,4 sn.
+        İstemci zaman aşımı 45 sn. Yani ~2000 metnin üstünde tek istek düşerdi.
+Karar:  EMBED_BATCH_SIZE = 256. Sıra partiler arasında korunuyor ve dönen
+        vektör sayısı girdiyle karşılaştırılıyor.
+Sonuç:  A'nın katalog gömme işi güvenli; llm.embed() istediği kadar metin alır.
+
+Ayrıca OCR canlı doğrulandı (15 Eyl): geçerli bir PNG ile 314 ms, çıktıda
+rehberin bahsettiği <|det|> yerleşim etiketleri var. Yani Unlimited-OCR yolu
+uçtan uca çalışıyor; web araçları aşamasında yeniden keşfedilmesi gerekmiyor.
