@@ -168,7 +168,15 @@ def count_images(messages: list[dict[str, Any]]) -> int:
     for message in messages:
         content = message.get("content")
         if isinstance(content, list):
-            total += sum(1 for part in content if part.get("type") == "image_url")
+            # Only dict parts are counted. A content list is not guaranteed to
+            # hold only dicts, and a bare string or a None slipped in used to
+            # raise AttributeError from inside `chat()` -- breaking this
+            # module's promise that every failure it raises is an LlmError.
+            total += sum(
+                1
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "image_url"
+            )
     return total
 
 
@@ -297,6 +305,10 @@ class MiaLLM:
         tag: str | None = None,
         session_id: str | None = None,
     ) -> ChatResult:
+        if not messages:
+            raise LlmInputError(
+                "Bos mesaj listesi gonderilemez; en az bir mesaj gerekli."
+            )
         if tools and schema:
             raise LlmInputError(
                 "tools ve schema ayni istekte kullanilamaz; ya arac cagrisi ya sema."
@@ -610,6 +622,27 @@ def _cli(argv: list[str] | None = None) -> int:
         f"chat     OK  {result.duration_ms:5d} ms  "
         f"prompt={result.usage.prompt_tokens} completion={result.usage.completion_tokens}"
     )
+
+    # Structured output is exercised against the real endpoint, not only in
+    # unit tests: a fake client can prove we *send* response_format the way we
+    # promise, never that MIA accepts it. The verifier and every structured
+    # extraction ride on this path, so it is measured here instead of being
+    # discovered on demo day.
+    try:
+        structured = llm.chat(
+            [{"role": "user", "content": "Durumu tek kelimeyle bildir."}],
+            thinking=False,
+            schema=PingReply.model_json_schema(),
+            tag="cli@ping-schema",
+        )
+    except LlmError as exc:
+        print(f"json_sch BASARISIZ: {type(exc).__name__}: {exc}")
+        return 1
+    if structured.parsed is None:
+        raw = (structured.content or "")[:60]
+        print(f"json_sch UYARI  sema uygulanmadi; ham cevap: {raw!r}")
+    else:
+        print(f"json_sch OK  parsed={structured.parsed}")
 
     try:
         vectors = llm.embed(["Konut kredisi faiz orani"], tag="cli@ping")

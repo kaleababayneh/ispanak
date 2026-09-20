@@ -25,6 +25,7 @@ from lakehouse_agent.llm import (
     LlmServerError,
     LlmTimeoutError,
     MiaLLM,
+    count_images,
     image_part,
 )
 
@@ -194,6 +195,32 @@ def test_too_many_images_are_rejected_locally(settings):
     parts = [image_part(b"png") for _ in range(MAX_IMAGES_PER_CHAT + 1)]
     with pytest.raises(LlmInputError):
         llm.chat([{"role": "user", "content": [*parts, {"type": "text", "text": "x"}]}])
+    assert client.calls == []
+
+
+def test_count_images_ignores_malformed_content_parts():
+    """A content list is not guaranteed to hold only dicts.
+
+    A bare string or a None among the parts used to raise AttributeError from
+    inside `chat()`, before the request was even built. That breaks this
+    module's contract that every failure it raises is an LlmError, so the
+    counter now skips anything that is not a dict.
+    """
+    messy = [{"role": "user", "content": [{"type": "text"}, "duz metin", None]}]
+    assert count_images(messy) == 0
+
+    mixed = [{"role": "user", "content": ["duz metin", image_part(b"x"), None]}]
+    assert count_images(mixed) == 1
+
+    # The ordinary case -- content as a plain string -- is untouched.
+    assert count_images([{"role": "user", "content": "duz metin"}]) == 0
+
+
+def test_empty_messages_are_rejected_locally(settings):
+    """An empty turn is our bug, so it never costs a round trip."""
+    llm, client = make_llm(settings)
+    with pytest.raises(LlmInputError):
+        llm.chat([])
     assert client.calls == []
 
 
