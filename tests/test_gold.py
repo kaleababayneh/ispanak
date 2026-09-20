@@ -335,14 +335,9 @@ def test_wide_pivots_one_column_per_series(monkeypatch, tmp_path):
     assert list(result["evds:TP.KFE.TR"]) == [150.0, 151.5]
 
 
-def test_wide_warns_on_mismatched_frequencies_and_reports_fill_counts(
-    monkeypatch, tmp_path, caplog
-):
-    """B'nin ölçtüğü: wide(['evds:TP.KTF12','evds:TP.TUKFIY2025.GENEL'],
-    '2021-01','2025-12') -> 311 satır, hiçbirinde iki seri birlikte dolu
-    değil (biri haftalık, biri aylık) -- sessizce kullanılamaz bir tablo
-    dönüyor."""
-    monkeypatch.chdir(tmp_path)
+def _write_mixed_freq_fixture(tmp_path):
+    """TP.KTF12 (haftalık) + TP.TUKFIY2025.GENEL (aylık), aynı senaryodaki
+    iki gerçek seri -- B'nin ölçtüğü karışık-frekans durumu."""
     evds.CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         [
@@ -380,7 +375,10 @@ def test_wide_warns_on_mismatched_frequencies_and_reports_fill_counts(
     ktf_dir = evds.DATAGROUPS_DATA_ROOT / "bie_ktf"
     ktf_dir.mkdir(parents=True)
     pd.DataFrame(
-        {"Tarih": ["05-01-2024", "12-01-2024"], "TP_KTF12": ["1", "2"]}
+        {
+            "Tarih": ["05-01-2024", "12-01-2024", "19-01-2024", "26-01-2024"],
+            "TP_KTF12": ["1", "2", "3", "4"],
+        }
     ).to_parquet(ktf_dir / "2024.parquet", index=False)
 
     tuk_dir = evds.DATAGROUPS_DATA_ROOT / "bie_tukfiy"
@@ -389,13 +387,45 @@ def test_wide_warns_on_mismatched_frequencies_and_reports_fill_counts(
         {"Tarih": ["2024-1", "2024-2"], "TP_TUKFIY2025_GENEL": ["100", "101"]}
     ).to_parquet(tuk_dir / "2024.parquet", index=False)
 
+
+def test_wide_freq_none_warns_on_mismatched_frequencies_legacy_behavior(
+    monkeypatch, tmp_path, caplog
+):
+    """B'nin ölçtüğü: wide(['evds:TP.KTF12','evds:TP.TUKFIY2025.GENEL'],
+    '2021-01','2025-12') -> 311 satır, hiçbirinde iki seri birlikte dolu
+    değil (biri haftalık, biri aylık) -- sessizce kullanılamaz bir tablo
+    dönüyor. freq=None ile eski (hizalamasız, sadece uyaran) davranış
+    korunuyor -- geriye uyumluluk."""
+    monkeypatch.chdir(tmp_path)
+    _write_mixed_freq_fixture(tmp_path)
+
     gold.build_gold(["evds:TP.KTF12", "evds:TP.TUKFIY2025.GENEL"])
 
     with caplog.at_level(logging.WARNING, logger="lakehouse_agent.lake.gold"):
-        result = gold.wide(["evds:TP.KTF12", "evds:TP.TUKFIY2025.GENEL"])
+        result = gold.wide(["evds:TP.KTF12", "evds:TP.TUKFIY2025.GENEL"], freq=None)
 
     assert any("farklı frekanslarda" in r.message for r in caplog.records)
     assert not result.empty
+
+
+def test_wide_default_freq_aligns_mismatched_series_so_both_columns_fill(
+    monkeypatch, tmp_path
+):
+    """B'nin FakeLake'i wide(series_ids, start, end, freq="M") çağırıyor,
+    gerçek wide() freq almıyordu -> TypeError. Artık freq var, varsayılanı
+    "M" ve gerçekten hizalıyor: aynı haftalık+aylık karışımı artık her
+    ayda iki sütunu da dolu veriyor (TP.KTF12 rate->avg, TUFE index->avg)."""
+    monkeypatch.chdir(tmp_path)
+    _write_mixed_freq_fixture(tmp_path)
+
+    gold.build_gold(["evds:TP.KTF12", "evds:TP.TUKFIY2025.GENEL"])
+
+    result = gold.wide(["evds:TP.KTF12", "evds:TP.TUKFIY2025.GENEL"])
+
+    assert not result.empty
+    row = result[result["period"] == pd.Timestamp(2024, 1, 1)].iloc[0]
+    assert row["evds:TP.KTF12"] == pytest.approx((1 + 2 + 3 + 4) / 4)
+    assert row["evds:TP.TUKFIY2025.GENEL"] == pytest.approx(100.0)
 
 
 def test_run_sql_rejects_non_select(monkeypatch, tmp_path):

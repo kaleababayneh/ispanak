@@ -25,6 +25,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
+from lakehouse_agent.analysis import transforms
 from lakehouse_agent.ingest import bddk_monthly
 from lakehouse_agent.ingest.evds import CATALOG_PATH
 from lakehouse_agent.lake.silver import (
@@ -376,27 +377,36 @@ def _series_freqs(series_ids: list[str]) -> dict[str, str]:
     return dict(rows)
 
 
-def wide(
-    series_ids: Iterable[str], start: str | None = None, end: str | None = None
-) -> pd.DataFrame:
-    """get(), pivoted to one column per series_id, indexed by period.
+def _series_kinds(series_ids: list[str]) -> dict[str, str]:
+    """kind per series_id from series_catalog, for wide()'s per-series
+    to_freq aggregation choice (stock->last, flow->sum, rate->avg,
+    index->avg). Empty dict if series_ids is empty."""
+    if not series_ids:
+        return {}
+    placeholders = ", ".join(["?"] * len(series_ids))
+    con = connect()
+    try:
+        rows = con.execute(
+            f"SELECT series_id, kind FROM series_catalog WHERE series_id IN ({placeholders})",
+            list(series_ids),
+        ).fetchall()
+    finally:
+        con.close()
+    return dict(rows)
 
-    Series with different native frequencies rarely share exact period
-    values (a Monday-anchored weekly series vs. a 1st-of-month monthly
-    series) -- pivoting them together produces a table where almost every
-    row has only one column populated, unusable for a joint read even
+
+def _pivot_raw(long: pd.DataFrame) -> pd.DataFrame:
+    """Legacy wide() shape (freq=None): pivot on exact period match, no
+    alignment. Series with different native frequencies rarely share exact
+    period values (a Monday-anchored weekly series vs. a 1st-of-month
+    monthly series) -- pivoting them together produces a table where almost
+    every row has only one column populated, unusable for a joint read even
     though it succeeds without error. Measured:
     wide(["evds:TP.KTF12", "evds:TP.TUKFIY2025.GENEL"], "2021-01",
     "2025-12") -> 311 rows, no row with both columns filled (weekly vs.
-    monthly). The shape returned here is unchanged (other callers may
-    depend on it); a mismatch and the per-column fill rate are logged
-    instead so the problem is visible rather than a silent unusable table.
+    monthly). A mismatch and the per-column fill rate are logged so the
+    problem is visible rather than a silent unusable table.
     """
-    ids = list(series_ids)
-    long = get(ids, start, end)
-    if long.empty:
-        return long
-
     result = long.pivot(
         index="period", columns="series_id", values="value"
     ).reset_index()
@@ -423,6 +433,57 @@ def wide(
                 len(result),
                 fill_counts,
             )
+    return result
+
+
+def wide(
+    series_ids: Iterable[str],
+    start: str | None = None,
+    end: str | None = None,
+    freq: str | None = "M",
+) -> pd.DataFrame:
+    """get(), pivoted to one column per series_id, indexed by period.
+
+    `freq` (gold contract Freq: D|W|M|Q|A, default "M") aligns every
+    requested series to that common frequency first, via
+    `analysis.transforms.to_freq` with each series' own `kind` from
+    series_catalog (stock->last, flow->sum, rate->avg, index->avg) --
+    resolving the mismatched-frequency problem below by construction
+    instead of merely reporting it. `freq=None` skips alignment entirely
+    and pivots on exact period match (legacy behavior, kept for backward
+    compatibility) -- see `_pivot_raw` for why that silently produces a
+    mostly-empty table when series have different native frequencies.
+    """
+    ids = list(series_ids)
+    long = get(ids, start, end)
+    if long.empty:
+        return long
+
+    if freq is None:
+        return _pivot_raw(long)
+
+    kinds = _series_kinds(ids)
+    aligned: dict[str, pd.DataFrame] = {}
+    for sid in ids:
+        sub = long.loc[long["series_id"] == sid, ["period", "value"]]
+        if sub.empty:
+            continue
+        kind = kinds.get(sid)
+        if kind is None:
+            logger.warning(
+                "wide(): %s için series_catalog'da kind bulunamadı, "
+                "%s frekansına hizalanmadı",
+                sid,
+                freq,
+            )
+            aligned[sid] = sub
+            continue
+        aligned[sid], _formula = transforms.to_freq(sub, kind, freq)
+
+    if not aligned:
+        return pd.DataFrame(columns=["period", *ids])
+
+    result, _formula = transforms.align_join(aligned, how="outer")
     return result
 
 
