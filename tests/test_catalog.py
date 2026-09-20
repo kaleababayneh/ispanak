@@ -170,39 +170,26 @@ def test_search_catalog_fallback_without_vector(tmp_path):
     assert "vector" not in results.columns
 
 
-class _FakeMiaResponseItem:
-    def __init__(self, embedding):
-        self.embedding = embedding
-
-
-class _FakeMiaResponse:
-    def __init__(self, n: int):
-        self.data = [_FakeMiaResponseItem([0.0] * 8) for _ in range(n)]
-
-
-class _FakeMiaClient:
-    """Spies on the `input=` list actually sent to MIA, without a real call."""
+class _FakeMiaLLM:
+    """Spies on the texts actually sent to MiaLLM.embed(), no real call."""
 
     def __init__(self):
         self.calls: list[list[str]] = []
 
-        class _Embeddings:
-            def create(inner_self, model, input, encoding_format):
-                self.calls.append(list(input))
-                return _FakeMiaResponse(len(input))
-
-        self.embeddings = _Embeddings()
+    def embed(self, texts, *, tag=None):
+        self.calls.append(list(texts))
+        return [[0.0] * 8 for _ in texts]
 
 
 def test_embed_batch_prepends_instruction_prefix_only_for_queries(monkeypatch):
-    fake_client = _FakeMiaClient()
-    monkeypatch.setattr(catalog, "_mia_client", fake_client)
+    fake_llm = _FakeMiaLLM()
+    monkeypatch.setattr(catalog, "_mia_llm", fake_llm)
 
     catalog._embed_batch(["konut kredisi"], is_query=False)
-    assert fake_client.calls[-1] == ["konut kredisi"]
+    assert fake_llm.calls[-1] == ["konut kredisi"]
 
     catalog._embed_batch(["konut kredisi"], is_query=True)
-    assert fake_client.calls[-1] == [QUERY_INSTRUCTION_PREFIX + "konut kredisi"]
+    assert fake_llm.calls[-1] == [QUERY_INSTRUCTION_PREFIX + "konut kredisi"]
 
 
 def test_search_catalog_embeds_query_with_instruction_prefix(catalog_table):

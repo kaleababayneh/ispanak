@@ -8,17 +8,15 @@ re-embeds a text it has already seen. `search_catalog` combines vector +
 full-text search with reciprocal rank fusion, and falls back to full-text
 only when no vector column is present.
 
-`_embed_batch` below calls MIA directly. `lakehouse_agent.llm` (owned by
-track B) does not exist yet -- once it ships an `embed()` function, switch
-to `from lakehouse_agent.llm import embed` instead of maintaining a second
-MIA client here.
+`_embed_batch` below routes the actual MIA call through
+`lakehouse_agent.llm.MiaLLM` -- the single door to MIA, so retry and usage
+logging aren't bypassed.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -26,22 +24,31 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from openai import OpenAI
+from pydantic import ValidationError
+
+from lakehouse_agent.config import get_agent_settings
+from lakehouse_agent.llm import MiaLLM
 
 logger = logging.getLogger(__name__)
 
-MIA_BASE_URL = "https://mia.csp.kloudeks.com/v1"
-MIA_EMBEDDING_MODEL = "kkbhackathon2026/Qwen3-Embedding-8B"
+# Built lazily, not at import time: calling get_agent_settings() at module
+# scope would fail test_no_module_reads_settings_at_import_time and force
+# MIA_API_KEY on every environment that merely imports this module (tests
+# pass their own `embed_fn` mock and never reach `_embed_batch`).
+_mia_llm: MiaLLM | None = None
 
-# Built once at import time, not per-call. Reads MIA_API_KEY straight from
-# the environment (never opens .env -- CLAUDE.md) and is deliberately not
-# constructed at all when the key is absent, so importing this module never
-# fails in test environments (tests pass their own `embed_fn` mock and never
-# reach `_embed_batch`).
-_mia_api_key = os.environ.get("MIA_API_KEY")
-_mia_client: OpenAI | None = (
-    OpenAI(api_key=_mia_api_key, base_url=MIA_BASE_URL) if _mia_api_key else None
-)
+
+def _get_mia_llm() -> MiaLLM:
+    global _mia_llm
+    if _mia_llm is None:
+        try:
+            _mia_llm = MiaLLM(get_agent_settings())
+        except ValidationError as exc:
+            raise RuntimeError(
+                "MIA_API_KEY ortam değişkeni ayarlı değil; embed edilemiyor."
+            ) from exc
+    return _mia_llm
+
 
 # Qwen3-Embedding is ASYMMETRIC: a search query needs this instruction
 # prefix, a document does not. Measured 17 Sep 2026 on the real 19646-row
@@ -138,9 +145,9 @@ def build_search_text(row: pd.Series) -> str:
 
 
 def _embed_batch(texts: list[str], is_query: bool = False) -> np.ndarray:
-    """Real MIA call -- replace with `lakehouse_agent.llm.embed` once track B
-    ships it. Qwen3-Embedding-8B, dim 4096; measured 17.3s/batch of 64 on a
-    single worker (hence the 8-worker parallelism in `embed_with_cache`).
+    """MIA embedding call, routed through lakehouse_agent.llm.MiaLLM.
+    Qwen3-Embedding-8B, dim 4096; measured 17.3s/batch of 64 on a single
+    worker (hence the 8-worker parallelism in `embed_with_cache`).
 
     `is_query=True` prepends QUERY_INSTRUCTION_PREFIX to every text (see the
     measurement above the constant's definition) -- use it ONLY for the
@@ -148,17 +155,13 @@ def _embed_batch(texts: list[str], is_query: bool = False) -> np.ndarray:
     `is_query=False`) must never get this prefix: the indexed vectors were
     built without it, and this model's asymmetric scheme specifically wants
     an unprefixed corpus against a prefixed query, not both prefixed.
+    `MiaLLM.embed()` has no notion of this prefix, so it is applied here,
+    before the plain text is handed to it.
     """
-    if _mia_client is None:
-        raise RuntimeError(
-            "MIA_API_KEY ortam değişkeni ayarlı değil; embed edilemiyor."
-        )
     if is_query:
         texts = [QUERY_INSTRUCTION_PREFIX + text for text in texts]
-    resp = _mia_client.embeddings.create(
-        model=MIA_EMBEDDING_MODEL, input=texts, encoding_format="float"
-    )
-    return np.array([d.embedding for d in resp.data], dtype=np.float32)
+    vectors = _get_mia_llm().embed(texts, tag="catalog.embed")
+    return np.array(vectors, dtype=np.float32)
 
 
 def _text_hash(text: str) -> str:
