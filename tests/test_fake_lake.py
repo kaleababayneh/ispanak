@@ -90,8 +90,9 @@ def test_wide_period_stays_a_datetime_column(scenario_wide):
 
 def test_weekly_rate_becomes_the_monthly_mean(fake_lake):
     weekly = fake_lake.get([RATE_SERIES], "2022-03", "2022-06")[["period", "value"]]
-    monthly = fake_lake.to_freq(weekly, "M", "rate")
+    monthly, formula = fake_lake.to_freq(weekly, "rate", "M")
     assert len(monthly) == 4
+    assert "mean" in formula
 
     march = weekly[weekly["period"].dt.month == 3]["value"].mean()
     assert monthly["value"].iloc[0] == pytest.approx(march, rel=1e-9)
@@ -100,7 +101,7 @@ def test_weekly_rate_becomes_the_monthly_mean(fake_lake):
 def test_stock_takes_the_last_value_of_the_period(fake_lake):
     """A balance is not summed or averaged; the period's closing level is the value."""
     monthly = fake_lake.get([CREDIT_SERIES], "2021-01", "2021-03")[["period", "value"]]
-    quarterly_last = fake_lake.to_freq(monthly, "M", "stock")
+    quarterly_last, _ = fake_lake.to_freq(monthly, "stock", "M")
     assert quarterly_last["value"].iloc[-1] == monthly["value"].iloc[-1]
 
 
@@ -259,7 +260,7 @@ def test_first_month_aggregates_to_its_intended_level(fake_lake):
     must not have.
     """
     weekly = fake_lake.get([RATE_SERIES], "2021-01", "2021-01")[["period", "value"]]
-    monthly = fake_lake.to_freq(weekly, "M", "rate")
+    monthly, _ = fake_lake.to_freq(weekly, "rate", "M")
     assert monthly["value"].iloc[0] == pytest.approx(12.0, abs=1e-9)
 
 
@@ -280,6 +281,28 @@ def test_wide_rejects_duplicate_series_ids(fake_lake):
         fake_lake.wide([RATE_SERIES, RATE_SERIES], "2021-01", "2021-06")
 
 
+def test_to_freq_returns_the_frame_and_the_formula_it_applied(fake_lake):
+    """Plan 4.1: every transform hands back what it did, so a column's lineage
+    can say it. An earlier version returned the frame alone, which meant
+    `frame, note = lake.to_freq(...)` worked against the real lane and raised
+    against this one -- and the contract test, checking parameter names only,
+    saw nothing."""
+    weekly = fake_lake.get([RATE_SERIES], "2022-03", "2022-06")[["period", "value"]]
+
+    returned = fake_lake.to_freq(weekly, "rate", "M")
+
+    assert isinstance(returned, tuple) and len(returned) == 2
+    frame, formula = returned
+    assert isinstance(frame, pd.DataFrame)
+    assert isinstance(formula, str) and formula
+
+
+def test_to_freq_rejects_an_unknown_kind(fake_lake):
+    weekly = fake_lake.get([RATE_SERIES], "2022-03", "2022-06")[["period", "value"]]
+    with pytest.raises(ValueError, match="Bilinmeyen kind"):
+        fake_lake.to_freq(weekly, "boyle-bir-kind-yok", "M")
+
+
 def test_to_freq_refuses_to_go_up_in_frequency(fake_lake):
     """Monthly rows resampled to weeks do not invent numbers -- the empty weeks
     drop out -- but they relabel monthly observations as weekly ones, and every
@@ -292,7 +315,7 @@ def test_to_freq_refuses_to_go_up_in_frequency(fake_lake):
         }
     )
     with pytest.raises(ValueError, match="Yuksek frekansa"):
-        fake_lake.to_freq(monthly, "W", "index", "avg")
+        fake_lake.to_freq(monthly, "index", "W")
 
 
 def test_wide_refuses_to_go_up_in_frequency(fake_lake):
@@ -310,7 +333,7 @@ def test_a_flow_month_with_no_observations_stays_missing(fake_lake):
             "value": [10.0, 10.0, 5.0],
         }
     )
-    monthly = fake_lake.to_freq(sparse, "M", "flow", "sum")
+    monthly, _ = fake_lake.to_freq(sparse, "flow", "M")
     months = monthly["period"].dt.strftime("%Y-%m").tolist()
     assert months == ["2021-01", "2021-03"]
     assert monthly["value"].tolist() == [20.0, 5.0]
@@ -377,7 +400,8 @@ def test_to_freq_allows_a_conversion_it_cannot_judge(fake_lake):
     two = pd.DataFrame(
         {"period": pd.to_datetime(["2021-01-01", "2021-02-01"]), "value": [1.0, 2.0]}
     )
-    assert len(fake_lake.to_freq(two, "M", "index", "avg")) == 2
+    aggregated, _ = fake_lake.to_freq(two, "index", "M")
+    assert len(aggregated) == 2
 
 
 def test_catalog_lookup_names_the_series_it_could_not_find(fake_lake):
@@ -407,7 +431,7 @@ def test_to_freq_rejects_unsupported_frequencies(fake_lake):
     three must say so rather than surface as a bare KeyError."""
     frame = fake_lake.get([CREDIT_SERIES], "2021-01", "2021-06")[["period", "value"]]
     with pytest.raises(ValueError, match="Desteklenmeyen"):
-        fake_lake.to_freq(frame, "Q", "stock")
+        fake_lake.to_freq(frame, "stock", "Q")
 
 
 def test_profile_table_counts_missing_periods(fake_lake, scenario_wide):

@@ -58,9 +58,13 @@ def get(series_ids: list[str], start: str, end: str) -> pd.DataFrame
 def wide(series_ids: list[str], start: str, end: str, freq: str = "M") -> pd.DataFrame
     # 'period' + her series_id için bir sütun
 
-def to_freq(df, target: str, kind: str, agg_method: str | None = None) -> pd.DataFrame
+def to_freq(df, kind: str, freq: str) -> tuple[pd.DataFrame, str]
     # stock -> son değer, flow -> toplam, rate/index -> ortalama
     # yalnızca yüksek frekanstan düşüğe; tersi veri icat etmektir
+    # ikinci dönüş değeri uygulanan formül (plan 4.1: her dönüşüm ne yaptığını
+    # söyler, sütunun soyağacına o metin girer)
+    # agg_method parametresi KALDIRILDI: kind zaten yöntemi belirliyor ve
+    # gerçek analysis/transforms.to_freq onu almıyor
 
 def search(query: str, k: int = 20) -> list[CatalogHit]
 

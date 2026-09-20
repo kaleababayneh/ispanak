@@ -136,6 +136,16 @@ _OBSERVATION_COLUMNS = [
 
 _AGG_FOR_KIND = {"stock": "last", "flow": "sum", "rate": "mean", "index": "mean"}
 
+#: Same wording as `analysis/transforms.py`, because the string ends up in the
+#: column's lineage and the trust panel: two spellings of one operation read as
+#: two different operations to whoever is checking where a number came from.
+_KIND_TO_FORMULA = {
+    "stock": "value[period] = last(value[alt_dönem])",
+    "flow": "value[period] = sum(value[alt_dönem])",
+    "rate": "value[period] = mean(value[alt_dönem])",
+    "index": "value[period] = mean(value[alt_dönem])",
+}
+
 #: How coarse each frequency is. `to_freq` only ever moves up this scale.
 _FREQ_RANK = {"D": 0, "W": 1, "M": 2, "Q": 3, "A": 4}
 
@@ -389,7 +399,7 @@ class FakeLake:
             part = long[long["series_id"] == series_id][["period", "value"]]
             meta = SCENARIO_SERIES[series_id]
             if meta["freq"] != freq:
-                part = self.to_freq(part, freq, meta["kind"], meta["agg_method"])
+                part, _formula = self.to_freq(part, meta["kind"], freq)
             columns.append(part.rename(columns={"value": series_id}))
 
         out = columns[0]
@@ -400,34 +410,38 @@ class FakeLake:
         return out
 
     def to_freq(
-        self,
-        df: pd.DataFrame,
-        target: str,
-        kind: str,
-        agg_method: str | None = None,
-    ) -> pd.DataFrame:
+        self, df: pd.DataFrame, kind: str, freq: str
+    ) -> tuple[pd.DataFrame, str]:
         """Aggregate to a lower frequency using the rule implied by `kind`.
 
         Balances take the period's last value, flows sum, rates and indices
         average. Going the other way (monthly to weekly) would be inventing
         data and is not supported.
+
+        Returns the frame *and* the formula it applied, matching
+        `analysis/transforms.to_freq`. The string is not decoration: plan 4.1
+        requires every transform to hand back what it did so the column's
+        lineage can say it. An earlier version returned the frame alone, so
+        `frame, note = lake.to_freq(...)` worked against the real lane and
+        raised `ValueError: too many values to unpack` against this one --
+        a divergence the contract test could not see, because it checked
+        parameter names and not return shapes.
         """
-        how = agg_method or _AGG_FOR_KIND.get(kind, "mean")
-        how = {"avg": "mean", "last": "last", "first": "first", "sum": "sum"}.get(
-            how, how
-        )
+        if kind not in _AGG_FOR_KIND:
+            raise ValueError(f"Bilinmeyen kind: {kind!r}")
+        how = _AGG_FOR_KIND[kind]
         offsets = {"M": "MS", "W": "W-MON"}
-        if target not in offsets:
+        if freq not in offsets:
             # `Freq` also declares D, Q and A. Only the two the pool actually
             # uses are implemented, and an unsupported one must say so rather
             # than surface as a bare KeyError from a dict lookup.
             raise ValueError(
-                f"Desteklenmeyen hedef frekans: {target!r}. "
+                f"Desteklenmeyen hedef frekans: {freq!r}. "
                 f"Desteklenenler: {', '.join(sorted(offsets))}."
             )
 
         source = _infer_freq(df["period"])
-        if source is not None and _FREQ_RANK[source] > _FREQ_RANK[target]:
+        if source is not None and _FREQ_RANK[source] > _FREQ_RANK[freq]:
             # Both this module's docstring and docs/contracts.md say only
             # high-to-low is supported; without this check the claim was only a
             # comment. Resampling monthly rows to weeks does not invent numbers
@@ -435,11 +449,11 @@ class FakeLake:
             # observations as weekly ones, and everything downstream believes
             # the label.
             raise ValueError(
-                f"Yuksek frekansa cevirme desteklenmiyor: {source} -> {target}. "
+                f"Yuksek frekansa cevirme desteklenmiyor: {source} -> {freq}. "
                 "Dusuk frekanstan yuksege gitmek veri icat etmektir."
             )
 
-        offset = offsets[target]
+        offset = offsets[freq]
         resampled = df.set_index("period")["value"].resample(offset)
         if how == "sum":
             # min_count=1, because `.sum()` of an empty window is 0.0, not NaN.
@@ -452,7 +466,7 @@ class FakeLake:
 
         grouped = aggregated.dropna().reset_index()
         grouped["period"] = pd.to_datetime(grouped["period"])
-        return grouped
+        return grouped, _KIND_TO_FORMULA[kind]
 
     def catalog_lookup(self, series_ids: list[str]) -> pd.DataFrame:
         missing = [sid for sid in series_ids if sid not in SCENARIO_SERIES]
