@@ -4,6 +4,11 @@ Bu dosya `src/lakehouse_agent/ingest/evds.py`'nin ürettiği bronze dosyaların�
 belgeler. Gold katmanı sözleşmeleri için `CLAUDE.md`'ye bakın (bu dosya
 onları tekrar etmez).
 
+Pipeline: `ingest/evds.py` (bronze) → `lake/silver.py` (long, NaN korunur)
+→ `lake/gold.py` (observations.parquet + series_catalog.parquet + DuckDB) →
+`analysis/transforms.py` (to_freq/deflate/rebase/pct_change/yoy/diff/align_join,
+saf DataFrame→DataFrame).
+
 ## `data/bronze/evds/catalog.parquet`
 
 `build_catalog()` tarafından üretilir. Her satır bir EVDS serisi; `serieList`
@@ -42,21 +47,51 @@ bunu tek seferde `fetch_log.parquet`'e derler.
 
 Sütunlar: `url` (anahtar `key=***` olarak redakte edilmiş), `params`
 (çağrılan path, örn. `datagroups/mode=0&type=json`), `http_status`,
-`row_count` (yanıt bir liste ise eleman sayısı, değilse `null`),
-`fetched_at` (ISO 8601, UTC), `outcome` (`ok | redirect | auth_error |
-retry | failed`).
+`row_count` (yanıt bir liste ise eleman sayısı; bulk veri yanıtı
+`{"totalCount":N,"items":[...]}` biçimindeyse `items`'ın eleman sayısı;
+ikisi de değilse `null`), `fetched_at` (ISO 8601, UTC), `outcome`
+(`ok | redirect | auth_error | retry | failed`).
 
 Anahtar bu dosyalarda **hiçbir zaman** ham biçimde bulunmaz.
 
-## Senaryo serileri (plan 0.6)
+## `data/bronze/evds/datagroups/<DATAGROUP_CODE>/<year>.parquet`
 
-| Büyüklük | series_id | Frekans | Birim | kind | agg | cum_type | Kapsam |
+`evds.fetch_datagroup_year()` / `fetch_datagroups_years()` tarafından
+üretilir — bir veri grubunun bir takvim yılına ait ham (wide) yanıtı, hiç
+dönüştürülmeden. Her satır bir `Tarih`; her sütun o gruptaki bir seri
+(nokta yerine alt çizgi, örn. `TP_KTF12`). Ek sütunlar da (`YEARWEEK`,
+`UNIXTIME`) kaynaktan geldiği gibi tutulur. `_fetched_at` (ISO 8601, UTC)
+ingest'in eklediği tek alan — dönüşüm değil, kaynak zaman damgası.
+
+**16 Eyl 2026 doğrulandı — CLAUDE.md'nin metaveri gözlemlerini GEÇERSİZ
+KILMAZ, tamamlar:** bulk veri endpoint'i (`datagroup=<code>&startDate=...`)
+metaveri endpoint'leri (`categories`, `datagroups`, `serieList`) gibi çıplak
+liste DÖNDÜRMÜYOR — `{"totalCount": N, "items": [...]}` zarfı içinde
+dönüyor. Resmi kılavuzda belgelenmemiş. `evds._extract_rows()` bu zarfı
+açar; `_row_count()` her iki biçimi de `fetch_log`'a doğru sayar.
+
+**Seri henüz başlamamış dönemler:** bulk yanıt, istenen yılın TÜM
+dönemlerini döndürür; seri o dönemde henüz yoksa hücre gerçek JSON `null`
+(pandas'ta `None`/`NaN`) olarak gelir — `"-"` string DEĞİL (ölçüldü:
+`TP.HPBITABLO6.3`, 28-06-2024'ten önceki her hafta `None`). `detect_truncation`
+bunu kesme SAYMAZ (satır zaten dönemin tamamını kapsıyor); silver bunu
+zaten NaN olarak taşır, ikisi de doldurma yapmaz.
+
+## Senaryo serileri (16 Eylül entegrasyon)
+
+`lake/gold.py`'deki `SCENARIO_SERIES` sabitiyle birebir. `data/gold/` gerçek
+EVDS verisiyle üretildi (16 Eyl 2026, `--datagroups bie_kt100h,bie_kfe,
+bie_tukfiy2025,bie_akonutsat1,bie_akonutsat2,bie_hpbitablo6 --since 2021-01
+--until 2026-06`).
+
+| series_id | datagroup | Frekans | Birim | kind | agg | cum_type | Kapsam |
 |---|---|---|---|---|---|---|---|
-| Konut kredisi faiz oranı | evds:TP.KTF12 | HAFTALIK(CUMA) | % ağırlıklı ort. | rate | avg | none | 2002-01 → 2026-09 |
-| Konut fiyat endeksi | evds:TP.KFE.TR | AYLIK | endeks | index | avg | none | 2010-01 → 2026-07 |
-| TÜFE | evds:TP.TUKFIY2025.GENEL | AYLIK | endeks 2025=100 | index | avg | none | 2021-01 → 2026-08 |
-| Konut kredisi bakiyesi | bddk:aylik:tuketici:konut:TL:sektor | AYLIK | milyon TL | stock | last | none | BDDK (1.5) |
-| İpotekli konut satışı | evds:doğrulanacak | AYLIK | adet | flow | sum | doğrulanacak | |
+| evds:TP.KTF12 | bie_kt100h | HAFTALIK(CUMA) | Ağırlıklı ortalama (%) | rate | avg | none | 2002-01 → 2026-09 |
+| evds:TP.KFE.TR | bie_kfe | AYLIK | (endeks, birim boş) | index | avg | none | 2010-01 → 2026-07 |
+| evds:TP.TUKFIY2025.GENEL | bie_tukfiy2025 | AYLIK | (endeks 2025=100, birim boş) | index | avg | none | 2021-01 → 2026-08 (2005-01'den itibaren dolu) |
+| evds:TP.AKONUTSAT1.KTRTOPLAM | bie_akonutsat1 | AYLIK | Adet | flow | sum | none | 2013-01 → 2026-07 |
+| evds:TP.AKONUTSAT2.KTRTOPLAM | bie_akonutsat2 | AYLIK | Adet | flow | sum | none | 2013-01 → 2026-07 |
+| evds:TP.HPBITABLO6.3 | bie_hpbitablo6 | HAFTALIK(CUMA) | bin TL | stock | last | none | 2024-06 → 2026-09 (bilinçli kısa seri) |
 
 **Faiz serisi seçimi:** TP.KTF12 (akım) seçildi, TP.BKR.TRY.18 (stok) değil.
 Akım = o hafta açılan yeni kredilerin faizi; stok = mevcut portföyün ortalaması.
@@ -68,3 +103,79 @@ sonra yansıtır ve aranan ilişkiyi gizler.
 kullanılmayacak. Doğrulama: iki serinin oranı sabit (2025-12: 31.832, 2026-01:
 31.831) ve aylık değişimleri aynı (%4.84) — yeni seri eskinin yeniden bazlanmış hali.
 deflate aracı doğrudan bu seriyi kullanır, baz 2025=100.
+
+**AKONUTSAT1/2 `DEFAULT_AGG_METHOD_STR="KÜMÜLATİF"` tuzağı:** katalogdaki bu
+alan "seri değeri yıl başından kümülatif" DEMEK DEĞİL — EVDS'in bu seriyi
+daha düşük frekansa (örn. yıllık) çevirirken önerdiği yöntem (aylıkları
+topla). Gerçek 2022 aylık değerleri kontrol edildi (93K, 103K, 146K, ...,
+226K) — birbirine yakın büyüklükte, yıl içinde tekrar tekrar katlanmıyor;
+yani seri zaten aylık akım (flow), BDDK kâr-zarar kalemleri gibi ytd değil.
+`kind=flow, agg_method=sum, cum_type=none` bu yüzden doğru.
+
+## Senaryo doğrulaması (16 Eylül, gerçek veriyle)
+
+Faiz (TP.KTF12, aylık ortalama) düşerken konut kredisi bakiyesi
+(TP.HPBITABLO6.3) davranışı, 2024-06 – 2026-08 arası 27 ay:
+
+- NOMİNAL bakiyede daralma: **0 ay**
+- REEL bakiyede (TÜFE ile deflate, baz 2026-08) daralma: **9 ay**
+  2024-07, 2024-08, 2024-09, 2025-01, 2025-02, 2025-07, 2025-09,
+  2026-01, 2026-02
+
+Nominal bakışta hiçbir örüntü görünmüyor çünkü bakiye enflasyonla zaten
+artıyor. deflate aracının gerekçesi budur ve demoda bu karşılaştırma
+gösterilecek. En belirgin daralma 2026-01 (-19.5M reel).
+
+## Analiz araçları — gerçek veriyle göz kontrolü (16 Eylül)
+
+detect_changes, TP.KTF12 (konut kredisi faizi) serisinde kırılmayı
+**2023-07** olarak buldu: ortalama %18.7 → %40.4, eğim +0.089 → -0.080.
+TCMB'nin Haziran 2023'te sıkılaşmaya dönüşüyle örtüşüyor.
+
+detect_anomalies aynı seride 2023-03..06 aylarını "beklenenin altında"
+işaretledi — sıkılaşma öncesi baskılanmış faiz dönemi.
+
+TP.KFE.TR: kırılma 2023-03, anomali 2023-09/10 (enflasyonun endekse yansıması).
+
+TP.AKONUTSAT1.KTRTOPLAM: anomali ve kırılma YOK. Seri güçlü mevsimsel
+(Aralık zirve, Ocak dip) ama trend kırılması içermiyor; STL mevsimselliği
+ayıklamış, yanlış alarm üretmemiş.
+
+**Düzeltildi (18 Eylül):** `yüzde_değişim` tek sütun kırılma anındaki
+sıçramayı değil, iki dönem ortalaması arasındaki farkı veriyordu (KFE'de
+%230.3 — jüri "endeks bir ayda %230 mü arttı?" diye sorardı). İkiye
+ayrıldı: `seviye_degisim_yuzde` (eski hesap, ortalamalar arası fark) ve
+`sicrama_yuzde` (kırılma tarihindeki değer ile bir önceki dönemin değeri
+arasındaki gerçek tek dönem sıçraması). Özet metni ikisini ayrı ayrı adlandırıyor.
+
+## Katalog arama indeksi (`lake/catalog.py`, plan 2.5)
+
+`data/bronze/evds/catalog.parquet` 53792 satır — agent'ın arayacağı ham
+kapsam bu kadar büyük olunca embedding maliyeti kabul edilemez hale geliyor
+(tek worker'la ~242 dk, ölçüldü). `filter_catalog()` bu yüzden önce kapsamı
+daraltıyor: arşiv serileri, 2025-06'dan önce bitmiş (ölü) seriler, senaryo
+dışı frekanslar, IMF ülke serileri (`bie_imfcpind`, `bie_imfgdpusdn`) ve
+"konutsat" gruplarının il kırılımları (yalnız TOPLAM kalıyor) çıkarılıyor.
+Sonuç: **53792 → 19646 seri**.
+
+`embed_with_cache()` metni sha256 hash'iyle `data/catalog_emb_cache/`
+altında diske önbelleğe alıyor — aynı metin iki kez embed edilmiyor,
+8 worker paralel çalışıyor. Vektör hiç yoksa veya embedding tamamen
+başarısız olursa `search_catalog(use_vector=False)` yalnızca LanceDB
+full-text index'i (FTS) ile çalışıyor; eş anlamlı yakalama zayıflıyor
+ama arama tamamen durmuyor.
+
+## Senaryo doğrulaması — tam BDDK serisiyle (17 Eylül)
+
+Faiz (TP.KTF12, aylık ort.) düşerken konut kredisi bakiyesi
+(bddk:aylik:tuketici:konut:TL:sektor) davranışı, 2021-01 – 2026-06, 66 ay:
+
+- NOMİNAL bakiyede daralma: **4 ay**
+- REEL bakiyede (TÜFE ile deflate) daralma: **23 ay**
+
+Gözlemlerin üçte birinden fazlası nominal veriyle görünmez. deflate aracının
+gerekçesi budur; demoda bu karşılaştırma gösterilecek.
+En belirgin daralmalar: 2024-01 (-64k reel), 2023-12 (-34k), 2026-01 (-23k).
+
+Not: 16 Eylül'de aynı analiz kısa EVDS serisiyle (TP.HPBITABLO6.3, 2024-06'dan)
+27 ayda 9 sonucu vermişti. BDDK serisi aralığı 2021'e uzatınca örüntü güçlendi.
