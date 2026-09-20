@@ -6,18 +6,21 @@ separate follow-up piece and is not implemented here.
 """
 
 import json
+import logging
 import random
 import re
 import time
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
 import requests
 
 from lakehouse_agent.config import Settings
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://evds3.tcmb.gov.tr/igmevdsms-dis/"
 
@@ -27,6 +30,10 @@ BASE_URL = "https://evds3.tcmb.gov.tr/igmevdsms-dis/"
 CATEGORIES_PATH = "categories/type=json"
 DATAGROUPS_PATH = "datagroups/mode=0&type=json"
 SERIELIST_PATH_TMPL = "serieList/code={code}&type=json"
+# Bulk series data for one datagroup. Deliberately no aggregationTypes,
+# formulas or frequency params -- bronze stores the raw original frequency,
+# frequency conversion happens in silver, based on `kind` (CLAUDE.md #4/#7).
+DATAGROUP_DATA_PATH_TMPL = "datagroup={code}&startDate={start}&endDate={end}&type=json"
 
 RATE_LIMIT_RANGE = (0.3, 0.5)  # seconds, slept before every single attempt
 MAX_RETRIES = 3
@@ -40,6 +47,7 @@ RETRYABLE_STATUS = {
 REQUEST_TIMEOUT = 30
 
 BRONZE_ROOT = Path("data/bronze/evds")
+DATAGROUPS_DATA_ROOT = BRONZE_ROOT / "datagroups"  # <code>/<year>.parquet
 CATALOG_CACHE_ROOT = BRONZE_ROOT / "_catalog_cache"
 CATEGORIES_SNAPSHOT_PATH = BRONZE_ROOT / "categories.parquet"
 DATAGROUPS_SNAPSHOT_PATH = BRONZE_ROOT / "datagroups.parquet"
@@ -116,6 +124,27 @@ def compact_fetch_log() -> Path:
     return FETCH_LOG_PARQUET_PATH
 
 
+def _row_count(payload: list | dict) -> int | None:
+    """Metadata endpoints (categories/datagroups/serieList) return a bare
+    list. The bulk data endpoint ("datagroup=...") returns
+    {"totalCount": N, "items": [...]} instead -- measured 16 Sep 2026,
+    not documented in the official guide. Handle both.
+    """
+    if isinstance(payload, list):
+        return len(payload)
+    if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+        return len(payload["items"])
+    return None
+
+
+def _extract_rows(payload: list | dict) -> list:
+    """Unwrap the bulk data endpoint's {"totalCount", "items"} envelope; a
+    bare list (metadata endpoints) passes through unchanged."""
+    if isinstance(payload, dict):
+        return payload.get("items", [])
+    return payload
+
+
 def _authenticated_get(path: str, settings: Settings) -> list | dict:
     """Single authenticated GET against EVDS v3. Returns the parsed JSON payload.
 
@@ -159,7 +188,7 @@ def _authenticated_get(path: str, settings: Settings) -> list | dict:
 
         if response.status_code == 200:
             payload = response.json()
-            row_count = len(payload) if isinstance(payload, list) else None
+            row_count = _row_count(payload)
             _log_call(ApiCall(logged_url, path, 200, row_count, fetched_at, "ok"))
             return payload
 
@@ -277,3 +306,194 @@ def denormalize_response_columns(
     """
     rename_map = build_column_rename_map(serie_codes)
     return df.rename(columns=rename_map)
+
+
+# --- Bulk data fetch: one datagroup x one year -------------------------------
+
+_DAILY_RE = re.compile(r"^(\d{2})-(\d{2})-(\d{4})$")  # günlük/işgünü/haftalık
+_QUARTERLY_RE = re.compile(r"^(\d{4})-Q(\d)$")
+_MONTHLY_RE = re.compile(r"^(\d{4})-(\d{1,2})$")  # sıfırsız ay: "2024-1"
+_YEARLY_RE = re.compile(r"^(\d{4})$")
+
+
+def _parse_tarih(value: str) -> date:
+    """Parse one EVDS "Tarih" cell into a date.
+
+    Format is detected by regex FIRST, then parsed -- trying strptime
+    formats in sequence and falling through on exception is unsafe here:
+    "2024" and "2024-1" both look like partial matches of each other's
+    pattern. Formats measured 12-13 Sep 2026, one per frequency family:
+    daily/işgünü/haftalık "01-01-2024" (DD-MM-YYYY), aylık "2024-1"
+    (YYYY-M, no leading zero), üç aylık "2024-Q1", yıllık "2024".
+    """
+    value = value.strip()
+
+    m = _DAILY_RE.match(value)
+    if m:
+        day, month, year = m.groups()
+        return date(int(year), int(month), int(day))
+
+    m = _QUARTERLY_RE.match(value)
+    if m:
+        year, quarter = m.groups()
+        month = (int(quarter) - 1) * 3 + 1
+        return date(int(year), month, 1)
+
+    m = _MONTHLY_RE.match(value)
+    if m:
+        year, month = m.groups()
+        return date(int(year), int(month), 1)
+
+    m = _YEARLY_RE.match(value)
+    if m:
+        return date(int(value), 1, 1)
+
+    raise ValueError(f"Tanınmayan EVDS Tarih biçimi: {value!r}")
+
+
+def detect_truncation(
+    df: pd.DataFrame,
+    expected_start: date,
+    *,
+    date_column: str = "Tarih",
+    tolerance_days: int = 10,
+    total_count: int | None = None,
+) -> bool:
+    """True only when the response is actually missing rows the server had
+    -- never when a series simply started partway through the requested
+    year. Measured regression: TP.HPBITABLO6.3 legitimately starts
+    2024-06-01; the old "first row far after expected_start" heuristic
+    alone flagged that whole year as truncated and its parquet was never
+    written, silently losing every real observation that year.
+
+    Two independent signals, either is sufficient:
+    - `total_count` (the bulk endpoint's own "totalCount" field, see
+      `_row_count`) says more observations exist than were actually
+      returned -- the server's own word for it, checked first regardless of
+      row count.
+    - Fallback heuristic, only once row_count actually hits the
+      1000-observation cap AND the first row starts well after
+      `expected_start` -- the signature measured on the real cap incident
+      (2021-2026 requested, 2023-12-20 came back first). Below 1000 rows, a
+      late first date just means the series started late that year, not
+      truncation.
+
+    Deliberately checks the START only (not `total_count`'s own end-of-year
+    implications): a weekly/Friday-anchored group legitimately overruns the
+    requested year at the END (2024 requested, last row 2025-01-03,
+    measured) -- not truncation. An empty response is also not truncation
+    (series not started yet that year) -- callers must check `df.empty`
+    themselves before calling this, since an empty frame has no row to
+    compare.
+    """
+    if df.empty:
+        return False
+    row_count = len(df)
+    if total_count is not None and total_count > row_count:
+        return True
+    if row_count < 1000:
+        return False
+    first_date = _parse_tarih(str(df[date_column].iloc[0]))
+    return (first_date - expected_start).days > tolerance_days
+
+
+@dataclass(frozen=True)
+class YearFetchResult:
+    datagroup_code: str
+    year: int
+    outcome: str  # "cached" | "ok" | "empty" | "truncated" | "failed"
+    row_count: int | None
+    path: Path | None
+
+
+def _datagroup_year_path(datagroup_code: str, year: int) -> Path:
+    return DATAGROUPS_DATA_ROOT / datagroup_code / f"{year}.parquet"
+
+
+def fetch_datagroup_year(
+    datagroup_code: str, year: int, settings: Settings, *, force: bool = False
+) -> YearFetchResult:
+    """Fetch one datagroup's raw (wide, bronze) data for one calendar year.
+
+    Idempotent: skips the HTTP call entirely if the year's parquet already
+    exists. A truncated or network-failed year never writes a parquet, so a
+    retry with force=False will fetch it again rather than silently
+    accepting partial data. A 403 (EvdsAuthError) is not caught here --
+    it propagates and is meant to stop the whole bulk run.
+    """
+    out_path = _datagroup_year_path(datagroup_code, year)
+    if out_path.exists() and not force:
+        return YearFetchResult(datagroup_code, year, "cached", None, out_path)
+
+    expected_start = date(year, 1, 1)
+    path = DATAGROUP_DATA_PATH_TMPL.format(
+        code=datagroup_code,
+        start=expected_start.strftime("%d-%m-%Y"),
+        end=date(year, 12, 31).strftime("%d-%m-%Y"),
+    )
+
+    try:
+        payload = _authenticated_get(path, settings)
+    except (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+        EvdsRequestError,
+        EvdsRedirectError,
+    ) as exc:
+        logger.warning("EVDS fetch failed for %s/%s: %s", datagroup_code, year, exc)
+        return YearFetchResult(datagroup_code, year, "failed", None, None)
+
+    df = pd.DataFrame(_extract_rows(payload))
+    if df.empty:
+        return YearFetchResult(datagroup_code, year, "empty", 0, None)
+
+    row_count = len(df)
+    total_count = payload.get("totalCount") if isinstance(payload, dict) else None
+    if row_count >= 1000:
+        logger.warning(
+            "%s/%s: %d satır döndü (1000 sınırına yakın/eşit) -- ilk tarih kontrol ediliyor",
+            datagroup_code,
+            year,
+            row_count,
+        )
+
+    if detect_truncation(df, expected_start, total_count=total_count):
+        logger.warning(
+            "%s/%s: kesme tespit edildi (ilk satır %s, beklenen %s) -- parquet yazılmadı",
+            datagroup_code,
+            year,
+            df["Tarih"].iloc[0],
+            expected_start,
+        )
+        return YearFetchResult(datagroup_code, year, "truncated", row_count, None)
+
+    df["_fetched_at"] = datetime.now(UTC).isoformat()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(out_path, index=False)
+    return YearFetchResult(datagroup_code, year, "ok", row_count, out_path)
+
+
+def fetch_datagroups_years(
+    datagroup_codes: Iterable[str],
+    years: Iterable[int],
+    settings: Settings,
+    *,
+    force: bool = False,
+) -> list[YearFetchResult]:
+    """Fetch every (datagroup, year) pair. Logs progress every 10 groups and
+    keeps going past a "failed"/"truncated"/"empty" outcome -- the caller
+    (ingest/run.py) reports failures at the end. A 403 still propagates and
+    stops the whole run immediately.
+    """
+    codes = list(datagroup_codes)
+    year_list = list(years)
+    results: list[YearFetchResult] = []
+
+    for i, code in enumerate(codes, start=1):
+        for year in year_list:
+            results.append(fetch_datagroup_year(code, year, settings, force=force))
+        if i % 10 == 0:
+            logger.info("EVDS toplu çekim: %d/%d veri grubu tamamlandı", i, len(codes))
+
+    compact_fetch_log()
+    return results

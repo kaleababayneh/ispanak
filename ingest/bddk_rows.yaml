@@ -1,0 +1,27 @@
+# BDDK aylık bülten satır eşlemesi (plan 1.5)
+# Doğrulandı 17 Eylül: cell = [taraf, sıra, ad, stil, TP, YP, TOPLAM]
+# cum_type=none teyidi: 2025-12=678912 -> 2026-01=691282, Ocak'ta sıfırlanma yok
+
+- tablo_no: 4
+  satir_etiketi: "Tüketici Kredileri - Konut"
+  series_id: "bddk:aylik:tuketici:konut:TL:sektor"
+  cell_index: 4          # TP sütunu
+  kind: stock
+  unit: "milyon TL"
+  cum_type: none
+
+- tablo_no: 4
+  satir_etiketi: "Tüketici Kredileri (2+3+4)"
+  series_id: "bddk:aylik:tuketici:toplam:TL:sektor"
+  cell_index: 4
+  kind: stock
+  unit: "milyon TL"
+  cum_type: none
+
+- tablo_no: 4
+  satir_etiketi: "Takipteki Konut Kredileri"
+  series_id: "bddk:aylik:tuketici:konut_takip:TL:sektor"
+  cell_index: 4
+  kind: stock
+  unit: "milyon TL"
+  cum_type: none

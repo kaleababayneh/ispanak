@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "Json": {
+    "data": {
+      "rows": [
+        {"cell": ["Sektör", 1, "Tüketici Kredileri", "", 1200000, 500, 1200500]},
+        {"cell": ["Sektör", 2, "Tüketici Kredileri - Konut", "", 594545, 62, 594607]},
+        {"cell": ["Sektör", 3, "Tüketici Kredileri - Taşıt", "", 45000, 10, 45010]},
+        {"cell": ["Sektör", 4, "Tüketici Kredileri (2+3+4)", "", 1239545, 572, 1240117]},
+        {"cell": ["Sektör", 5, "Takipteki Konut Kredileri", "", 3200, 0, 3200]}
+      ]
+    }
+  }
+}
