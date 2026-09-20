@@ -9,6 +9,7 @@ Production modules must not import this package. The only exception is a lazy
 import inside a CLI entrypoint, guarded by a `--fake` flag.
 """
 
+from lakehouse_agent.testing.fake_lake import FakeLake
 from lakehouse_agent.testing.fake_llm import FakeLLM, ScriptExhausted
 
-__all__ = ["FakeLLM", "ScriptExhausted"]
+__all__ = ["FakeLLM", "FakeLake", "ScriptExhausted"]

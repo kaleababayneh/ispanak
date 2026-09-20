@@ -14,7 +14,6 @@ from lakehouse_agent.testing.fake_lake import (
     CPI_BASE_YEAR,
     CPI_SERIES,
     CREDIT_SERIES,
-    HEALTH_SERIES,
     PLANTED_RATE_DOWN_CREDIT_FLAT,
     RATE_SERIES,
     RATE_STOCK_SERIES,
@@ -173,22 +172,6 @@ def test_catalog_lookup_returns_all_fifteen_columns(fake_lake):
     assert len(frame) == 2
 
 
-# --- non-financial series -------------------------------------------------
-
-
-def test_health_series_exists_for_type_agnostic_anomaly_demos(fake_lake):
-    """The mentors asked for an anomaly tool that is not financial-series-only."""
-    frame = fake_lake.get([HEALTH_SERIES], "2021-01", "2026-06")
-    assert len(frame) == 66
-    assert frame["unit"].iloc[0] == "adet"
-
-
-def test_health_series_contains_visible_spikes(fake_lake):
-    values = fake_lake.get([HEALTH_SERIES], "2021-01", "2026-06")["value"]
-    median = values.median()
-    assert (values > median * 2).sum() >= 3
-
-
 # --- quality card ---------------------------------------------------------
 
 
@@ -216,6 +199,37 @@ def test_prepare_table_sorts_and_drops_unparseable_dates(fake_lake):
     assert len(cleaned) == 2
     assert cleaned["value"].tolist() == [1.0, 3.0]
     assert report.rows == 2
+
+
+def test_prepare_table_reports_how_many_rows_it_dropped(fake_lake):
+    """`profile_table` runs on the cleaned frame, so the drop is invisible to it.
+    Without this line the card describes a table the caller never handed over,
+    and the quality gate a human approves is missing the one fact that mattered.
+    """
+    messy = pd.DataFrame(
+        {"period": ["2021-01-01", "bozuk", "yine bozuk"], "value": [1.0, 2.0, 3.0]}
+    )
+    _, report = fake_lake.prepare_table(messy)
+    assert any("2 satir" in issue for issue in report.issues), report.issues
+
+
+def test_prepare_table_stays_quiet_when_nothing_was_dropped(fake_lake):
+    clean = pd.DataFrame({"period": ["2021-01-01", "2021-02-01"], "value": [1.0, 2.0]})
+    _, report = fake_lake.prepare_table(clean)
+    assert not any("dusuruldu" in issue for issue in report.issues)
+
+
+def test_missing_pct_is_zero_when_there_is_nothing_numeric_to_measure(fake_lake):
+    """A table of labels has no cells whose absence could be counted. Reporting
+    a percentage computed as if one numeric column existed would be a finding
+    invented out of a denominator."""
+    labels = pd.DataFrame(
+        {
+            "period": pd.date_range("2021-01-01", periods=3, freq="MS"),
+            "etiket": ["a", "b", "c"],
+        }
+    )
+    assert fake_lake.profile_table(labels).missing_pct == 0.0
 
 
 # --- determinism ----------------------------------------------------------

@@ -42,7 +42,6 @@ CREDIT_SERIES = "bddk:aylik:tuketici:konut:TL:sektor"
 CPI_SERIES = "evds:TP.TUKFIY2025.GENEL"
 HPI_SERIES = "evds:TP.KFE.TR"
 RATE_STOCK_SERIES = "evds:TP.BKR.TRY.18"
-HEALTH_SERIES = "fake:SAGLIK.VAKA.M"
 
 SCENARIO_SERIES: dict[str, dict[str, Any]] = {
     RATE_SERIES: {
@@ -104,18 +103,6 @@ SCENARIO_SERIES: dict[str, dict[str, Any]] = {
         "cum_type": "none",
         "topic": "Fiyat Endeksleri",
         "tags": "konut, fiyat, endeks, kfe",
-    },
-    HEALTH_SERIES: {
-        "name_tr": "Aylik Vaka Sayisi (sentetik saglik verisi)",
-        "name_en": "Monthly Case Count (synthetic health data)",
-        "source": "FAKE",
-        "freq": "M",
-        "unit": "adet",
-        "kind": "flow",
-        "agg_method": "sum",
-        "cum_type": "none",
-        "topic": "Saglik",
-        "tags": "saglik, vaka, sentetik, finans disi",
     },
 }
 
@@ -242,29 +229,6 @@ def _monthly_hpi() -> pd.Series:
     return pd.Series(values, index=months, name="hpi")
 
 
-def _monthly_health() -> pd.Series:
-    """A non-financial series with a seasonal shape and three injected spikes.
-
-    Present so the anomaly tool can be shown working on something that is not a
-    financial time series, which the mentors called out explicitly.
-    """
-    months = _months()
-    spikes = {
-        pd.Timestamp("2022-01-01"),
-        pd.Timestamp("2023-08-01"),
-        pd.Timestamp("2025-03-01"),
-    }
-    values = []
-    for i, month in enumerate(months):
-        seasonal = 1200 + 380 * (1 if month.month in (12, 1, 2) else 0)
-        drift = i * 3
-        value = seasonal + drift
-        if month in spikes:
-            value *= 2.6
-        values.append(float(round(value)))
-    return pd.Series(values, index=months, name="health")
-
-
 def _weekly_from_monthly(monthly: pd.Series) -> pd.Series:
     """Spread a monthly path over weeks so each month's weekly mean equals it.
 
@@ -319,7 +283,6 @@ def synthetic_observations() -> pd.DataFrame:
     add(CREDIT_SERIES, _monthly_credit())
     add(CPI_SERIES, _monthly_cpi())
     add(HPI_SERIES, _monthly_hpi())
-    add(HEALTH_SERIES, _monthly_health())
 
     out = pd.concat(frames, ignore_index=True)
     out["period"] = pd.to_datetime(out["period"])
@@ -497,13 +460,33 @@ class FakeLake:
     def prepare_table(
         self, df: pd.DataFrame, hints: dict[str, Any] | None = None
     ) -> tuple[pd.DataFrame, QualityReport]:
-        """Minimal clean-up for a table that arrived from outside the pool."""
+        """Minimal clean-up for a table that arrived from outside the pool.
+
+        Rows whose period cannot be parsed are dropped, and the count is put on
+        the quality card. Dropping them silently would defeat the card's whole
+        purpose: `profile_table` runs on the *cleaned* frame, so without this
+        the report describes data the caller never saw and a human approving a
+        quality gate would have no idea anything went missing.
+        """
         out = df.copy()
+        dropped = 0
         if "period" in out.columns:
             out["period"] = pd.to_datetime(out["period"], errors="coerce")
+            dropped = int(out["period"].isna().sum())
             out = out.dropna(subset=["period"]).sort_values("period")
         out = out.reset_index(drop=True)
-        return out, self.profile_table(out)
+
+        report = self.profile_table(out)
+        if dropped:
+            report = report.model_copy(
+                update={
+                    "issues": [
+                        f"{dropped} satir tarihi okunamadigi icin dusuruldu.",
+                        *report.issues,
+                    ]
+                }
+            )
+        return out, report
 
     def profile_table(self, df: pd.DataFrame) -> QualityReport:
         """The quality card: coverage, gaps, duplicates, outliers.
@@ -550,11 +533,20 @@ class FakeLake:
                 expected = pd.date_range(periods.min(), periods.max(), freq=offset)
                 missing_periods = max(len(expected) - periods.nunique(), 0)
 
+        # A table with no numeric column has no cells whose absence could be
+        # measured, so the percentage is 0 rather than a number computed as if
+        # one column existed -- a fabricated denominator reads like a finding.
         numeric = df.select_dtypes("number")
-        nan_cells = int(numeric.isna().to_numpy().sum()) if not numeric.empty else 0
-        expected_cells = (len(df) + missing_periods) * max(numeric.shape[1], 1)
-        missing_cells = nan_cells + missing_periods * max(numeric.shape[1], 1)
-        missing_pct = (missing_cells / expected_cells * 100) if expected_cells else 0.0
+        column_count = numeric.shape[1]
+        if column_count:
+            nan_cells = int(numeric.isna().to_numpy().sum())
+            expected_cells = (len(df) + missing_periods) * column_count
+            missing_cells = nan_cells + missing_periods * column_count
+            missing_pct = (
+                (missing_cells / expected_cells * 100) if expected_cells else 0.0
+            )
+        else:
+            missing_pct = 0.0
 
         outliers = 0
         for column in numeric.columns:
