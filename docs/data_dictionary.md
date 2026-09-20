@@ -179,3 +179,26 @@ En belirgin daralmalar: 2024-01 (-64k reel), 2023-12 (-34k), 2026-01 (-23k).
 
 Not: 16 Eylül'de aynı analiz kısa EVDS serisiyle (TP.HPBITABLO6.3, 2024-06'dan)
 27 ayda 9 sonucu vermişti. BDDK serisi aralığı 2021'e uzatınca örüntü güçlendi.
+
+## Çapraz kaynak kontrolü (plan 5.4) — 19 Eylül
+
+Konut kredisi bakiyesi iki bağımsız kaynaktan hesaplandı ve karşılaştırıldı:
+
+| Kaynak | series_id | Frekans | Birim |
+|---|---|---|---|
+| BDDK Aylık Bülten, tablo 4 | bddk:aylik:tuketici:konut:TL:sektor | AYLIK | milyon TL |
+| TCMB EVDS, haftalık kredi büyüklükleri | evds:TP.HPBITABLO6.3 | HAFTALIK(CUMA) | bin TL |
+
+EVDS serisi ay sonuna alınıp (last) 1000'e bölünerek milyon TL'ye çevrildi.
+Örtüşen 25 ay (2024-06 – 2026-06) için sapma:
+
+- Ortalama mutlak fark: **%0.1**
+- Maksimum fark: **%0.6** (2026-03)
+- 25 ayın 19'unda fark %0.2'nin altında
+
+Sapma tanım farkından kaynaklanıyor: BDDK ayın son iş gününü raporluyor,
+EVDS haftalık serisinin ay sonuna en yakın Cuma değeri alınıyor. Ay sonunun
+hafta ortasına denk geldiği aylarda fark büyüyor. Veri hatası değil.
+
+Sonuç: iki kaynak birbirini doğruluyor. Senaryoda BDDK serisi kullanılıyor
+(2021-01'den itibaren tam kapsam; EVDS serisi 2024-06'da başlıyor).
