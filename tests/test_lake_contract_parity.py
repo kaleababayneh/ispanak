@@ -15,9 +15,11 @@ Three things this file learned the hard way, all from real divergences:
   clone -- green and useless. Existence, signatures and return shapes need no
   data, so they always run; only the value checks skip.
 * The real lane is **not one module**. `get`/`wide` live in `lake.gold`,
-  `to_freq` in `analysis.transforms`, `profile_table` in `lake.quality`.
-  Resolving only `lake.gold` reported two functions as missing when they
-  existed.
+  `to_freq` in `analysis.transforms`, `profile_table` in `lake.quality`, and
+  three of the seven exist nowhere. `tools/lake_adapter.LakeAdapter` is what
+  joins them into the surface the agent is written against, so that is what
+  this file puts opposite `FakeLake` -- testing `lake.gold` directly reported
+  functions as missing that simply live elsewhere.
 * **Return shapes are part of the signature.** `to_freq` handed back a bare
   frame on one side and `(frame, formula)` on the other; checking parameter
   names alone saw nothing, while `frame, note = lake.to_freq(...)` worked
@@ -56,16 +58,6 @@ REQUIRED_SIGNATURES = {
 
 REQUIRED_FUNCTIONS = tuple(REQUIRED_SIGNATURES)
 
-#: Where each function lives in the real lane. The agent sees one surface; the
-#: data lane implements it across four modules, and the adapter is what joins
-#: them. Written down here so a "missing" report means genuinely missing.
-REAL_MODULES = (
-    "lakehouse_agent.lake.gold",
-    "lakehouse_agent.analysis.transforms",
-    "lakehouse_agent.lake.quality",
-    "lakehouse_agent.lake.catalog",
-)
-
 #: Present in both implementations, so it can anchor a value assertion.
 SHARED_SERIES = "evds:TP.KTF12"
 
@@ -83,35 +75,14 @@ OBSERVATION_COLUMNS = [
 ALLOWED_FREQ = {"D", "W", "M", "Q", "A"}
 
 
-class _RealLake:
-    """The real lane's several modules, presented as the one surface the agent
-    is written against. Only forwards -- any real adaptation belongs in the
-    adapter, because smoothing a difference over here is how the test stops
-    seeing it.
-    """
-
-    def __init__(self, modules):
-        self._modules = modules
-
-    def __getattr__(self, name):
-        for module in self._modules:
-            if hasattr(module, name):
-                return getattr(module, name)
-        raise AttributeError(name)
-
-
-def _real_surface() -> _RealLake:
-    """The real lane without requiring any data. Skips only when the data lane
-    is not on this branch at all."""
-    modules = []
-    for path in REAL_MODULES:
-        try:
-            modules.append(importlib.import_module(path))
-        except ImportError:  # pragma: no cover - depends on branch
-            continue
-    if not modules:
+def _real_surface():
+    """The real lane behind its adapter, without requiring any data. Skips only
+    when the data lane is not on this branch at all."""
+    try:
+        module = importlib.import_module("lakehouse_agent.tools.lake_adapter")
+    except ImportError:  # pragma: no cover - depends on branch
         pytest.skip("veri katmani (lakehouse_agent.lake) bu dalda yok")
-    return _RealLake(modules)
+    return module.LakeAdapter()
 
 
 @pytest.fixture(params=["fake", "real"])
