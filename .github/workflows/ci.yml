@@ -1,0 +1,82 @@
+# Her PR ve her main push'unda koşar. Amacı tek cümlede: bu depoda bulunan
+# hataların çoğu "çökmüyor, sessizce yanlış çalışıyor" türünden olduğu için,
+# korumanın da otomatik olması gerekiyor -- elle koşturulan bir kontrol,
+# koşturulmadığı gün yok demektir.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Aynı dalda peş peşe push olursa önceki koşuyu iptal et.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # gitleaks geçmişi de tarasın diye: sığ klonda yalnızca son commit
+          # görünür, oysa sızan bir anahtar genelde eski bir commit'te kalır.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # --locked: uv.lock ile pyproject.toml ayrışmışsa burada kırılsın.
+      # "Bende çalışıyordu"nun en sık sebebi, ve sessiz.
+      - name: Bağımlılıklar
+        run: uv sync --locked
+
+      - name: ruff check
+        run: uv run ruff check --output-format=github .
+
+      - name: ruff format
+        run: uv run ruff format --check .
+
+      # Hiçbir secret verilmiyor: tests/conftest.py her testte MIA_API_KEY ve
+      # EVDS_API_KEY'i ortamdan siliyor, `live` işaretli testler de varsayılan
+      # olarak seçim dışı. Bir test ağa çıkmaya çalışırsa burada kırılır.
+      - name: Testler
+        run: uv run pytest --junit-xml=junit.xml
+
+      # 13 test gerçek gold verisi olmadığında atlanıyor. Biri o atlama
+      # koşulunu bozarsa BÜTÜN testler atlanır ve bu iş yine yeşil yanar --
+      # yani koruma sessizce kaybolur. Aşağıdaki taban onu görünür kılıyor.
+      # Sayı bir alt sınır: testler arttıkça yükseltilebilir, düşmesi ise
+      # kasıtlı olmalı.
+      - name: Sessiz atlama koruması
+        if: always()
+        run: |
+          uv run python - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+
+          MIN_RUN = 500
+          suite = ET.parse("junit.xml").getroot().find("testsuite")
+          total = int(suite.get("tests"))
+          skipped = int(suite.get("skipped"))
+          ran = total - skipped
+          print(f"{ran}/{total} test koştu, {skipped} atlandı")
+          if ran < MIN_RUN:
+              sys.exit(
+                  f"Yalnızca {ran} test koştu (beklenen en az {MIN_RUN}). "
+                  "Bir atlama koşulu bozulmuş olabilir."
+              )
+          PY
+
+      # CLAUDE.md'nin pazarlıksız kuralı: hiçbir anahtar koda, teste, örneğe,
+      # commit mesajına girmez. pre-commit üzerinden koşuyor ki yereldeki hook
+      # ile birebir aynı sürüm ve aynı kurallar olsun.
+      - name: Sızan anahtar taraması
+        run: uv run pre-commit run gitleaks --all-files
