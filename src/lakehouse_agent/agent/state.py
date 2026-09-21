@@ -234,10 +234,9 @@ def new_chart_ref(charts: list[Any]) -> str:
     out-of-range reference is built quietly here and only fails later, inside
     `ChartSpec` validation, where nothing points back to this function.
     """
+    refs = [_chart_ref_of(chart) for chart in charts]
     used = [
-        int(match.group(1))
-        for chart in charts
-        if (match := re.match(r"c(\d+)$", str(_chart_ref_of(chart))))
+        int(match.group(1)) for ref in refs if (match := re.fullmatch(r"c(\d+)", ref))
     ]
     ref = f"c{max(used, default=0) + 1:02d}"
     if not re.fullmatch(CHART_REF_PATTERN, ref):  # pragma: no cover - defensive
@@ -246,7 +245,16 @@ def new_chart_ref(charts: list[Any]) -> str:
 
 
 def _chart_ref_of(chart: Any) -> str:
-    """The reference of a chart, however it is being carried."""
+    """The reference of a chart, however it is being carried.
+
+    `ChartSpec` calls the field `chart_ref`; `contracts.Artifact` -- the shared
+    contract, and what `add_chart` is annotated to take -- calls it `ref`.
+    Reading only one of them is worse than counting was: an unrecognised
+    carrier contributes no number at all, so the scan sees an empty list and
+    hands out `c01` again for every chart in the session.
+    """
     if isinstance(chart, dict):
-        return str(chart.get("chart_ref", ""))
-    return str(getattr(chart, "chart_ref", ""))
+        value = chart.get("chart_ref") or chart.get("ref")
+    else:
+        value = getattr(chart, "chart_ref", None) or getattr(chart, "ref", None)
+    return str(value or "")

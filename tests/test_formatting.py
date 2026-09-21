@@ -9,16 +9,21 @@ import datetime as dt
 import json
 from decimal import Decimal
 
+import numpy as np
 import pandas as pd
 
 from lakehouse_agent.agent.formatting import (
     TOOL_MESSAGE_MAX_CHARS,
     build_tables_summary,
     describe_table,
+    format_sources,
     format_tool_message,
+    json_safe,
     preview_rows,
 )
-from lakehouse_agent.contracts import QualityReport, ToolResult
+from lakehouse_agent.contracts import QualityReport, Source, ToolResult
+
+FETCHED_AT = pd.Timestamp("2026-09-15T06:00:00Z").to_pydatetime()
 
 
 def frame(rows: int = 60) -> pd.DataFrame:
@@ -196,3 +201,99 @@ def test_an_integer_period_column_is_not_reported_as_1970():
 
     assert "donem araligi okunamadi" in line
     assert "1970" not in line
+
+
+def test_an_integer_period_column_is_caught_whatever_its_dtype():
+    """The guard asks the values, not the dtype.
+
+    The first version keyed on `is_numeric_dtype`, which sees `int64` and not
+    an object column holding the same integers -- so the fix missed exactly the
+    column shape that hides from dtype checks, which is the reason `json_safe`
+    in the same file converts per value.
+    """
+    for column in (pd.Series([1, 2, 3]), pd.Series([1, 2, 3], dtype=object)):
+        line = describe_table("t01_x", pd.DataFrame({"period": column}))
+        assert "donem araligi okunamadi" in line
+        assert "1970" not in line
+
+    dates = pd.DataFrame({"period": [dt.date(2021, 1, 1), None, dt.date(2021, 3, 1)]})
+    assert "2021-01 - 2021-03" in describe_table("t01_x", dates)
+
+
+def test_a_non_finite_decimal_does_not_slip_past_as_infinity():
+    """`is_nan` let `Decimal("Infinity")` through, and json.dumps writes that
+    as a bare `Infinity` -- the same invalid JSON `NaN` produces."""
+    rows = preview_rows(pd.DataFrame({"v": [Decimal("Infinity"), Decimal("NaN")]}))
+
+    assert rows == [{"v": None}, {"v": None}]
+    assert json.loads(json.dumps(rows)) == rows
+
+
+def test_pandas_na_becomes_null_rather_than_the_text_na():
+    assert json_safe(pd.NA) is None
+    assert json_safe({"a": pd.NA}) == {"a": None}
+
+
+def test_the_model_reads_preview_rows_as_json_not_as_a_python_repr():
+    """This is the only place a preview reaches the model, and every tool
+    reaches it -- including ones that did not build their preview here.
+
+    Left as a repr the model is handed `datetime.date(2020, 9, 1)` and `nan`
+    where a date and a null belong.
+    """
+    message = format_tool_message(
+        ToolResult(
+            ok=True,
+            summary="Tablo hazir.",
+            preview=[{"dönem": dt.date(2020, 9, 1), "değer": float("nan")}],
+        )
+    )
+
+    assert '"dönem": "2020-09-01"' in message
+    assert '"değer": null' in message
+    assert "datetime.date" not in message
+    assert "nan" not in message
+
+
+def test_a_warning_travels_all_the_way_into_the_model_message():
+    """The only mechanism CLAUDE.md #3 has.
+
+    Units are never converted in the lake; conversion happens in the tool layer
+    and is reported in `warnings`. A warning that stops here becomes an answer
+    that states a converted number as if it were the original.
+    """
+    message = format_tool_message(
+        ToolResult(
+            ok=True,
+            summary="Tablo hazir.",
+            warnings=["Birim bin TL'den milyon TL'ye cevrildi.", "Kumulatif seri."],
+        ),
+        table_note="t02_deflate: 48 satir",
+    )
+
+    assert "t02_deflate: 48 satir" in message
+    assert "bin TL'den milyon TL'ye" in message
+    assert "Kumulatif seri." in message
+
+
+def test_sources_are_listed_so_citations_are_copied_not_invented():
+    sources = [
+        Source(series_id="evds:TP.KTF12", name="Konut kredisi", fetched_at=FETCHED_AT),
+        Source(url="https://www.bddk.org.tr/BultenAylik", fetched_at=FETCHED_AT),
+    ]
+    listed = format_sources(sources)
+
+    assert "evds:TP.KTF12 (Konut kredisi)" in listed
+    assert "https://www.bddk.org.tr/BultenAylik" in listed
+    assert format_sources([]) == "Kaynak yok."
+
+
+def test_a_nested_or_numpy_cell_is_converted_too():
+    """A cell is not always a scalar: a tool may put a list or a small mapping
+    in one, and numpy hands back its own scalar types."""
+    assert json_safe([np.int64(3), np.float64(1.5), np.bool_(True)]) == [3, 1.5, True]
+    assert json_safe({"a": (dt.date(2021, 1, 1), np.float64("nan"))}) == {
+        "a": ["2021-01-01", None]
+    }
+    assert json_safe(np.datetime64("2021-01-01")) == "2021-01-01"
+    assert json_safe(object()).startswith("<object object")

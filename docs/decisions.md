@@ -169,3 +169,49 @@ doğrudan oturuma yazabilirdi; iptal edilen adımın iz bırakmaması sözü de
 böylece kalkardı ve hiçbir test kırılmazdı. Artık `MappingProxyType`, üstelik
 anlık görüntü üzerinden: zaman aşımına uğramış bir araç oturumun ilerlemesini
 de görmemeli.
+
+## Argüman kapısı sınıfa değil, modele gösterilen şemaya bakıyor
+İlk düzeltme kabul edilen anahtar kümesini `model_fields`'tan kuruyordu ve
+takma adlarda aynı anda iki yönde birden yanılıyordu: Pydantic'in sessizce
+atacağı bir anahtarı geçiriyor, şemanın kendi ilan ettiği anahtarı ise
+reddediyordu. Ayrıca `additionalProperties: false` şemada her iç nesneye
+yazılırken doğrulama yalnızca en üst seviyeye bakıyordu -- yani aynı söz bir
+kat aşağıda yine tutulmuyordu.
+
+Kontrol artık `tool_schema(model)` üzerinden yürüyor ve değerin içine iniyor.
+Modülün ilk paragrafındaki "şema ile doğrulama aynı yerden gelir" cümlesi böyle
+kod oluyor: iki yarı aynı nesne. `extra="allow"` da bedavaya doğru çalışıyor,
+çünkü Pydantic o durumda şemaya zaten `additionalProperties: true` yazıyor.
+
+Birleşim (`Optional[Model]`) dallarında bir tuzak çıktı: `{"type": "null"}`
+dalının denetleyecek `properties`'i yok, yani uydurma anahtarlı bir nesneyi
+"kabul ediyor" ve tek dalın kabulü yetiyordu. Artık yalnızca değerin şeklini
+alabilecek dallar soruluyor.
+
+## $ref açmada sayaç değil, takip edilen referans zinciri
+Derinlik sayacı üç kat iç içe geçmiş sıradan bir modeli döngüden ayırt
+edemiyordu: acyclic modellerde ateşleniyor, modeli kesiyor ve -- `Optional[X]`
+işaretçiyi `anyOf`'un bir kat altına koyduğu için -- sarkan `$ref`'i yine de
+dışarı bırakıyordu. Yani fonksiyon tam olarak önlemek için var olduğu şeyi
+üretiyordu. Artık takip edilen referans zinciri tutuluyor; kendine dönen bir
+model açık nesne olarak bitiyor: kısıtsız ama çözülebilir.
+
+## Grafik referansı iki ayrı adla taşınıyor
+`ChartSpec` alana `chart_ref`, `contracts.Artifact` ise `ref` diyor -- ve
+`add_chart` ikincisini de kabul ediyor. Yalnızca birini okumak, saymaktan
+kötüydü: tanınmayan taşıyıcı hiç sayı katmıyor, tarama boş liste görüyor ve
+oturumdaki her grafiğe yine `c01` veriyordu. Çakışma kontrolü düşünüldü ve
+yazılmadı: aday her zaman okunan en yüksek referansın bir fazlası, o sayıya
+ayrışan bir referans zaten en yükseği o yapardı; ateşlenemezdi.
+
+## describe_table'ın 1970 koruması da değer bazlı
+İlk düzeltme `is_numeric_dtype`'a bakıyordu; o da `int64` görüyor ama aynı
+tamsayıları tutan object sütunu görmüyor -- yani düzeltme tam da dtype
+kontrolünden saklanan sütun şeklini kaçırıyordu. Aynı commit'teki `json_safe`
+zaten "kararı veren dtype değil" diyordu; ikisi artık aynı ilkeyi izliyor.
+
+## Önizleme modele JSON olarak gidiyor
+`format_tool_message` Python repr'ı basıyordu: model `datetime.date(2020, 9, 1)`
+ve `nan` okuyordu. Burası önizlemenin modele ulaştığı **tek** yer ve her araç
+buradan geçiyor -- önizlemesini `preview_rows` ile kurmayanlar da. Dönüşüm bu
+kapıya kondu, tek tek araçlara değil.

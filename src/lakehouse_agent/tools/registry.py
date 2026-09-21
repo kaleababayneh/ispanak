@@ -122,7 +122,7 @@ class ToolRegistry:
         `additionalProperties: false`, and this is the half that enforces it.
         """
         model = self.require(name).args_model
-        _reject_unknown_keys(name, model, raw_args)
+        _reject_unknown_keys(model, raw_args)
         return model.model_validate(raw_args)
 
     def execute(self, name: str, args: BaseModel, ctx: ToolContext) -> ToolResult:
@@ -140,31 +140,39 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
     Not every server resolves those, and a tool whose arguments silently arrive
     as an unconstrained object is worse than one that fails loudly, so the
     references are expanded before the schema leaves the process.
+
+    Termination is by the chain of references being followed, not by how deep
+    the walk has gone. A depth counter cannot tell three levels of nesting from
+    a cycle: it fired on ordinary acyclic models, cut them off, and -- because
+    `Optional[X]` puts the pointer one level down inside `anyOf` -- let the
+    dangling `$ref` out anyway, which is the one thing this function exists to
+    prevent. A model that genuinely refers back to itself ends as an open
+    object: unconstrained, but resolvable.
     """
     defs = schema.pop("$defs", {})
     if not defs:
         return schema
 
-    def resolve(node: Any, depth: int = 0) -> Any:
-        if depth > 10:  # pragma: no cover - defensive against a cyclic model
-            # Drop the pointer rather than let it out. A dangling `$ref` is the
-            # unresolvable schema this function exists to prevent.
-            if isinstance(node, dict):
-                return {key: value for key, value in node.items() if key != "$ref"}
-            return node
+    def resolve(node: Any, chain: frozenset[str]) -> Any:
         if isinstance(node, dict):
             ref = node.get("$ref")
             if isinstance(ref, str) and ref.startswith("#/$defs/"):
-                target = defs.get(ref.split("/")[-1], {})
-                merged = {**resolve(target, depth + 1)}
-                merged.update({k: v for k, v in node.items() if k != "$ref"})
-                return merged
-            return {key: resolve(value, depth + 1) for key, value in node.items()}
+                name = ref.split("/")[-1]
+                around = {
+                    key: resolve(value, chain)
+                    for key, value in node.items()
+                    if key != "$ref"
+                }
+                if name in chain:  # pragma: no cover - cyclic argument model
+                    return {"type": "object", **around}
+                target = resolve(defs.get(name, {}), chain | {name})
+                return {**target, **around}
+            return {key: resolve(value, chain) for key, value in node.items()}
         if isinstance(node, list):
-            return [resolve(item, depth + 1) for item in node]
+            return [resolve(item, chain) for item in node]
         return node
 
-    return resolve(schema)
+    return resolve(schema, frozenset())
 
 
 def tool_schema(model: type[BaseModel]) -> dict[str, Any]:
@@ -172,41 +180,86 @@ def tool_schema(model: type[BaseModel]) -> dict[str, Any]:
     return _forbid_extra_properties(_inline_refs(model.model_json_schema()))
 
 
-def _accepted_keys(model: type[BaseModel]) -> set[str]:
-    """Every key the model is allowed to send: field names and their aliases."""
-    keys: set[str] = set()
-    for name, info in model.model_fields.items():
-        keys.add(name)
-        for alias in (info.alias, info.validation_alias, info.serialization_alias):
-            if isinstance(alias, str):
-                keys.add(alias)
-    return keys
-
-
-def _reject_unknown_keys(
-    tool: str, model: type[BaseModel], raw_args: dict[str, Any]
-) -> None:
+def _reject_unknown_keys(model: type[BaseModel], raw_args: Any) -> None:
     """Raise the same `extra_forbidden` error Pydantic would.
 
-    Built by hand rather than by forcing `extra="forbid"` onto every argument
-    model, because those models belong to whoever wrote the tool; the rule that
-    the schema and the validation agree belongs here, and it has to hold for a
-    tool registered tomorrow by someone who never read this file.
+    Checked against the schema the model was actually shown, not against the
+    class. That is the whole promise of this module stated as code: the field
+    list in the schema and the field list validation accepts are the same
+    object, so they cannot describe different things. An earlier version
+    rebuilt the accepted set from `model_fields` and got aliases wrong in both
+    directions at once -- it let through a key Pydantic would silently drop,
+    and refused the key the schema itself advertised.
+
+    It also follows the value down. `additionalProperties: false` is written on
+    every modelled object in the schema, including nested ones, so enforcing it
+    only at the top level would be another promise made and not kept.
     """
-    if not isinstance(raw_args, dict):
-        return
-    if model.model_config.get("extra") == "allow":
-        return
-    unknown = sorted(set(raw_args) - _accepted_keys(model))
-    if not unknown:
-        return
-    raise ValidationError.from_exception_data(
-        model.__name__,
-        [
-            InitErrorDetails(type="extra_forbidden", loc=(key,), input=raw_args[key])
-            for key in unknown
-        ],
-    )
+    errors = _extra_key_errors(tool_schema(model), raw_args, ())
+    if errors:
+        raise ValidationError.from_exception_data(model.__name__, errors)
+
+
+def _branch_fits(schema: Any, value: Any) -> bool:
+    """Whether a union branch is one this value could have been meant for."""
+    declared = schema.get("type") if isinstance(schema, dict) else None
+    if isinstance(value, dict):
+        return declared in (None, "object")
+    if isinstance(value, list):
+        return declared in (None, "array")
+    return True
+
+
+def _extra_key_errors(
+    schema: Any, value: Any, loc: tuple[str | int, ...]
+) -> list[InitErrorDetails]:
+    """Every key in `value` that the schema said would not be accepted."""
+    if not isinstance(schema, dict):
+        # Pydantic does not emit a boolean or absent sub-schema, so nothing
+        # reaches this today; it is here because the walk is recursive and a
+        # sub-schema that is not a mapping must stop it rather than raise.
+        return []  # pragma: no cover - not produced by model_json_schema()
+
+    branches = schema.get("anyOf") or schema.get("oneOf")
+    if branches:
+        # A union -- `Optional[Model]` is the common one. Only the branches
+        # whose shape the value could take are asked: `{"type": "null"}` has no
+        # `properties`, so it "accepts" an object with a made-up key in it, and
+        # a single branch accepting is enough to let the whole value through.
+        candidates = [b for b in branches if _branch_fits(b, value)]
+        if not candidates:
+            return []
+        per_branch = [_extra_key_errors(b, value, loc) for b in candidates]
+        if any(not errors for errors in per_branch):
+            return []
+        return min(per_branch, key=len)
+
+    if isinstance(value, dict):
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            return []
+        errors: list[InitErrorDetails] = []
+        if schema.get("additionalProperties") is False:
+            errors = [
+                InitErrorDetails(
+                    type="extra_forbidden", loc=(*loc, key), input=value[key]
+                )
+                for key in sorted(set(value) - set(properties))
+            ]
+        for key, item in value.items():
+            if key in properties:
+                errors.extend(_extra_key_errors(properties[key], item, (*loc, key)))
+        return errors
+
+    if isinstance(value, list):
+        items = schema.get("items")
+        return [
+            error
+            for index, item in enumerate(value)
+            for error in _extra_key_errors(items, item, (*loc, index))
+        ]
+
+    return []
 
 
 def _forbid_extra_properties(schema: dict[str, Any]) -> dict[str, Any]:

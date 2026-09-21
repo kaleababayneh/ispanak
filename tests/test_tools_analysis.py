@@ -162,11 +162,33 @@ def test_import_binds_the_real_b_modules_now_that_they_exist():
         assert module.ToolSpec is ToolSpec
         assert all(isinstance(spec, ToolSpec) for spec in module.TOOLS)
     finally:
-        for name, mod in saved.items():
-            if mod is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = mod
+        _restore(saved)
+
+
+def _restore(saved):
+    """Put sys.modules back, and the parent packages with it.
+
+    Re-importing a popped module leaves the freshly built copy bound as an
+    attribute of its parent package. Restoring only `sys.modules` therefore
+    leaves two live copies of `contracts` in the interpreter -- `import x.y`
+    finds one, `from x import y` finds the other -- and an `isinstance` across
+    that seam fails for no visible reason, in whichever test happens to run
+    next.
+    """
+    for name, mod in saved.items():
+        if mod is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = mod
+        parent_name, _, attribute = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is None:
+            continue
+        if mod is None:
+            if hasattr(parent, attribute):
+                delattr(parent, attribute)
+        else:
+            setattr(parent, attribute, mod)
 
 
 def _monthly_periods(n: int):
@@ -175,7 +197,7 @@ def _monthly_periods(n: int):
 
 def test_detect_anomalies_args_rejects_hallucinated_table_ref(analysis_tools):
     """Halüsinasyon kalkanı: table_ref contracts.py'nin TableRef'i olmalı
-    (^t\\d{2}_[a-z][a-z0-9_]{0,24}$) -- model uydurma bir ad verirse Pydantic
+    (^t\\d{2,}_[a-z][a-z0-9_]{0,24}$) -- model uydurma bir ad verirse Pydantic
     aracı hiç çalıştırmadan reddetmeli, düz str'de olduğu gibi sessizce
     geçmemeli."""
     from lakehouse_agent.tools.analysis import DetectAnomaliesArgs

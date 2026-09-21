@@ -9,7 +9,9 @@ cannot copy them into its answer with one slipped decimal place.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import math
+import numbers
 from decimal import Decimal
 from typing import Any
 
@@ -30,7 +32,7 @@ def describe_table(ref: str, frame: pd.DataFrame) -> str:
     period_note = ""
     if "period" in frame.columns and len(frame):
         column = frame["period"]
-        if pd.api.types.is_numeric_dtype(column):
+        if _holds_numbers(column):
             # `to_datetime` reads a plain integer as nanoseconds since the
             # epoch, so a column of 1, 2, 3 would be described as a range in
             # January 1970. Saying nothing beats saying that confidently.
@@ -47,6 +49,23 @@ def describe_table(ref: str, frame: pd.DataFrame) -> str:
                 # reason to lose a step that already produced a table.
                 period_note = ", donem araligi okunamadi"
     return f"{ref}: {len(frame)} satir{period_note}, sutunlar: {', '.join(columns)}"
+
+
+def _holds_numbers(column: pd.Series) -> bool:
+    """Whether a column is plain numbers rather than anything date-shaped.
+
+    Asked of the values, not of the dtype, for the same reason `json_safe`
+    converts per value: an object column of integers has a dtype that says
+    nothing, and it is exactly the column `to_datetime` would misread. Cheap in
+    the ordinary case -- the first date ends the scan.
+    """
+    if pd.api.types.is_numeric_dtype(column):
+        return True
+    values = column.dropna()
+    return len(values) > 0 and all(
+        isinstance(value, numbers.Number) and not isinstance(value, bool)
+        for value in values
+    )
 
 
 def build_tables_summary(tables: dict[str, pd.DataFrame], active: str | None) -> str:
@@ -93,7 +112,7 @@ def json_safe(value: Any) -> Any:
     not JSON and which the interface's `JSON.parse` rejects outright. Missing
     stays missing -- it becomes `null`, it is not filled in.
     """
-    if value is None or value is pd.NaT:
+    if value is None or value is pd.NaT or value is pd.NA:
         return None
     if isinstance(value, bool):  # before int: bool is a subclass of it
         return value
@@ -109,7 +128,10 @@ def json_safe(value: Any) -> Any:
     if isinstance(value, pd.Period):
         return str(value)
     if isinstance(value, Decimal):
-        return None if value.is_nan() else float(value)
+        # `is_finite` and not `is_nan`: `Decimal("Infinity")` would otherwise
+        # reach json.dumps and be written as a bare `Infinity`, which has the
+        # same problem NaN does.
+        return float(value) if value.is_finite() else None
     if isinstance(value, float):
         # `inf` has the same problem as `NaN`: json.dumps emits `Infinity`.
         return value if math.isfinite(value) else None
@@ -159,7 +181,16 @@ def format_tool_message(result: ToolResult, table_note: str = "") -> str:
         parts.append("Kalite: " + ", ".join(bits))
 
     if result.preview:
-        parts.append(f"Ornek satirlar: {result.preview}")
+        # Rendered as JSON, not as a Python repr. This is the only place the
+        # model reads preview rows, and it is reached by every tool -- not just
+        # the ones that built their preview with `preview_rows`. Left as a repr
+        # the model is handed `datetime.date(2020, 9, 1)` and `nan` where it
+        # should see a date and a null.
+        rows = [
+            {str(key): json_safe(cell) for key, cell in row.items()}
+            for row in result.preview
+        ]
+        parts.append("Ornek satirlar: " + json.dumps(rows, ensure_ascii=False))
 
     text = "\n".join(parts)
     if len(text) > TOOL_MESSAGE_MAX_CHARS:

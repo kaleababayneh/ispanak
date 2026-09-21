@@ -145,7 +145,8 @@ ayrışması sessiz bir yanlışa yol açardı.
 `SessionState` düz bir `dataclass`. Tek süreç, tek thread olduğu için reducer ve
 checkpointer gerekmiyor.
 
-Alanlar: `messages, tables, active_table, lineage, steps, sources, charts, usage`
+Alanlar: `session_id, messages, tables, active_table, lineage, steps, sources,
+charts, usage`
 artı tur defteri (`turn_no, step_no, steps_this_turn, active_s, approval_wait_s,
 pending_calls, arg_retries, call_signatures, warnings, truncated_reason,
 draft_answer, verification, approvals`).

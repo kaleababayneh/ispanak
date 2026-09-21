@@ -131,3 +131,28 @@ def test_the_view_is_a_snapshot_so_a_late_step_cannot_see_the_session_move(
     assert not ctx.has_table("t02_added_later")
     with pytest.raises(TableNotFound):
         ctx.table("t02_added_later")
+
+
+def test_the_write_side_records_what_the_loop_merges_back(agent_settings):
+    """`set_active` and `add_chart` only ever mark intent.
+
+    A tool that fails or times out must leave the session's active table and
+    chart list exactly as they were, so neither of these touches anything but
+    this object.
+    """
+    ctx = make_ctx(agent_settings, {"t01_a": pd.DataFrame()}, active="t01_a")
+
+    assert ctx.has_table("t01_a")
+    assert ctx.has_table() is True
+    assert ctx.has_table("t09_yok") is False
+
+    ctx.set_active("t02_b")
+    ctx.add_chart({"chart_ref": "c01", "table_ref": "t01_a"})
+
+    assert ctx.active_table == "t01_a"  # unchanged; the loop reads new_active
+    assert ctx.new_active == "t02_b"
+    assert ctx.written_charts == [{"chart_ref": "c01", "table_ref": "t01_a"}]
+
+
+def test_has_table_says_no_when_there_is_no_active_table(agent_settings):
+    assert make_ctx(agent_settings).has_table() is False

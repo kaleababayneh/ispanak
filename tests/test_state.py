@@ -17,7 +17,12 @@ from lakehouse_agent.agent.state import (
     new_table_ref,
     slug,
 )
-from lakehouse_agent.contracts import CHART_REF_PATTERN, TABLE_REF_PATTERN, Source
+from lakehouse_agent.contracts import (
+    CHART_REF_PATTERN,
+    TABLE_REF_PATTERN,
+    Artifact,
+    Source,
+)
 
 FETCHED_AT = pd.Timestamp("2026-09-15T06:00:00Z").to_pydatetime()
 
@@ -152,3 +157,28 @@ def test_a_url_source_and_a_series_source_are_different_entries():
         ]
     )
     assert len(state.sources) == 2
+
+
+def test_a_chart_reference_is_found_under_either_of_its_two_names():
+    """`ChartSpec` calls the field `chart_ref`; `contracts.Artifact` -- the
+    shared contract, and what `add_chart` is annotated to take -- calls it
+    `ref`.
+
+    Reading only one of them was worse than the counting it replaced: an
+    unrecognised carrier contributes no number, so the scan saw an empty list
+    and handed out `c01` again for every chart in the session.
+    """
+    assert new_chart_ref([Artifact(type="chart", ref="c01")]) == "c02"
+    assert new_chart_ref([{"ref": "c01"}, {"chart_ref": "c02"}]) == "c03"
+    assert new_chart_ref([_chart("c01"), Artifact(type="chart", ref="c02")]) == "c03"
+
+
+def test_a_carrier_we_cannot_read_does_not_reset_the_numbering():
+    """It contributes no number, but the charts around it still do.
+
+    A collision check was considered here and left out: the candidate is always
+    one past the highest reference read, and a reference that parsed to that
+    number would have raised the highest. It could not fire.
+    """
+    assert new_chart_ref([_chart("c01"), object(), {"ref": None}]) == "c02"
+    assert new_chart_ref([object()]) == "c01"

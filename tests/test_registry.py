@@ -5,10 +5,11 @@ If it is wrong the model writes wrong arguments, and the failure looks like the
 model being stupid rather than like a bug in here.
 """
 
+import json
 from typing import Any, Literal
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from lakehouse_agent.agent.context import ToolContext
 from lakehouse_agent.contracts import ToolResult
@@ -217,3 +218,177 @@ def test_the_two_halves_agree_whatever_the_tool_author_chose(
     else:
         with pytest.raises(ValidationError):
             registry.validate("nested_tool", {"b": 2})
+
+
+class Leaf(BaseModel):
+    leaf: str = "x"
+
+
+class Mid(BaseModel):
+    mid: Leaf | None = None
+
+
+class DeepArgs(BaseModel):
+    outer: Mid | None = None
+
+
+def test_a_made_up_key_inside_a_nested_object_is_refused_too():
+    """`additionalProperties: false` is written on every modelled object.
+
+    Enforcing it only at the top level would be the same promise broken one
+    level down, and a nested model whose fields all have defaults would take
+    the bad key silently and use its defaults.
+    """
+    registry = ToolRegistry.of([spec()])
+
+    with pytest.raises(ValidationError) as excinfo:
+        registry.validate(
+            "nested_tool",
+            {"series_ids": ["a"], "window": {"baslangic": "2024-01", "end": "2024-06"}},
+        )
+
+    assert excinfo.value.errors()[0]["loc"] == ("window", "baslangic")
+
+
+def test_the_accepted_keys_are_the_ones_the_schema_advertises():
+    """Aliases used to be got wrong in both directions at once.
+
+    The accepted set was rebuilt from `model_fields`, which meant it both let
+    through a key Pydantic would silently drop and refused the key the schema
+    itself advertised. Reading the schema instead makes the two halves the same
+    object, which is what this module claims in its first paragraph.
+    """
+
+    class Aliased(BaseModel):
+        table_ref: str | None = Field(None, alias="table")
+
+    registry = ToolRegistry.of([spec(args_model=Aliased)])
+    assert list(function_schema(registry, "nested_tool")["properties"]) == ["table"]
+
+    assert registry.validate("nested_tool", {"table": "t02_x"}).table_ref == "t02_x"
+    with pytest.raises(ValidationError):
+        registry.validate("nested_tool", {"table_ref": "t02_x"})
+
+
+def test_a_field_with_alias_choices_accepts_the_key_it_advertised():
+    """The inverse failure at the same line: the gate refused its own schema."""
+
+    class Choice(BaseModel):
+        table_ref: str | None = Field(
+            None, validation_alias=AliasChoices("table", "tabela")
+        )
+
+    registry = ToolRegistry.of([spec(args_model=Choice)])
+    advertised = list(function_schema(registry, "nested_tool")["properties"])
+
+    assert registry.validate("nested_tool", {advertised[0]: "t02_x"}).table_ref == (
+        "t02_x"
+    )
+
+
+def test_ordinary_nesting_is_not_mistaken_for_a_cycle():
+    """The guard used to count every step of the walk, not every reference.
+
+    Three levels of `Optional[Model]` -- which `ChartSpec` is one field away
+    from -- hit the cap, and because `Optional[X]` puts the pointer inside an
+    `anyOf` the cut let the dangling `$ref` out anyway. That is precisely the
+    unresolvable schema this function exists to prevent.
+    """
+    parameters = function_schema(
+        ToolRegistry.of([spec(args_model=DeepArgs)]), "nested_tool"
+    )
+
+    assert "$ref" not in json.dumps(parameters)
+    assert "$defs" not in parameters
+
+    leaf = parameters["properties"]["outer"]["anyOf"][0]["properties"]["mid"]["anyOf"][
+        0
+    ]
+    assert leaf["properties"]["leaf"]["type"] == "string"
+    assert leaf["additionalProperties"] is False
+
+
+def test_a_model_that_refers_to_itself_ends_as_an_open_object():
+    """Unconstrained is a schema a server can read; a dangling pointer is not."""
+
+    class Node(BaseModel):
+        name: str = "n"
+        child: "Node | None" = None
+
+    Node.model_rebuild()
+    parameters = function_schema(
+        ToolRegistry.of([spec(args_model=Node)]), "nested_tool"
+    )
+
+    assert "$ref" not in json.dumps(parameters)
+    assert parameters["properties"]["child"]["anyOf"][0]["type"] == "object"
+
+
+def test_get_returns_none_for_a_tool_that_is_not_registered():
+    """`get` is the soft lookup; `require` is the one that raises."""
+    registry = ToolRegistry.of([spec(name="get_series")])
+
+    assert registry.get("get_series").name == "get_series"
+    assert registry.get("sql_query") is None
+    assert registry.require("get_series").name == "get_series"
+
+
+def test_a_registered_tool_runs_and_a_union_argument_is_checked_in_its_branch():
+    """The registry's actual job, end to end, plus the union path in the gate.
+
+    `Optional[Model]` renders as `anyOf`, so a bad key inside one has to be
+    found by trying the branches rather than by looking at the node itself.
+    """
+    registry = ToolRegistry.of([spec(args_model=DeepArgs)])
+
+    args = registry.validate("nested_tool", {"outer": {"mid": {"leaf": "x"}}})
+    assert args.outer.mid.leaf == "x"
+    assert registry.execute("nested_tool", args, None).ok is True
+
+    with pytest.raises(ValidationError) as excinfo:
+        registry.validate("nested_tool", {"outer": {"mid": {"yaprak": "x"}}})
+    assert excinfo.value.errors()[0]["loc"] == ("outer", "mid", "yaprak")
+
+    assert registry.validate("nested_tool", {"outer": None}).outer is None
+
+
+def test_a_tool_can_be_added_after_the_registry_was_built():
+    registry = ToolRegistry.of([spec(name="get_series")])
+    registry.add(spec(name="run_sql"))
+
+    assert registry.names() == ["get_series", "run_sql"]
+
+
+def test_the_gate_steps_aside_when_the_value_is_the_wrong_shape_entirely():
+    """It reports made-up keys; it is not a second type checker.
+
+    When no branch of a union could take this value at all, the gate says
+    nothing and lets Pydantic produce the type error it is much better at
+    phrasing. Reporting both would bury the real one.
+    """
+
+    class Shapes(BaseModel):
+        name: str | int = "x"
+        rows: list[Window] | None = None
+        loose: list = Field(default_factory=list)
+
+    registry = ToolRegistry.of([spec(args_model=Shapes)])
+
+    with pytest.raises(ValidationError) as excinfo:
+        registry.validate("nested_tool", {"name": {"uydurma": 1}})
+    assert {error["type"] for error in excinfo.value.errors()} == {
+        "string_type",
+        "int_type",
+    }
+
+    # A list against a union is checked inside its element model...
+    with pytest.raises(ValidationError) as excinfo:
+        registry.validate(
+            "nested_tool", {"rows": [{"start": "2021-01", "end": "2021-02", "bas": 1}]}
+        )
+    assert excinfo.value.errors()[0]["loc"] == ("rows", 0, "bas")
+
+    # ...and an untyped list has nothing to check its elements against.
+    assert registry.validate("nested_tool", {"loose": [{"ne": "olursa"}]}).loose == [
+        {"ne": "olursa"}
+    ]
