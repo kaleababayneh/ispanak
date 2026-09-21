@@ -114,16 +114,32 @@ def test_one_tool_then_an_answer():
         "answer",
         "verify",
     ]
+    # Every step opens and closes a card, the model calls included: they are
+    # the only steps that carry a token count, and docs/contracts.md puts that
+    # count in the `step_end` payload.
     assert sink.types() == [
+        "step_start",  # plan
         "plan",
-        "step_start",
+        "step_end",
+        "step_start",  # get_series
         "step_end",
         "table_update",
         "sources",
+        "step_start",  # observe
+        "step_end",
         "answer_delta",
         "verification",
         "done",
     ]
+    model_steps = [
+        event
+        for event in sink.of_type("step_end")
+        if event.payload["node"] in ("plan", "observe")
+    ]
+    assert model_steps and all(
+        event.payload["tokens"] is not None for event in model_steps
+    )
+    assert sink.of_type("step_start")[1].payload["tool"] == "get_series"
 
 
 def test_the_model_never_receives_the_table_only_a_description_of_it():
@@ -735,9 +751,16 @@ def test_every_failed_step_still_draws_a_step_card(script_item, expected_error):
 
     turn(state, deps)
 
-    assert sink.types()[:3] == ["step_start", "step_end", "answer_delta"]
-    assert sink.last("step_end").payload["ok"] is False
-    assert sink.last("step_end").payload["error"] == expected_error
+    failed = [
+        event for event in sink.of_type("step_end") if event.payload["ok"] is False
+    ]
+    assert len(failed) == 1
+    assert failed[0].payload["error"] == expected_error
+    # Opened and closed: an interface that never gets the end event is left
+    # with a card that stops moving at the moment something went wrong.
+    opened = {event.payload["step_no"] for event in sink.of_type("step_start")}
+    closed = {event.payload["step_no"] for event in sink.of_type("step_end")}
+    assert opened == closed
 
 
 def test_a_preview_with_missing_values_still_serialises(capsys):
@@ -904,7 +927,7 @@ def test_the_fake_cli_writes_one_json_event_per_line_and_ends_with_done(capsys):
     assert _cli(["--fake", "--question", "Konut kredisi faizi nasil seyretti?"]) == 0
 
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
-    assert lines[0]["type"] == "plan"
+    assert [line["type"] for line in lines[:2]] == ["step_start", "plan"]
     assert lines[-1]["type"] == "done"
     assert lines[-1]["payload"]["truncated_reason"] is None
     assert all(line["session_id"] == "cli" for line in lines)
@@ -935,3 +958,414 @@ def test_live_mode_says_what_is_missing_instead_of_traceback(capsys, monkeypatch
     )
     assert _cli(["--live"]) == 2
     assert "MIA_API_KEY" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# What a rejected table takes with it
+# --------------------------------------------------------------------------
+
+
+def _reject_quality(request):
+    async def answer(req):
+        if req.kind == "quality":
+            return ApprovalDecision(request_id=req.request_id, choice="cancel")
+        return ApprovalDecision(request_id=req.request_id, choice=req.default)
+
+    return answer
+
+
+QUALITY = ("quality_table", {})
+
+
+def test_a_rejected_table_takes_its_lineage_citation_and_chart_with_it():
+    """Popping the frame was only the visible part of the rollback.
+
+    What stayed behind mattered more. `answer.md` tells the model to cite from
+    `state.sources` and nothing else, so a series left in that list after the
+    person rejected it can be named in the answer as if it had been used. The
+    lineage rows were the same problem for the traceability panel.
+    """
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE),
+            FakeLLM.tool_call(*QUALITY),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ],
+        approve=_reject_quality(None),
+    )
+
+    turn(state, deps)
+
+    assert "t02_quality" not in state.tables
+    assert [key for key in state.lineage if key.startswith("t02_quality.")] == []
+    assert all("SUPHELI" not in source.key() for source in state.sources)
+    assert all(chart.table_ref != "t02_quality" for chart in state.charts)
+    # Back to the table the person was working on, not to nothing.
+    assert state.active_table == "t01_get_series"
+
+
+def test_a_rejected_table_does_not_hand_its_number_to_the_next_one():
+    """`decisions.md` records max-based numbering as the fix for a deleted
+    table freeing its number, and names the quality gate as the deleter.
+
+    The gate always rejects the newest table, which is exactly the number the
+    scan counts from, so the recorded fix did not cover its own motivating
+    case: the next table took the rejected one's name and inherited its
+    lineage rows.
+    """
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE),
+            FakeLLM.tool_call(*QUALITY),
+            FakeLLM.tool_call(*QUALITY),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ],
+        approve=_reject_quality(None),
+    )
+
+    turn(state, deps)
+
+    # Both were rejected, so both are retired -- and the second one got its
+    # own number rather than stepping into the first one's.
+    assert state.retired_tables == {"t02_quality", "t03_quality"}
+    assert not any(ref.startswith("t02_") for ref in state.tables)
+
+
+def test_the_interface_is_told_the_table_went_away():
+    """A card the person cancelled has to disappear from the screen too."""
+    sink = ListSink()
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE),
+            FakeLLM.tool_call(*QUALITY),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ],
+        sink=sink,
+        approve=_reject_quality(None),
+    )
+
+    turn(state, deps)
+
+    removals = [
+        event for event in sink.of_type("table_update") if event.payload.get("removed")
+    ]
+    assert [event.payload["table_ref"] for event in removals] == ["t02_quality"]
+    assert removals[0].payload["reason"] == "quality_cancel"
+
+
+# --------------------------------------------------------------------------
+# Warnings belong to the turn that produced them
+# --------------------------------------------------------------------------
+
+
+def test_a_failure_in_one_turn_is_not_reported_as_live_in_the_next():
+    """`state.warnings` is cleared every turn and `state.steps` is not, so the
+    two halves of the answer's warning list described different windows.
+
+    `answer.md` rule 8 tells the model to open with what went wrong, so turn 3
+    apologised for a tool that failed in turn 1.
+    """
+    from lakehouse_agent.agent.loop import _collected_warnings
+
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call("failing_tool", {}),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Ilk cevap."),
+        ]
+    )
+    turn(state, deps)
+    assert any("failing_tool" in warning for warning in _collected_warnings(state))
+
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Ikinci."),
+        ]
+    )
+    turn(state, deps, question="Peki enflasyon?")
+
+    assert _collected_warnings(state) == []
+
+
+def test_a_tool_warning_reaches_the_answer_prompt_in_its_own_turn():
+    """The route CLAUDE.md #3 depends on: a conversion the answer must repeat."""
+    from lakehouse_agent.agent.loop import _collected_warnings
+
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE),
+            FakeLLM.tool_call(
+                "transform_table",
+                {"table_ref": "t01_get_series", "column": "TP_KTF12", "op": "deflate"},
+            ),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    turn(state, deps)
+
+    assert any("2025=100" in warning for warning in _collected_warnings(state))
+
+
+# --------------------------------------------------------------------------
+# A failed step publishes nothing
+# --------------------------------------------------------------------------
+
+
+def test_a_failed_step_does_not_publish_a_table_a_citation_or_a_chart():
+    """The rule `_merge_context` states in its own docstring, applied to the
+    event channel as well as to the session.
+
+    Publishing anyway left the interface showing a provenance entry for data
+    the session had refused to keep.
+    """
+    sink = ListSink()
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call("failing_tool", {}),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ],
+        sink=sink,
+    )
+
+    turn(state, deps)
+
+    assert sink.of_type("table_update") == []
+    assert sink.of_type("sources") == []
+    assert sink.of_type("quality_report") == []
+    assert sink.of_type("chart") == []
+
+
+# --------------------------------------------------------------------------
+# The channel has to stay honest when things go wrong
+# --------------------------------------------------------------------------
+
+
+def test_an_unexpected_crash_is_reported_as_an_error_not_as_a_clean_finish():
+    """Only `LlmError` was handled, so any other crash reached the `finally`
+    and published `done` with `truncated_reason: null` -- which an interface
+    reads as a turn that finished successfully."""
+    sink = ListSink()
+    state = initial_state("s1")
+    deps = build([FakeLLM.text("Plan."), FakeLLM.text("Cevap.")], sink=sink)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("beklenmedik")
+
+    deps.verifier.verify = explode
+
+    with pytest.raises(RuntimeError):
+        turn(state, deps)
+
+    assert sink.of_type("error")
+    assert sink.last("done").payload["truncated_reason"] == "llm_error"
+
+
+def test_a_model_that_returns_no_answer_is_not_a_finished_turn():
+    """The failure `AgentConfig` names in its own docstring."""
+    state = initial_state("s1")
+    result = turn(state, build([FakeLLM.text("Plan."), FakeLLM.text("")]))
+
+    assert result.truncated_reason == "llm_error"
+    assert "cevap uretmedi" in result.answer
+
+
+def test_the_delta_stream_joins_back_into_the_answer():
+    """Rebuilding each chunk with `strip()` ate one space per boundary, so a
+    consumer concatenating the deltas got two words glued together."""
+    from lakehouse_agent.agent.loop import _sentences
+
+    text = " ".join(f"kelime{i:03d}" for i in range(60))
+    chunks = _sentences(text)
+
+    assert len(chunks) > 1
+    assert "".join(chunks) == text
+
+
+def test_the_turn_reports_its_own_cost_not_the_session_total():
+    """Reporting the running total made every turn look more expensive than
+    the one before it."""
+    state = initial_state("s1")
+    first = turn(state, build([FakeLLM.text("Plan."), FakeLLM.text("Bir.")]))
+    second = turn(
+        state, build([FakeLLM.text("Plan."), FakeLLM.text("Iki.")]), question="Peki?"
+    )
+
+    assert second.usage.calls == first.usage.calls
+    assert state.usage.calls == first.usage.calls + second.usage.calls
+
+
+# --------------------------------------------------------------------------
+# Charts: three carriers, two output channels
+# --------------------------------------------------------------------------
+
+
+def _chart_tool(chart):
+    from pydantic import BaseModel
+
+    from lakehouse_agent.contracts import ToolResult
+    from lakehouse_agent.tools.registry import ToolSpec
+
+    class NoArgs(BaseModel):
+        pass
+
+    def run(args, ctx):
+        ctx.add_chart(chart)
+        return ToolResult(ok=True, summary="Grafik hazir.")
+
+    return ToolSpec(
+        name="make_chart", description_tr="Grafik.", args_model=NoArgs, fn=run
+    )
+
+
+@pytest.mark.parametrize(
+    "chart",
+    [
+        pytest.param({"chart_ref": "c01", "table_ref": "t01_a"}, id="dict"),
+        pytest.param(
+            {"chart_ref": "c01", "table_ref": "t01_a", "plotly_json": {"x": None}},
+            id="dict-with-figure",
+        ),
+    ],
+)
+def test_a_chart_carried_as_a_plain_dict_does_not_kill_the_turn(chart):
+    """`ToolContext.add_chart` is annotated `Any`, `test_context.py` pins that a
+    dict lands in the buffer, and `state.chart_ref_of` exists specifically to
+    read `ref` as well as `chart_ref`.
+
+    The loop was the one place reading the narrow name, so the carriers the
+    codebase advertises as accepted crashed `_answer` with a raw traceback --
+    after `done` had already been emitted.
+    """
+    sink = ListSink()
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call("make_chart", {}),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ],
+        sink=sink,
+    )
+    deps.registry.add(_chart_tool(chart))
+
+    result = turn(state, deps)
+
+    assert result.answer == "Cevap."
+    assert sink.last("chart").payload["chart_ref"] == "c01"
+
+
+def test_a_figure_full_of_numpy_does_not_kill_the_turn():
+    """The field is named after a library whose figures do not serialise: an
+    ordinary `px.line` holds numpy arrays, and the exception escaped the
+    emitter past every handler."""
+    import numpy as np
+
+    sink = ListSink()
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call("make_chart", {}),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ],
+        sink=sink,
+    )
+    deps.registry.add(
+        _chart_tool(
+            {
+                "chart_ref": "c01",
+                "table_ref": "t01_a",
+                "plotly_json": {"data": [{"y": np.array([1.0, 2.0])}]},
+            }
+        )
+    )
+
+    result = turn(state, deps)
+
+    import json
+
+    assert result.answer == "Cevap."
+    json.dumps(sink.last("chart").model_dump(mode="json"))
+
+
+def test_a_chart_handed_back_through_the_shared_contract_is_not_lost():
+    """`ToolResult.artifacts` is one of the eight types both lanes build
+    against, and it was the output channel nothing read."""
+    from pydantic import BaseModel
+
+    from lakehouse_agent.contracts import Artifact, ToolResult
+    from lakehouse_agent.tools.registry import ToolSpec
+
+    class NoArgs(BaseModel):
+        pass
+
+    def run(args, ctx):
+        return ToolResult(
+            ok=True,
+            summary="Grafik hazir.",
+            artifacts=[Artifact(type="chart", ref="c01", title="Faiz")],
+        )
+
+    sink = ListSink()
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call("make_chart", {}),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ],
+        sink=sink,
+    )
+    deps.registry.add(
+        ToolSpec(name="make_chart", description_tr="G.", args_model=NoArgs, fn=run)
+    )
+
+    turn(state, deps)
+
+    assert [chart.ref for chart in state.charts] == ["c01"]
+    assert sink.last("chart").payload["ref"] == "c01"
+
+
+def test_fetching_into_the_active_table_refuses_to_rename_a_column_it_finds():
+    """`merge` renames a colliding column to `_x`/`_y`, so the column the user
+    was looking at silently changes name -- and the loop's "existing columns
+    came back unchanged" check cannot see it, because the old name is no longer
+    in the frame to compare against.
+    """
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE),
+            FakeLLM.tool_call(
+                "get_series",
+                {
+                    "series_ids": ["evds:TP.KTF12"],
+                    "start": "2021-01",
+                    "end": "2025-12",
+                    "into": "active",
+                },
+            ),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    turn(state, deps)
+
+    assert list(state.tables["t01_get_series"].columns) == ["period", "TP_KTF12"]
+    assert not any("_x" in str(column) for column in state.tables["t01_get_series"])
+    assert "zaten var" in tool_messages(state)[-1]["content"]

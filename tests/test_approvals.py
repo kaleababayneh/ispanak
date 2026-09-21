@@ -8,6 +8,7 @@ below pin the quiet cases just as tightly as the noisy ones.
 """
 
 import asyncio
+import types
 
 import pytest
 
@@ -290,3 +291,124 @@ def test_continuing_past_a_quality_warning_obliges_the_answer_to_mention_it(stat
     request = approvals.needs_quality_gate(_quality(missing_pct=50.0), state, 1)
     decision = asyncio.run(approvals.auto_default(request))
     assert "sinirlari belirt" in approvals.decision_message(request, decision)
+
+
+# --------------------------------------------------------------------------
+# The answer is checked against the card it answers
+# --------------------------------------------------------------------------
+
+
+def _card(state):
+    return approvals.needs_quality_gate(_quality(duplicates=3), state, 1)
+
+
+def test_an_option_that_was_never_on_the_card_falls_back_to_the_default(state):
+    """The decision arrives from outside the engine -- an interface, an eval
+    runner, a test.
+
+    An id nobody was offered is not a choice a person could have made, and
+    acting on it would mean doing something nobody approved. `cancel` in
+    particular deletes a table.
+    """
+    request = _card(state)
+    settled = approvals.settle(
+        request,
+        ApprovalDecision(request_id=request.request_id, choice="uydurma_secenek"),
+    )
+
+    assert settled.choice == request.default
+    assert "kartta olmayan secenek" in settled.note
+
+
+def test_an_answer_to_a_different_card_is_not_applied_to_this_one(state):
+    """Two gates can be open in one turn; the ids are what tells them apart."""
+    request = _card(state)
+    settled = approvals.settle(
+        request, ApprovalDecision(request_id="baska-kart", choice="cancel")
+    )
+
+    assert settled.choice == request.default
+    assert settled.request_id == request.request_id
+    assert "farkli karta ait" in settled.note
+
+
+def test_a_valid_answer_is_passed_through_untouched(state):
+    request = _card(state)
+    decision = ApprovalDecision(
+        request_id=request.request_id, choice="cancel", note="kalite yetersiz"
+    )
+
+    assert approvals.settle(request, decision) is decision
+
+
+# --------------------------------------------------------------------------
+# The card has to survive the event channel
+# --------------------------------------------------------------------------
+
+
+def test_a_card_carrying_numpy_or_a_missing_date_still_serialises(state, ctx):
+    """An approval card goes out as an `Event`, whose payload must serialise.
+
+    The loop treats a failed gate as "skip the gate", so an unserialisable
+    value in a catalog hit did not surface as an error -- it silently removed
+    the human from the decision.
+    """
+    import json
+
+    import numpy as np
+    import pandas as pd
+
+    result = ToolResult(
+        ok=True,
+        summary="",
+        preview=[
+            {"series_id": "evds:A", "score": np.float64(0.91), "unit": "%"},
+            {"series_id": "evds:B", "score": np.float64(0.90), "unit": "TL"},
+        ],
+    )
+    request = approvals.needs_series_choice(result, state, 1)
+    assert request is not None
+    json.dumps(request.model_dump(mode="json"))
+
+    fetch_spec = types.SimpleNamespace(
+        approval="fetch",
+        approval_preview=lambda args, ctx: {"source": "EVDS", "when": pd.NaT},
+    )
+    request = approvals.needs_fetch_approval(fetch_spec, None, ctx, state)
+    assert request is not None
+    assert request.context["when"] is None
+    json.dumps(request.model_dump(mode="json"))
+
+
+def test_a_preview_that_returns_the_wrong_shape_does_not_take_the_gate_down(state, ctx):
+    """The existing guard covered a preview that raises. One that simply
+    returns a list reached `.get` and lost the approval the same way."""
+    spec = types.SimpleNamespace(
+        approval="fetch", approval_preview=lambda args, ctx: ["EVDS"]
+    )
+
+    request = approvals.needs_fetch_approval(spec, None, ctx, state)
+
+    assert request is not None
+    assert request.context == {}
+
+
+# --------------------------------------------------------------------------
+# The missing-data test must work against either profiler
+# --------------------------------------------------------------------------
+
+
+def test_a_gap_is_caught_however_the_profiler_scales_its_percentage(state):
+    """`lake/quality.py` reports a quarter missing as 0.25; the fake reports
+    25.0. A threshold of ten is dead against the first: no fraction exceeds it.
+
+    Counting periods is coarser but unambiguous, so the gate takes whichever
+    of the two signals is larger.
+    """
+    as_fraction = _quality(rows=9, missing_periods=3, missing_pct=0.25)
+    as_percent = _quality(rows=9, missing_periods=0, missing_pct=25.0)
+
+    for result in (as_fraction, as_percent):
+        request = approvals.needs_quality_gate(result, state, 1)
+        assert request is not None
+        assert "eksik veri %25.0" in request.question

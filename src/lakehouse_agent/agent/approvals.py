@@ -18,6 +18,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from lakehouse_agent.agent.context import ToolContext
+from lakehouse_agent.agent.formatting import json_safe
 from lakehouse_agent.agent.state import (
     ApprovalDecision,
     ApprovalOption,
@@ -60,9 +61,14 @@ def needs_fetch_approval(
     context: dict[str, Any] = {}
     if spec.approval_preview is not None:
         try:
-            context = spec.approval_preview(args, ctx)
+            preview = spec.approval_preview(args, ctx)
         except Exception:  # noqa: BLE001 - a broken preview must not block the ask
-            context = {}
+            preview = None
+        # Shape-checked, not just call-checked. The `except` above covers a
+        # preview that raises; one that simply returns a list took the gate
+        # down on the next `.get`, which is the same lost approval by a
+        # different route.
+        context = preview if isinstance(preview, dict) else {}
 
     source = context.get("source", "dis kaynak")
     detail = context.get("detail", "")
@@ -79,7 +85,7 @@ def needs_fetch_approval(
             ApprovalOption(id=CHOICE_CANCEL, label="Iptal"),
         ],
         default=CHOICE_APPROVE,
-        context=context,
+        context=_card_context(context),
         step_no=ctx.step_no,
         created_at=datetime.now(UTC),
     )
@@ -136,7 +142,7 @@ def needs_series_choice(
         question="Birden fazla seri sorguya uyuyor. Hangisiyle devam edelim?",
         options=options,
         default=options[0].id,
-        context={"candidates": candidates[:top_k]},
+        context=_card_context({"candidates": candidates[:top_k]}),
         step_no=step_no,
         created_at=datetime.now(UTC),
     )
@@ -160,8 +166,18 @@ def needs_quality_gate(
         return None
 
     problems: list[str] = []
-    if quality.missing_pct > missing_pct:
-        problems.append(f"eksik veri %{quality.missing_pct:.1f}")
+    # The larger of the two things the report can tell us. `missing_pct` is the
+    # richer measure -- it counts NaN cells inside present rows, which gaps
+    # alone cannot see -- but the two profilers behind it disagree about its
+    # scale: a quarter missing reads 25.0 from the fake and 0.25 from the real
+    # one, and no fraction ever exceeds a threshold of ten. Counting periods is
+    # coarser but unambiguous, so neither implementation's omission can hide a
+    # gap behind the other's.
+    total = quality.rows + quality.missing_periods
+    gap_pct = (quality.missing_periods / total * 100) if total else 0.0
+    share = max(quality.missing_pct, gap_pct)
+    if share > missing_pct:
+        problems.append(f"eksik veri %{share:.1f}")
     if quality.duplicates:
         problems.append(f"{quality.duplicates} tekrarli donem")
     if quality.unit_guess is None:
@@ -185,10 +201,56 @@ def needs_quality_gate(
             ApprovalOption(id=CHOICE_CANCEL, label="Iptal et"),
         ],
         default=CHOICE_CONTINUE,
-        context={"quality": quality.model_dump(mode="json"), "problems": problems},
+        context=_card_context(
+            {"quality": quality.model_dump(mode="json"), "problems": problems}
+        ),
         step_no=step_no,
         created_at=datetime.now(UTC),
     )
+
+
+def _card_context(context: dict[str, Any]) -> dict[str, Any]:
+    """The card's context, as something the event channel can carry.
+
+    An approval card goes out as an `Event`, whose payload must serialise. A
+    catalog hit carrying a numpy score or a NaT date would raise inside `emit`
+    -- and the loop treats a failed gate as "skip the gate", so an
+    unserialisable value did not surface as an error, it silently removed the
+    human from the decision.
+    """
+    return {str(key): json_safe(value) for key, value in context.items()}
+
+
+def settle(request: ApprovalRequest, decision: ApprovalDecision) -> ApprovalDecision:
+    """The answer, checked against the card it answers.
+
+    The decision arrives from outside the engine -- an interface, an eval
+    runner, a test. An id that was never on the card is not a choice the person
+    could have made, and acting on it would mean doing something nobody
+    approved. The default is what the card itself offered, so falling back to
+    it is the conservative reading rather than an invention.
+    """
+    allowed = {option.id for option in request.options}
+    fallback = request.default or (
+        request.options[0].id if request.options else CHOICE_CANCEL
+    )
+    note = decision.note
+    choice = decision.choice
+
+    if decision.request_id != request.request_id:
+        note = f"[uyari] farkli karta ait cevap ({decision.request_id!r}); " + (
+            note or "varsayilan uygulandi"
+        )
+        choice = fallback
+    elif choice not in allowed:
+        note = f"[uyari] kartta olmayan secenek ({choice!r}); " + (
+            note or "varsayilan uygulandi"
+        )
+        choice = fallback
+
+    if choice == decision.choice and note == decision.note:
+        return decision
+    return ApprovalDecision(request_id=request.request_id, choice=choice, note=note)
 
 
 async def auto_default(request: ApprovalRequest) -> ApprovalDecision:

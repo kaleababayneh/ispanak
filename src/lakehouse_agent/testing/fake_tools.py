@@ -162,6 +162,25 @@ def make_get_series() -> ToolSpec:
 
         if args.into == "active" and ctx.has_table():
             existing = ctx.table()
+            # Refused, not merged. `merge` renames a colliding column to
+            # `<name>_x` / `<name>_y`, so the column the user was looking at
+            # silently changes name -- and the loop's "existing columns came
+            # back unchanged" check cannot see it, because the old name is no
+            # longer in the frame to compare. Both lake implementations guard
+            # the same case for the same reason.
+            clash = [
+                name
+                for name in frame.columns
+                if name != "period" and name in existing.columns
+            ]
+            if clash:
+                return ToolResult(
+                    ok=False,
+                    summary=(
+                        f"{', '.join(clash)} sutunu tabloda zaten var. "
+                        "into='new' ile ayri bir tablo olustur."
+                    ),
+                )
             merged = existing.merge(frame, on="period", how="left")
             ref = ctx.active_table or ctx.new_table_ref("get_series")
             ctx.put_table(ref, merged)
@@ -224,6 +243,7 @@ def make_transform_table() -> ToolSpec:
             )
 
         ref = args.table_ref or ctx.active_table or ""
+        warnings: list[str] = []
         if args.op == "deflate":
             new_name = f"reel_{args.column}"
             frame[new_name] = frame[args.column] * 0.8
@@ -243,6 +263,14 @@ def make_transform_table() -> ToolSpec:
                 tool="transform_table",
                 step_no=ctx.step_no,
             )
+            # The one warning the scenario actually produces. CLAUDE.md #3 puts
+            # conversions in `warnings` and planner.md rule 7 obliges the answer
+            # to state the base period, so a fake that never warns leaves the
+            # only route between those two rules untested.
+            warnings.append(
+                f"'{args.column}' 2025=100 bazina gore reellestirildi; "
+                "rakamlar reel, nominal degil."
+            )
         else:
             new_name = f"{args.column}_diff"
             frame[new_name] = frame[args.column].diff()
@@ -261,6 +289,7 @@ def make_transform_table() -> ToolSpec:
             summary=f"'{new_name}' sutunu eklendi.",
             table_ref=ref,
             columns=[column],
+            warnings=warnings,
         )
 
     return ToolSpec(

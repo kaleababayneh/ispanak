@@ -1,4 +1,4 @@
-# Sözleşmeler — v0.3
+# Sözleşmeler — v0.4
 
 İki şerit aynı anda geliştirip sonra birleştiriyor. Bu belge, "benim modülüm
 seninkine nasıl bağlanır" sorusunun yazılı cevabı. Amacı tam bir spesifikasyon
@@ -170,8 +170,8 @@ Agent her adımda bir olay yayınlar, arayüz olay türüne göre çizer. Agent
 | Olay | Payload | Arayüzde |
 |---|---|---|
 | `plan` | `{text}` | plan mesajı |
-| `step_start` | `{step_no, tool, args}` | adım kutusu açılır |
-| `step_end` | `{step_no, ok, summary, duration_ms, tokens}` | adım kutusu kapanır |
+| `step_start` | `{step_no, node, tool, args}` | adım kutusu açılır |
+| `step_end` | `{step_no, node, ok, summary, error, duration_ms, tokens}` | adım kutusu kapanır |
 | `table_update` | `{table_ref, columns, rows, new_columns}` | tablo, yeni sütun vurgulu |
 | `chart` | `{chart_ref, plotly_json}` | grafik |
 | `answer_delta` | `{text}` | cevap akışı |
@@ -179,6 +179,7 @@ Agent her adımda bir olay yayınlar, arayüz olay türüne göre çizer. Agent
 | `sources` | `{sources: [{series_id \| url, name, fetched_at}]}` | kaynak listesi |
 | `quality_report` | `{table_ref, rows, freq, missing_pct, ...}` | kalite kartı |
 | `approval_request` | `{request_id, kind, question, options, default}` | onay kartı |
+| `approval_decision` | `{request_id, kind, choice, note}` | kart kapanır |
 | `done` / `error` | `{...}` | kapanış |
 
 **Payload kuralı:** JSON serileştirilebilir olmalı. DataFrame asla konmaz,
@@ -270,21 +271,29 @@ Test dosyaları kendi modüllerinin sahibine aittir.
 
 ---
 
-## 10. A'dan B'ye teslim sırası
+## 10. A'dan B'ye teslim sırası — tamamlandı
 
-B'nin ihtiyaç sırası. Her biri gelene kadar `FakeLake` yerini tutuyor.
+Yedi fonksiyonun tamamı geldi. `FakeLake` artık yedek değil, sözleşme paritesi
+testinin diğer yarısı (`tests/test_lake_contract_parity.py`).
 
-| # | A'nın parçası | B'nin ihtiyaç günü | Gelene kadar |
+| # | Yüzey | Nerede | Kim yazdı |
 |---|---|---|---|
-| 1 | `lake/gold.py::get()` ve `wide()`, senaryo serileri gold'da | 17 Eylül | `FakeLake` 66 aylık sentetik veri |
-| 2 | `analysis/transforms.py` | 17–18 Eylül | `FakeLake.to_freq`; deflate taklit edilmiyor |
-| 3 | `lake/catalog.py::search()` | 17 Eylül | anahtar kelime araması |
-| 4 | `lake/prepare.py`, `lake/quality.py` | 18 Eylül | ince stub'lar |
-| 5 | anomali ve kırılma sarmalayıcıları | 18 Eylül | — |
-| 6 | `ingest()` canlı çekim | 19 Eylül | — |
+| 1 | `get()`, `wide(freq="M")` | `lake/gold.py` | A |
+| 2 | `to_freq()` | `analysis/transforms.py`, adapter sarıyor | A |
+| 3 | `search()` | `lake/catalog.py::search_catalog`, adapter sarıyor | A |
+| 4 | `profile_table()` | `lake/quality.py` (`QualityReport` buradan import ediliyor) | A |
+| 5 | `catalog_lookup()`, `prepare_table()` | `tools/lake_adapter.py` | B |
+| 6 | anomali ve kırılma sarmalayıcıları | `tools/analysis.py` | A |
+| 7 | `ingest()` canlı çekim | `ingest/run.py` | A |
 
-**Kırmızı çizgi:** 17 Eylül akşamı gold yoksa en az beş senaryo serisi için
-minimal bir gold üretilir. Demo sentetik veriyle yapılmayacak.
+**`lake/prepare.py` yazılmayacak.** `catalog_lookup` ve `prepare_table`
+adapter'da; dört yüzeyi tek lake arayüzünde toplayan yer orası.
+
+**Açık:** `gold.wide(freq="M")` haftalık bir seriyi aylığa çevirdiğinde
+`transforms.to_freq`'in döndürdüğü formül metni atılıyor. Plan 4.1 soyağacı
+şartı, planner 8. kural ve `answer.md`'nin `{{warnings}}` yuvası tam bunu
+taşımak için var. Ya `wide()` bunu döndürsün, ya da B `tools/lakehouse.py`'de
+`catalog_lookup`'ın frekansıyla karşılaştırıp türetsin.
 
 B'den A'ya tek teslim: `MiaLLM.embed()`, katalog gömme için. **Hazır**
 (`llm.py`, ölçülen boyut 4096).

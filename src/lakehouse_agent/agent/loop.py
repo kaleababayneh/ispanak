@@ -17,6 +17,7 @@ tool a plain function that a test can call directly.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import sys
@@ -38,6 +39,7 @@ from lakehouse_agent.agent.formatting import (
     describe_table,
     format_sources,
     format_tool_message,
+    json_safe,
     preview_rows,
 )
 from lakehouse_agent.agent.prompts import load_prompt, render
@@ -47,6 +49,7 @@ from lakehouse_agent.agent.state import (
     SessionState,
     Step,
     VerificationResult,
+    chart_ref_of,
     initial_state,
 )
 from lakehouse_agent.config import AgentSettings
@@ -168,6 +171,7 @@ async def run_turn(state: SessionState, deps: AgentDeps, question: str) -> TurnR
 
     started = deps.clock()
     approvals_before = len(state.approvals)
+    usage_before = state.usage
     state.messages.append({"role": "user", "content": question})
 
     try:
@@ -202,6 +206,20 @@ async def run_turn(state: SessionState, deps: AgentDeps, question: str) -> TurnR
             kind=type(exc).__name__,
         )
         raise AgentError(f"Model cagrisi basarisiz: {exc}") from exc
+    except Exception as exc:
+        # Anything else still has to leave the channel consistent. Only
+        # `LlmError` was handled, so any other crash reached the `finally`
+        # below and published `done` with `truncated_reason: null` -- an
+        # interface reading that closes the turn as a success.
+        state.truncated_reason = "llm_error"
+        await emit(
+            deps.sink,
+            state.session_id,
+            "error",
+            message=str(exc),
+            kind=type(exc).__name__,
+        )
+        raise
     finally:
         duration_ms = int((deps.clock() - started) * 1000)
         await emit(
@@ -219,7 +237,10 @@ async def run_turn(state: SessionState, deps: AgentDeps, question: str) -> TurnR
         truncated_reason=state.truncated_reason,
         table_refs=sorted(state.tables),
         active_table=state.active_table,
-        usage=state.usage,
+        # This turn's cost. `state.usage` is the session running total, and
+        # reporting that as the turn's made every turn look more expensive
+        # than the last -- the one number a jury would read off the screen.
+        usage=state.usage - usage_before,
         duration_ms=int((deps.clock() - started) * 1000),
         approvals=len(state.approvals) - approvals_before,
     )
@@ -246,6 +267,22 @@ async def _llm_step(
     thinking = deps.config.thinking.get(node, True)
     started_at = datetime.now(UTC)
 
+    # The model call is a step like any other. It was the only kind that never
+    # published one, so an interface drawing step cards saw the tools and never
+    # the thinking between them -- and these are precisely the steps that carry
+    # a token count, which docs/contracts.md puts in the `step_end` payload.
+    step_no = state.next_step_no()
+    node_name = "plan" if node == "plan" else "observe"
+    await emit(
+        deps.sink,
+        state.session_id,
+        "step_start",
+        step_no=step_no,
+        node=node_name,
+        tool=None,
+        args={},
+    )
+
     result = await asyncio.to_thread(
         partial(
             deps.llm.chat,
@@ -264,9 +301,9 @@ async def _llm_step(
 
     state.steps.append(
         Step(
-            step_no=state.next_step_no(),
+            step_no=step_no,
             turn_no=state.turn_no,
-            node="plan" if node == "plan" else "observe",
+            node=node_name,
             summary=(result.content or "")[:200],
             ok=True,
             started_at=started_at,
@@ -276,9 +313,23 @@ async def _llm_step(
             prompt_version=prompt.tag,
         )
     )
-
+    # The plan text is this step's content, so it belongs between the card
+    # opening and the card closing, not after it.
     if node == "plan" and result.content:
         await emit(deps.sink, state.session_id, "plan", text=result.content)
+
+    await emit(
+        deps.sink,
+        state.session_id,
+        "step_end",
+        step_no=step_no,
+        node=node_name,
+        ok=True,
+        summary=(result.content or "")[:200],
+        error=None,
+        duration_ms=result.duration_ms,
+        tokens=result.usage.model_dump(),
+    )
 
 
 async def _act(
@@ -316,6 +367,7 @@ async def _act(
         state.session_id,
         "step_start",
         step_no=step_no,
+        node="act",
         tool=call.name,
         args=call.arguments or {},
     )
@@ -355,10 +407,12 @@ async def _act(
             state.session_id,
             "step_end",
             step_no=step_no,
+            node=node,
             ok=ok,
             summary=summary,
             error=error,
             duration_ms=int(elapsed * 1000),
+            tokens=None,  # a tool call spends no model tokens
         )
 
     # -- the tool has to exist ------------------------------------------
@@ -407,6 +461,7 @@ async def _act(
         lineage=state.lineage,
         user_message=question,
         _tables=state.tables,
+        retired_refs=frozenset(state.retired_tables),
     )
 
     request = approval_rules.needs_fetch_approval(spec, args, ctx, state)
@@ -451,13 +506,23 @@ async def _act(
         # orphan and the session stays consistent.
         await finish(message, ok=False, summary=message, error="timeout")
         return
+    except asyncio.CancelledError:
+        # Cancellation is not an exception the `except` below sees: it derives
+        # from BaseException. Without this branch a stopped turn left the
+        # model's tool call unanswered, and every later request in the session
+        # is rejected for it -- the session is dead, not just the turn.
+        message = f"[HATA] {call.name} iptal edildi."
+        with contextlib.suppress(Exception):
+            await finish(message, ok=False, summary=message, error="cancelled")
+        raise
     except Exception as exc:  # noqa: BLE001 - a tool bug must not end the turn
         message = f"[HATA] {call.name} hata verdi: {type(exc).__name__}: {exc}"
         await finish(message, ok=False, summary=message, error=type(exc).__name__)
         return
 
     # -- merge the writes back -------------------------------------------
-    warnings = _merge_context(state, ctx, result, step_no)
+    active_before = state.active_table
+    warnings, added_sources = _merge_context(state, ctx, result)
     if warnings:
         result = result.model_copy(update={"warnings": [*result.warnings, *warnings]})
         state.warnings.extend(warnings)
@@ -473,14 +538,22 @@ async def _act(
         table_ref=result.table_ref,
     )
 
-    await _emit_result_events(state, deps, result, step_no, ctx)
+    await _emit_result_events(state, deps, result, ctx)
 
     # -- approvals that depend on what came back --------------------------
     # Guarded for the same reason as the gate above, with one difference: the
     # tool message is already written, so a failure here costs the gate, not
     # the session.
     try:
-        await _post_run_approvals(state, deps, spec, result, step_no)
+        await _post_run_approvals(
+            state,
+            deps,
+            spec,
+            result,
+            step_no,
+            active_before=active_before,
+            added_sources=added_sources,
+        )
     except Exception as exc:  # noqa: BLE001
         state.warnings.append(f"Onay adimi atlandi ({type(exc).__name__}).")
 
@@ -488,15 +561,13 @@ async def _act(
 async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
     """Write the final answer. No tools; the work is done by now."""
     prompt = load_prompt("answer")
-    flags = state.verification.flags if state.verification else []
     system = render(
         prompt,
         tables_summary=build_tables_summary(state.tables, state.active_table),
-        charts=", ".join(chart.chart_ref for chart in state.charts) or "yok",
+        charts=", ".join(chart_ref_of(chart) for chart in state.charts) or "yok",
         sources=format_sources(state.sources),
         warnings=" | ".join(_collected_warnings(state)) or "yok",
         truncated_reason=_truncated_text(state.truncated_reason),
-        verification_flags=", ".join(flag.text for flag in flags) or "yok",
     )
     started_at = datetime.now(UTC)
 
@@ -511,6 +582,13 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
     )
 
     answer = result.content or ""
+    if not answer.strip():
+        # The failure `AgentConfig` names in its own docstring: an open-weights
+        # model that plans forever and never answers, or returns only a
+        # `reasoning` field. Reported as a truncation, because a turn that
+        # produced no answer did not finish -- whatever the `done` event says.
+        state.truncated_reason = state.truncated_reason or "llm_error"
+        answer = "Model bu tur icin bir cevap uretmedi. Soruyu daraltip tekrar deneyin."
     state.messages.append({"role": "assistant", "content": answer})
     state.usage = state.usage + result.usage
     state.active_s += result.duration_ms / 1000
@@ -656,11 +734,15 @@ async def _record_arg_failure(
 
 
 def _merge_context(
-    state: SessionState, ctx: ToolContext, result: ToolResult, step_no: int
-) -> list[str]:
+    state: SessionState, ctx: ToolContext, result: ToolResult
+) -> tuple[list[str], set[str]]:
     """Move the tool's writes into the session, checking the promises it made.
 
-    Returns warnings for anything that looked wrong. The most important check:
+    Returns the warnings, and the citation keys this step was the first to add
+    -- the quality gate needs the second half to undo a rejected table without
+    dropping a source an earlier step is still relying on.
+
+    The most important check:
     when a tool adds a column to an existing table, the columns that were
     already there must come back byte for byte. "Add a column without breaking
     the table" is the scenario's second question, and a silent change to an
@@ -671,7 +753,7 @@ def _merge_context(
         # Same rule as a timed-out step: a tool that reports failure does not
         # get to leave half a table, a dangling lineage entry or a citation
         # for data nobody can see.
-        return warnings
+        return warnings, set()
 
     for ref, frame in ctx.written.items():
         previous = state.tables.get(ref)
@@ -696,24 +778,43 @@ def _merge_context(
         if result.table_ref:
             state.lineage[f"{result.table_ref}.{column.name}"] = column
 
+    known_sources = {source.key() for source in state.sources}
     state.add_sources(list(result.sources))
+    added_sources = {source.key() for source in state.sources} - known_sources
+
     for warning in result.warnings:
         if warning not in state.warnings:
             state.warnings.append(warning)
 
     for chart in ctx.written_charts:
         state.charts.append(chart)
+    # `ToolResult.artifacts` is the other half of the same contract -- one of
+    # the eight shared types both lanes build against -- and it was the half
+    # nothing read. A tool handing a chart back that way lost it without a
+    # word: not in the session, not on the channel, not in the answer.
+    state.charts.extend(
+        artifact for artifact in result.artifacts if artifact.type == "chart"
+    )
 
-    return warnings
+    return warnings, added_sources
 
 
 async def _emit_result_events(
     state: SessionState,
     deps: AgentDeps,
     result: ToolResult,
-    step_no: int,
     ctx: ToolContext,
 ) -> None:
+    """Tell the interface what the step produced.
+
+    Nothing at all when the step failed. `_merge_context` already refuses to
+    put a failed tool's writes in the session, and publishing its sources or
+    its quality card anyway would leave the interface showing a citation for
+    data the session does not have.
+    """
+    if not result.ok:
+        return
+
     if result.table_ref and result.table_ref in state.tables:
         frame = state.tables[result.table_ref]
         await emit(
@@ -742,19 +843,33 @@ async def _emit_result_events(
             sources=[source.model_dump(mode="json") for source in result.sources],
         )
 
-    for chart in ctx.written_charts:
-        await emit(
-            deps.sink,
-            state.session_id,
-            "chart",
-            **(chart.model_dump(mode="json") if hasattr(chart, "model_dump") else {}),
-        )
+    for chart in [*ctx.written_charts, *result.artifacts]:
+        if _chart_table_ref(chart) == "" and not isinstance(chart, dict):
+            # An `Artifact` names its type; only the charts are drawn.
+            if getattr(chart, "type", "chart") != "chart":
+                continue
+        await emit(deps.sink, state.session_id, "chart", **_chart_payload(chart))
 
 
 async def _post_run_approvals(
-    state: SessionState, deps: AgentDeps, spec: Any, result: ToolResult, step_no: int
+    state: SessionState,
+    deps: AgentDeps,
+    spec: Any,
+    result: ToolResult,
+    step_no: int,
+    *,
+    active_before: str | None,
+    added_sources: set[str],
 ) -> None:
-    """The two gates that can only be judged after seeing what came back."""
+    """The two gates that can only be judged after seeing what came back.
+
+    Neither runs on a failed step. A quality card about a table that was never
+    merged has nothing to cancel, and its `cancel` branch would go looking for
+    the newest table it could find -- which is the previous, perfectly good one.
+    """
+    if not result.ok:
+        return
+
     if spec.returns_candidates:
         request = approval_rules.needs_series_choice(
             result, state, step_no, ratio=deps.config.ambiguity_ratio
@@ -772,9 +887,13 @@ async def _post_run_approvals(
         if request is not None:
             decision = await _ask(state, deps, request)
             if decision.choice == approval_rules.CHOICE_CANCEL and result.table_ref:
-                state.tables.pop(result.table_ref, None)
-                if state.active_table == result.table_ref:
-                    state.active_table = None
+                await _discard_table(
+                    state,
+                    deps,
+                    result.table_ref,
+                    active_before=active_before,
+                    added_sources=added_sources,
+                )
                 state.messages.append(
                     {
                         "role": "user",
@@ -785,6 +904,81 @@ async def _post_run_approvals(
                 message = approval_rules.decision_message(request, decision)
                 if message:
                     state.messages.append({"role": "user", "content": message})
+
+
+async def _discard_table(
+    state: SessionState,
+    deps: AgentDeps,
+    ref: str,
+    *,
+    active_before: str | None,
+    added_sources: set[str],
+) -> None:
+    """Undo a table a person rejected, all of it.
+
+    Popping the frame was only the visible part. What stayed behind mattered
+    more: the lineage rows still described the rejected columns, and the
+    citations still listed the series they came from -- and answer.md tells the
+    model to cite from exactly that list, so the jury could read the series it
+    had just rejected back in the answer.
+
+    The reference is retired rather than released. The gate always rejects the
+    newest table, which is precisely the number `new_table_ref` counts from, so
+    reissuing it is the normal outcome and the traceability panel would then
+    show one card's lineage under another card's name.
+    """
+    state.tables.pop(ref, None)
+    state.retired_tables.add(ref)
+
+    for key in [key for key in state.lineage if key.startswith(f"{ref}.")]:
+        del state.lineage[key]
+
+    state.charts = [chart for chart in state.charts if _chart_table_ref(chart) != ref]
+
+    if added_sources:
+        state.sources = [
+            source for source in state.sources if source.key() not in added_sources
+        ]
+
+    if state.active_table == ref:
+        # Back to what the person was working on, not to nothing. Clearing it
+        # would make the model rebuild a table that is still right there.
+        state.active_table = active_before if active_before in state.tables else None
+
+    await emit(
+        deps.sink,
+        state.session_id,
+        "table_update",
+        table_ref=ref,
+        removed=True,
+        reason="quality_cancel",
+    )
+
+
+def _chart_payload(chart: Any) -> dict[str, Any]:
+    """One chart, as something the event channel can carry.
+
+    `ToolContext.add_chart` takes `Any` and the codebase documents three
+    carriers, so reading `model_dump` off the object and shipping `{}` when it
+    is missing turned a plain dict into an empty chart event. And the field is
+    named after a library whose figures do not serialise: `plotly_json` from an
+    ordinary `px.line` holds numpy arrays, which raised out of the emitter --
+    past every handler, after `done` had already been sent.
+    """
+    if isinstance(chart, dict):
+        payload = dict(chart)
+    elif hasattr(chart, "model_dump"):
+        payload = chart.model_dump(mode="json")
+    else:  # pragma: no cover - not a carrier the codebase produces
+        payload = {"chart_ref": chart_ref_of(chart)}
+    return {str(key): json_safe(value) for key, value in payload.items()}
+
+
+def _chart_table_ref(chart: Any) -> str:
+    """The table a chart is drawn from, however the chart is carried."""
+    if isinstance(chart, dict):
+        return str(chart.get("table_ref") or "")
+    return str(getattr(chart, "table_ref", "") or "")
 
 
 async def _ask(
@@ -805,12 +999,18 @@ async def _ask(
     started_at = datetime.now(UTC)
 
     waiting_from = deps.clock()
-    if deps.approve is None:
-        decision = await approval_rules.auto_default(request)
-    else:
-        decision = await deps.approve(request)
-    state.approval_wait_s += deps.clock() - waiting_from
+    try:
+        if deps.approve is None:
+            decision = await approval_rules.auto_default(request)
+        else:
+            decision = await deps.approve(request)
+    finally:
+        # In a `finally` because a card that times out is still a person who
+        # was kept waiting. Charged to the turn budget instead, a minute at an
+        # approval card ended the turn the gate exists to make possible.
+        state.approval_wait_s += deps.clock() - waiting_from
 
+    decision = approval_rules.settle(request, decision)
     state.approvals.append(decision)
     state.steps.append(
         Step(
@@ -821,6 +1021,18 @@ async def _ask(
             summary=f"{request.kind}: kullanici '{decision.choice}' secti",
             started_at=started_at,
         )
+    )
+    # The card opening is an event; the card closing has to be one too. The
+    # JSONL sink exists so a session can be replayed, and a replay that shows
+    # two gates opening and nothing ever answering them is not the session.
+    await emit(
+        deps.sink,
+        state.session_id,
+        "approval_decision",
+        request_id=decision.request_id,
+        kind=request.kind,
+        choice=decision.choice,
+        note=decision.note,
     )
     return decision
 
@@ -833,7 +1045,14 @@ def _collected_warnings(state: SessionState) -> list[str]:
     after, so the answer can be honest about what did not run.
     """
     failures = [
-        f"{step.tool or step.node}: {step.error}" for step in state.steps if step.error
+        f"{step.tool or step.node}: {step.error}"
+        for step in state.steps
+        # This turn's failures only. `state.warnings` is cleared at the top of
+        # every turn and `state.steps` is not, so without the turn check the
+        # two halves of this list describe different windows -- and answer.md
+        # tells the model to open with what went wrong, so turn 3 would apologise
+        # for a tool that failed in turn 1.
+        if step.error and step.turn_no == state.turn_no
     ]
     # Capped separately. A single tail slice would let four failed steps push
     # out the unit conversion the answer is obliged to mention.
@@ -873,14 +1092,18 @@ def _sentences(text: str, chunk: int = 160) -> list[str]:
     if not text:
         return []
     out: list[str] = []
-    buffer = ""
-    for part in text.split(" "):
-        buffer = f"{buffer} {part}".strip()
-        if len(buffer) >= chunk:
-            out.append(buffer)
-            buffer = ""
-    if buffer:
-        out.append(buffer)
+    start = 0
+    while start < len(text):
+        if len(text) - start <= chunk:
+            out.append(text[start:])
+            break
+        # Cut at a space and keep it. Rebuilding each chunk with `strip()` ate
+        # exactly one space per boundary, so a consumer joining the deltas got
+        # two words glued together -- the stream and the answer disagreed.
+        cut = text.rfind(" ", start, start + chunk)
+        cut = cut + 1 if cut > start else start + chunk
+        out.append(text[start:cut])
+        start = cut
     return out
 
 

@@ -51,5 +51,3 @@ Kaynaklar:
 Araç uyarıları: {{warnings}}
 
 Kesinti sebebi: {{truncated_reason}}
-
-Doğrulanamayan ifadeler: {{verification_flags}}

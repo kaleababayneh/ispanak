@@ -84,6 +84,22 @@ class Usage(BaseModel):
             duration_ms=self.duration_ms + other.duration_ms,
         )
 
+    def __sub__(self, other: "Usage") -> "Usage":
+        """The cost between two readings of a running total.
+
+        Clamped at zero: a negative token count is not a thing that can be
+        reported, and the only way to get one is subtracting readings in the
+        wrong order -- better a zero than a number nobody can interpret.
+        """
+        if not isinstance(other, Usage):
+            return NotImplemented
+        return Usage(
+            prompt_tokens=max(0, self.prompt_tokens - other.prompt_tokens),
+            completion_tokens=max(0, self.completion_tokens - other.completion_tokens),
+            calls=max(0, self.calls - other.calls),
+            duration_ms=max(0, self.duration_ms - other.duration_ms),
+        )
+
     @property
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.completion_tokens

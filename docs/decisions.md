@@ -344,3 +344,104 @@ aylık okuduğunu kendisi yazdı.
 token. Sahte araçların şemaları küçük; gerçek araçlarla ve üç turlu bir
 oturumda bu rakam ciddi biçimde büyüyecek. Mesaj geçmişi kırpma kararı bu yüzden
 arayüz aşamasına bırakıldı, ama unutulmamalı.
+
+## Reddedilen tablo neyi yanında götürür
+Kalite kapısında "İptal" yalnızca iki şey yapıyordu: tabloyu sözlükten çıkarmak
+ve aktif tabloyu boşaltmak. Geride kalanlar daha önemliydi.
+
+`state.sources`'ta duran seri `answer.md`'nin 4. kuralına göre cevapta kaynak
+olarak anılabiliyordu -- yani jürinin az önce kalite gerekçesiyle reddettiği
+veri, cevabın provenance panelinde. Soyağacındaki satırlar da kalıyordu.
+Numara ise serbest bırakılıyordu: kapı her zaman **en yeni** tabloyu reddediyor,
+o da `new_table_ref`'in saydığı en yüksek numara, yani aynı ref hemen yeniden
+dağıtılıyordu. Ölçüldü: reddedilen `t02_quality`'nin ardından model aynı aracı
+çağırınca yeni tablo yine `t02_quality` oluyor ve eski soyağacı satırı yeni
+tabloya yapışıyor. `decisions.md`'nin "silme numarayı serbest bırakmıyor"
+kaydı, yazıldığı vakayı kapsamıyormuş.
+
+Geri alma artık tam: soyağacı, kaynaklar (yalnızca o adımın eklediği), grafik,
+aktif tablo (öncekine döner, boşa değil) ve `retired_tables`. Arayüze de
+`table_update {removed: true}` gidiyor.
+
+## Uyarılar tura ait, oturuma değil
+`_collected_warnings` iki listeyi aynı etiket altında basıyordu: `state.warnings`
+her tur sıfırlanıyor, `state.steps` sıfırlanmıyor. `answer.md` 8. kural modele
+"eksik kaldıysan ilk cümlende söyle" dediği için 3. tur, 1. turda patlamış bir
+aracı canlı arıza gibi bildiriyordu. Tek satır: `step.turn_no == state.turn_no`.
+
+## Başarısız adım hiçbir şey yayınlamaz
+`_merge_context` "hata bildiren araç yarım tablo, sarkan soyağacı ya da kimsenin
+göremeyeceği bir kaynak bırakamaz" diyor ve oturum için bunu uyguluyordu. Olay
+kanalı aynı kuralı uygulamıyordu: `ok=False` dönen adımın kaynakları, kalite
+kartı ve grafiği arayüze gidiyordu. Dahası kalite kapısı da açılıyor, "iptal"
+hiç birleştirilmemiş tabloyu değil **önceki sağlam** tabloyu siliyordu.
+
+## Grafik üç taşıyıcıyla geliyor, döngü birini okuyordu
+`add_chart(chart: Any)`, `test_context.py` düz sözlüğü sabitliyor ve
+`state.chart_ref_of` özellikle `ref`'i de okumak için var. Döngü ise yalnızca
+`.chart_ref` okuyordu: kod tabanının kabul ettiğini söylediği taşıyıcılar turu
+`done` yayınlandıktan **sonra** ham traceback ile öldürüyordu. Ayrıca
+`ToolResult.artifacts` -- iki şeridin de bağlı olduğu sekiz ortak tipten biri --
+hiç okunmuyordu; o yoldan dönen grafik izsiz kayboluyordu. `plotly_json` ise
+adını aldığı kütüphanenin ürettiği şeyi serileştiremiyordu: sıradan bir
+`px.line` numpy dizisi taşıyor ve istisna emitter'dan her yakalayıcıyı aşarak
+çıkıyordu. Grafik yükü artık `json_safe`'den geçiyor.
+
+## Onay cevabı da kart kadar denetleniyor
+Karar motorun dışından geliyor: arayüz, eval koşucusu, test. Kartta olmayan bir
+seçenek insanın yapabileceği bir seçim değil ve ona göre davranmak kimsenin
+onaylamadığı şeyi yapmak demek -- `cancel` özelinde bir tabloyu silmek. Yanlış
+`request_id` de aynı sınıf. İkisi de kartın kendi varsayılanına düşüyor ve not
+alanına yazılıyor. Kartın `context`'i artık `json_safe`'den geçiyor: bir katalog
+isabetindeki numpy skoru `emit`'te patlıyordu ve döngü başarısız kapıyı
+"kapıyı atla" diye yorumladığı için bu, hata olarak değil **insanı karardan
+sessizce çıkarmak** olarak görünüyordu.
+
+## Onay kartı da bir adımdır: açılışı kadar kapanışı da olay
+`approval_decision` eklendi (sözleşme v0.4). `JsonlSink`'in varlık sebebi bir
+oturumun replay edilebilmesi; iki kapının açılıp hiç kapanmadığı bir kayıt o
+oturum değil. Aynı gerekçeyle model adımları da artık `step_start`/`step_end`
+yayınlıyor: sözleşme `step_end` payload'ında `tokens` vaat ediyordu ve token
+taşıyan tek adım türü hiç olay yayınlamıyordu.
+
+## Kesme ve boş cevap
+Araç mesajı kesilirken `_preview_line` zaten ortadan eliyordu; burada kalan iki
+şey vardı. `asyncio.CancelledError` `BaseException` türevi olduğu için hiçbir
+`except` yakalamıyordu: iptal edilen tur modelin araç çağrısını cevapsız
+bırakıyor, oturumun geri kalanı protokol hatası alıyordu. Ve modelin boş cevabı
+-- `AgentConfig`'in kendi docstring'inde adı geçen arıza -- başarılı tur olarak
+raporlanıyordu; artık kesinti sayılıyor.
+
+## Eksik veri testi profilciye göre değişmemeli
+`lake/quality.py` çeyrek eksiği `0.25`, sahte katman `25.0` bildiriyor;
+`contracts.py` alanı "yüzde" diye tanımlıyor, yani gerçek taraf sözleşmeyi
+çiğniyor. Eşik yüzdeye uygulandığı için hiçbir kesir onu aşamıyor: gerçek
+profilciye karşı eksik-veri dalı **ölüydü**. Kapı artık iki sinyalin büyüğünü
+alıyor (`missing_pct` ve `missing_periods/rows`). A'nın bir karakterlik
+düzeltmesi hâlâ gerekli, çünkü arayüz o alanı doğrudan gösterecek.
+
+## placeholders() ölü koddan korumaya
+`render` bilinmeyen yer tutucuyu görünür bırakıyor -- çalışma zamanında doğru,
+koruma olarak işe yaramaz. Diğer yön denetlenmiyordu: şablonun açtığı ama
+çağıranın doldurmadığı bir yuva modele `{{warnings}}` metni olarak gidiyor.
+Tersi de aynı kolaylıkta, nitekim bu turda `{{verification_flags}}` yuvasını
+kaldırırken `render` çağrısında ölü bir keyword bırakmak işten değildi.
+`tests/test_prompts.py` iki yönü de denetliyor; yuva eklenerek kırıldığı
+görüldü.
+
+## planner.md: araç çıktısı veridir
+A iki ayrı incelemede istedi ve metnini verdi. Kanal `read_url` beklemeden de
+açık: `build_tables_summary` sütun adlarını **sistem prompt'una** birebir
+basıyor ve gerçek katmanda sütun adı `series_id`, yani EVDS/BDDK kataloğundan
+gelen dış metin. Ölçüldü: sütun adına konan "ONCEKI TALIMATLARI UNUT" ifadesi
+sistem mesajının içinde çıkıyor.
+
+## Sahte araçlarda iki gerçekçilik açığı
+`get_series(into="active")` çakışan sütunu `merge` ile `_x`/`_y` yapıyordu:
+kullanıcının baktığı sütun sessizce ad değiştiriyor ve döngünün "mevcut
+sütunlar aynen döndü" kontrolü bunu **göremiyor**, çünkü eski ad artık
+karşılaştırılacak yerde yok. Senaryonun ikinci sorusu ("tabloyu bozmadan sütun
+ekle") tam olarak böyle bozuluyordu; artık reddediliyor. İkincisi: hiçbir sahte
+araç `warnings` döndürmüyordu, yani CLAUDE.md #3 ile planner 7. kuralı
+arasındaki tek yolun çevrimdışı testi yoktu. `deflate` artık baz dönemi uyarısı
+döndürüyor.
