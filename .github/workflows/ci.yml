@@ -2,12 +2,17 @@
 # hataların çoğu "çökmüyor, sessizce yanlış çalışıyor" türünden olduğu için,
 # korumanın da otomatik olması gerekiyor -- elle koşturulan bir kontrol,
 # koşturulmadığı gün yok demektir.
+#
+# Aksiyon sürümleri tam sürüme sabitlendi. `astral-sh/setup-uv`'nin `v10`
+# diye bir major etiketi yok (v7'den itibaren yalnızca tam sürüm etiketliyor),
+# yani `@v10` koşu anında çözülemezdi.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 # Aynı dalda peş peşe push olursa önceki koşuyu iptal et.
 concurrency:
@@ -17,19 +22,25 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # .pre-commit-config.yaml ile aynı sürüm: yereldeki hook ile CI aynı
+  # kuralları uygulasın.
+  GITLEAKS_VERSION: 8.21.2
+
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
-          # gitleaks geçmişi de tarasın diye: sığ klonda yalnızca son commit
-          # görünür, oysa sızan bir anahtar genelde eski bir commit'te kalır.
+          # Tüm geçmiş: gitleaks aşağıda commit geçmişini tarıyor, sığ klonda
+          # yalnızca son commit görünür -- oysa sızan bir anahtar genelde eski
+          # bir commit'te kalır.
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -56,8 +67,10 @@ jobs:
       # yani koruma sessizce kaybolur. Aşağıdaki taban onu görünür kılıyor.
       # Sayı bir alt sınır: testler arttıkça yükseltilebilir, düşmesi ise
       # kasıtlı olmalı.
+      #
+      # `always()` yok: pytest kırıldıysa iş zaten kırmızı, üstelik junit.xml
+      # yazılmadan çökmüşse bu adım anlamsız bir ayrıştırma hatası verirdi.
       - name: Sessiz atlama koruması
-        if: always()
         run: |
           uv run python - <<'PY'
           import sys, xml.etree.ElementTree as ET
@@ -76,7 +89,18 @@ jobs:
           PY
 
       # CLAUDE.md'nin pazarlıksız kuralı: hiçbir anahtar koda, teste, örneğe,
-      # commit mesajına girmez. pre-commit üzerinden koşuyor ki yereldeki hook
-      # ile birebir aynı sürüm ve aynı kurallar olsun.
+      # commit mesajına girmez.
+      #
+      # pre-commit hook'u üzerinden KOŞTURULMUYOR, bilerek: o hook'un komutu
+      # `gitleaks protect --staged`, yani yalnızca commit edilmek üzere
+      # stage'lenmiş değişikliği tarıyor. CI'da hiçbir şey stage'de olmadığı
+      # için hiçbir şey taramaz ve her zaman yeşil yanar -- hiçbir şeyi
+      # korumayan bir koruma. Burada `detect` kullanılıyor: tüm commit
+      # geçmişini tarar. (Yereldeki `protect --staged` doğru olanıdır, çünkü
+      # orada amaç commit'i engellemek.)
       - name: Sızan anahtar taraması
-        run: uv run pre-commit run gitleaks --all-files
+        run: |
+          curl -sSfL --retry 3 \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --redact --no-banner
