@@ -134,22 +134,61 @@ def analysis_tools():
                 sys.modules[name] = mod
 
 
-def test_import_without_b_dependencies_raises_clear_error():
-    """Without B's branch merged (the real situation on this branch), import
-    fails loudly with an actionable message -- not a bare ModuleNotFoundError.
+def test_import_binds_the_real_b_modules_now_that_they_exist():
+    """This test used to assert the opposite.
+
+    While track B's plumbing was missing, importing this module raised a
+    deliberate ImportError and the test pinned that message. B's branch landed,
+    so the guard no longer fires and the assertion had to be turned around --
+    otherwise merging B's branch turns main red on a test that is doing exactly
+    what it was written to do.
+
+    What is worth pinning now is that the import reaches the *real* classes:
+    every other test in this file runs against duck-typed stubs, and a stub
+    that has drifted from the contract it stands in for fails nowhere.
     """
     saved = {name: sys.modules.get(name) for name in _STUBBED_MODULES}
     for name in _STUBBED_MODULES:
         sys.modules.pop(name, None)
     try:
-        with pytest.raises(ImportError, match="contracts.py"):
-            importlib.import_module("lakehouse_agent.tools.analysis")
+        module = importlib.import_module("lakehouse_agent.tools.analysis")
+
+        from lakehouse_agent.agent.context import ToolContext
+        from lakehouse_agent.contracts import ToolResult
+        from lakehouse_agent.tools.registry import ToolSpec
+
+        assert module.ToolResult is ToolResult
+        assert module.ToolContext is ToolContext
+        assert module.ToolSpec is ToolSpec
+        assert all(isinstance(spec, ToolSpec) for spec in module.TOOLS)
     finally:
-        for name, mod in saved.items():
-            if mod is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = mod
+        _restore(saved)
+
+
+def _restore(saved):
+    """Put sys.modules back, and the parent packages with it.
+
+    Re-importing a popped module leaves the freshly built copy bound as an
+    attribute of its parent package. Restoring only `sys.modules` therefore
+    leaves two live copies of `contracts` in the interpreter -- `import x.y`
+    finds one, `from x import y` finds the other -- and an `isinstance` across
+    that seam fails for no visible reason, in whichever test happens to run
+    next.
+    """
+    for name, mod in saved.items():
+        if mod is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = mod
+        parent_name, _, attribute = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is None:
+            continue
+        if mod is None:
+            if hasattr(parent, attribute):
+                delattr(parent, attribute)
+        else:
+            setattr(parent, attribute, mod)
 
 
 def _monthly_periods(n: int):
@@ -158,7 +197,7 @@ def _monthly_periods(n: int):
 
 def test_detect_anomalies_args_rejects_hallucinated_table_ref(analysis_tools):
     """Halüsinasyon kalkanı: table_ref contracts.py'nin TableRef'i olmalı
-    (^t\\d{2}_[a-z][a-z0-9_]{0,24}$) -- model uydurma bir ad verirse Pydantic
+    (^t\\d{2,}_[a-z][a-z0-9_]{0,24}$) -- model uydurma bir ad verirse Pydantic
     aracı hiç çalıştırmadan reddetmeli, düz str'de olduğu gibi sessizce
     geçmemeli."""
     from lakehouse_agent.tools.analysis import DetectAnomaliesArgs

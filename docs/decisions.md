@@ -99,3 +99,155 @@ Karar:  %99.2 kapsam (3384/4068 parquet) yeterli kabul edildi. Timeout'u artır�
         Senaryo ve eval serilerinin hiçbiri bu gruplarda değil.
 Sonuç:  ingest ağ hatasında durmuyor, logla-atla-devam ediyor; başarısız liste
         fetch_log'da ve docs/data_quality.md'de görünür.
+
+## Tablo okuma ve tablo numaralandırma: iki sessiz hata
+İkisi de sahte katmanla yeşil geçen, gerçek araçlarla patlayacak hatalardı.
+
+1. `ToolContext.table()` içinde `written.get(k) or _tables.get(k)` vardı.
+   DataFrame'in doğruluk değeri yok; `or` ilk dal bir şey bulduğu anda
+   `ValueError` fırlatıyor. Yani bir aracın aynı adımda yazdığı tabloyu geri
+   okuması imkânsızdı. Hiçbir sahte araç bunu yapmadığı için testler görmedi.
+   Üyelik kontrolüne çevrildi ve testi yazıldı.
+2. `new_table_ref` tablo *sayısına* göre numara veriyordu. Kalite kapısı bir
+   tabloyu sildiğinde -- ki tam olarak bunu yapacak -- sonraki tablo
+   kullanımdaki bir numarayı alıp üstüne yazıyordu. Artık en yüksek numaradan
+   devam ediyor; silme numarayı serbest bırakmıyor.
+
+## Araç kaydından iki ölü alan çıkarıldı
+`ToolSpec` üzerinde `creates_table` ve `sets_active` bayrakları vardı ve hiçbir
+yer okumuyordu. Döngü bu iki bilgiyi zaten aracın gerçekte yazdıklarından
+hesaplıyor (`ctx.written`, `ctx.new_active`) -- beyana değil gerçeğe bakmak
+bilinçli bir tercihti. Okunmayan bir beyan bırakmak, birinin onu doldurup bir
+etki beklemesine davetiye; kaldırıldı. `brief_name` duruyor çünkü sunumun altı
+aracıyla bizim fonksiyonlarımızı eşleyecek `docs/tools.md` ona dayanacak.
+
+## Model uydurduğu argüman adıyla yanlış tabloyu analiz edebiliyordu
+Pydantic'in varsayılanı `extra="ignore"`. Şema modele "bu aracın alanları
+şunlar" diyordu ama doğrulama fazlasını sessizce atıyordu. Şemanın tamamı
+modele Türkçe açıklamalarla gidiyor, yani `table_ref` yerine `tablo` yazmak
+beklenen kayma; MIA testinde modelin açıklamasız bir alana SQL yazdığı zaten
+görülmüştü.
+
+Ölçüldü: `{"tablo": "t02_deflate", "column": "TP_KTF12"}` çağrısı `table_ref`i
+`None` bırakıyor, `None` aktif tablo demek, araç `t01`i analiz edip `ok=True`
+ve beş anomali bildiriyordu. Doğru anahtarla aynı çağrı üç anomali veriyor.
+Özet, tarihler ve kaynaklar tutarlı görünüyor ve hepsi yanlış tabloya ait.
+
+Karar: kural araç kaydında, argüman modellerinde değil. Şemaya
+`additionalProperties: false`, doğrulamaya bilinmeyen anahtar reddi eklendi.
+Her araç modeline `extra="forbid"` yazmak da olurdu ama o modeller aracı
+yazanın; "şema ile doğrulama ayrışmaz" sözü kaydın sözü ve yarın bu dosyayı
+hiç okumamış birinin kaydettiği araç için de geçerli olmalı.
+
+## preview_rows "JSON-safe" diyordu, gold'un period sütununu serileştiremiyordu
+Yalnızca `datetime64` sütunlar çevriliyordu. Gold sözleşmesi `period`i
+`datetime.date` olarak saklıyor -- object dtype, hiçbir dtype kontrolü görmez.
+Yani gerçek bir gold tablosunun önizlemesi `json.dumps`'ta patlıyordu; hata da
+burada değil, tur ortasında olay kanalında çıkacaktı. `Timedelta`, `Period`,
+`Decimal` aynı durumda. `NaN` ayrı bir sorun: `json.dumps` onu çıplak `NaN`
+yazıyor, bu geçerli JSON değil ve arayüzdeki `JSON.parse` reddediyor.
+
+Çevrim artık dtype başına değil değer başına, çünkü kararı veren dtype değil.
+Eksik eksik kalıyor: `null` oluyor, doldurulmuyor (CLAUDE.md #2).
+
+## Üç sessiz sınır: yüzüncü tablo, yüzüncü grafik, sayısal period sütunu
+- `t{n:02d}` genişlemeye devam ediyor ama desen tam iki basamak kabul ediyordu;
+  yüzüncü tablo `ValueError` fırlatıyordu -- hem de `pragma: no cover -
+  defensive` ile işaretli, yani ulaşılamaz sanılan bir satırda. Desen `\d{2,}`
+  oldu, mevcut her referans hâlâ geçerli.
+- `new_chart_ref` hâlâ *sayarak* numaralandırıyordu (tablolarda düzeltilen
+  hatanın aynısı) ve desen kontrolü yoktu: `c100` sessizce üretilip çok sonra
+  `ChartSpec` doğrulamasında patlardı.
+- `describe_table` sayısal bir `period` sütununu `to_datetime`'a veriyordu; o da
+  tamsayıyı epoch'tan nanosaniye okuyor. Modelin tablo hakkında okuduğu tek
+  satır "1970-01 - 1970-01" diyordu. Artık okumayı reddediyor.
+
+## ToolContext'in salt-okunur yarısı salt-okunur değildi
+`_tables` ve `lineage` `Mapping` diye yazılmış, `dict` olarak veriliyordu --
+üstelik oturumun kendi sözlükleri. Bir araç yazma tamponunu tamamen atlayıp
+doğrudan oturuma yazabilirdi; iptal edilen adımın iz bırakmaması sözü de
+böylece kalkardı ve hiçbir test kırılmazdı. Artık `MappingProxyType`, üstelik
+anlık görüntü üzerinden: zaman aşımına uğramış bir araç oturumun ilerlemesini
+de görmemeli.
+
+## Argüman kapısı sınıfa değil, modele gösterilen şemaya bakıyor
+İlk düzeltme kabul edilen anahtar kümesini `model_fields`'tan kuruyordu ve
+takma adlarda aynı anda iki yönde birden yanılıyordu: Pydantic'in sessizce
+atacağı bir anahtarı geçiriyor, şemanın kendi ilan ettiği anahtarı ise
+reddediyordu. Ayrıca `additionalProperties: false` şemada her iç nesneye
+yazılırken doğrulama yalnızca en üst seviyeye bakıyordu -- yani aynı söz bir
+kat aşağıda yine tutulmuyordu.
+
+Kontrol artık `tool_schema(model)` üzerinden yürüyor ve değerin içine iniyor.
+Modülün ilk paragrafındaki "şema ile doğrulama aynı yerden gelir" cümlesi böyle
+kod oluyor: iki yarı aynı nesne. `extra="allow"` da bedavaya doğru çalışıyor,
+çünkü Pydantic o durumda şemaya zaten `additionalProperties: true` yazıyor.
+
+Birleşim (`Optional[Model]`) dallarında bir tuzak çıktı: `{"type": "null"}`
+dalının denetleyecek `properties`'i yok, yani uydurma anahtarlı bir nesneyi
+"kabul ediyor" ve tek dalın kabulü yetiyordu. Artık yalnızca değerin şeklini
+alabilecek dallar soruluyor.
+
+## $ref açmada sayaç değil, takip edilen referans zinciri
+Derinlik sayacı üç kat iç içe geçmiş sıradan bir modeli döngüden ayırt
+edemiyordu: acyclic modellerde ateşleniyor, modeli kesiyor ve -- `Optional[X]`
+işaretçiyi `anyOf`'un bir kat altına koyduğu için -- sarkan `$ref`'i yine de
+dışarı bırakıyordu. Yani fonksiyon tam olarak önlemek için var olduğu şeyi
+üretiyordu. Artık takip edilen referans zinciri tutuluyor; kendine dönen bir
+model açık nesne olarak bitiyor: kısıtsız ama çözülebilir.
+
+## Grafik referansı iki ayrı adla taşınıyor
+`ChartSpec` alana `chart_ref`, `contracts.Artifact` ise `ref` diyor -- ve
+`add_chart` ikincisini de kabul ediyor. Yalnızca birini okumak, saymaktan
+kötüydü: tanınmayan taşıyıcı hiç sayı katmıyor, tarama boş liste görüyor ve
+oturumdaki her grafiğe yine `c01` veriyordu. Çakışma kontrolü düşünüldü ve
+yazılmadı: aday her zaman okunan en yüksek referansın bir fazlası, o sayıya
+ayrışan bir referans zaten en yükseği o yapardı; ateşlenemezdi.
+
+## describe_table'ın 1970 koruması da değer bazlı
+İlk düzeltme `is_numeric_dtype`'a bakıyordu; o da `int64` görüyor ama aynı
+tamsayıları tutan object sütunu görmüyor -- yani düzeltme tam da dtype
+kontrolünden saklanan sütun şeklini kaçırıyordu. Aynı commit'teki `json_safe`
+zaten "kararı veren dtype değil" diyordu; ikisi artık aynı ilkeyi izliyor.
+
+## Önizleme modele JSON olarak gidiyor
+`format_tool_message` Python repr'ı basıyordu: model `datetime.date(2020, 9, 1)`
+ve `nan` okuyordu. Burası önizlemenin modele ulaştığı **tek** yer ve her araç
+buradan geçiyor -- önizlemesini `preview_rows` ile kurmayanlar da. Dönüşüm bu
+kapıya kondu, tek tek araçlara değil.
+
+## Araç mesajı kesilirken ortadan eleniyor, sondan değil
+`preview_rows` iki ucu da bilerek tutuyor ("son dönem ilki kadar bilgilendirici").
+Ama önizleme mesaja en son ekleniyor ve bitmiş metin 2000 karakterden kesiliyordu,
+yani kesme her zaman önce son satırları yiyordu -- üstelik `(kisaltildi)` neyin
+gittiğini söylemeden. Ölçüldü: FakeLake'in dört serilik demo penceresi, uyarılar
+ve kalite kartıyla birlikte 1961/2000 karakter -- tetiklenmiyor ama 39 karakter
+kalıyor. Önizleme artık kalan bütçeye göre ortadan eleniyor, etiket kaç satırın
+atlandığını yazıyor. Hiç sığmıyorsa yarım JSON yerine "sığmadı" deniyor.
+
+## Argüman kapısının izlemediği iki kenar
+`dict[str, Model]` hiç `properties` üretmiyor, değer modelini
+`additionalProperties` altına koyuyor; `tuple[A, B]` ise `items` olmadan
+`prefixItems` üretiyor. Şema ikisinde de iç modeli kapatıyordu, doğrulama ise
+yanından geçiyordu -- yani şema anahtarı yasaklarken doğrulama kabul edip
+sessizce atıyordu. Tam olarak bu modülün var olma sebebi olan sapma.
+
+Ayrıca ayırt edicili (discriminated) birleşimde her dalı sormak yanlış: etiket
+her dalın alanı olduğu için `{op: "deflate", anchor: ...}` yanlış dal tarafından
+bütünüyle kabul ediliyor ve kapı susuyordu; Pydantic ise katı biçimde etikete
+göre yönlendirip `anchor`'ı varsayılanına düşürüyordu. Artık etiket okunuyor.
+
+`discriminator.mapping` ise `#/$defs/...` işaretçilerini düz string **değer**
+olarak tutuyor; tarama yalnızca `$ref` **anahtarı** olan sözlükleri yeniden
+yazdığı için `$defs` siliniyor ve mapping boşluğa işaret ediyordu. Testimiz de
+göremiyordu (`"$ref" not in ...` — belge işaretçiyi içeriyor, sadece o adla
+değil). Mapping düşürüldü, test `#/$defs/` arıyor.
+
+## MappingProxyType anahtarı korur, arkasındaki nesneyi korumaz
+`lineage` değerleri oturumla kimlik paylaşan sıradan değiştirilebilir modeller.
+Bir araç bir sütunun nereden geldiğini yerinde değiştirebiliyor, yazma tamponu
+boş kalıyor ve izlenebilirlik paneli düzenlemeyi hep oradaymış gibi gösteriyordu.
+Değerler artık anlık görüntüye kopyalanıyor. Tablolar için aynı şey geçerli
+değil: `table()` zaten kopya veriyor -- ama sığ, yani hücre içinde duran bir
+nesne oturumunkiyle aynı nesne. Gold sözleşmesinde iç içe tablo yok; docstring
+artık bunu söylüyor.
