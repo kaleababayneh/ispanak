@@ -61,10 +61,11 @@ def _holds_numbers(column: pd.Series) -> bool:
     """
     if pd.api.types.is_numeric_dtype(column):
         return True
-    values = column.dropna()
-    return len(values) > 0 and all(
+    # Any, not all. One integer among the dates is enough for `to_datetime` to
+    # place that row in 1970 and drag the reported range with it.
+    return any(
         isinstance(value, numbers.Number) and not isinstance(value, bool)
-        for value in values
+        for value in column.dropna()
     )
 
 
@@ -93,10 +94,21 @@ def preview_rows(frame: pd.DataFrame, rows: int = PREVIEW_ROWS) -> list[dict]:
         chosen = frame
     else:
         chosen = pd.concat([frame.head(rows), frame.tail(rows)])
-    return [
-        {str(key): json_safe(value) for key, value in record.items()}
-        for record in chosen.to_dict(orient="records")
-    ]
+    # Built by position, not through `to_dict`. `to_dict` collapses duplicate
+    # column labels down to the last one and reports it as a warning on stderr,
+    # which nothing on the model or event path ever reads -- silent data loss
+    # in the one function whose job is to show what the table holds.
+    labels = [str(column) for column in chosen.columns]
+    records = []
+    for row in chosen.itertuples(index=False, name=None):
+        record: dict[str, Any] = {}
+        for label, cell in zip(labels, row, strict=True):
+            key, suffix = label, 2
+            while key in record:
+                key, suffix = f"{label}__{suffix}", suffix + 1
+            record[key] = json_safe(cell)
+        records.append(record)
+    return records
 
 
 def json_safe(value: Any) -> Any:
@@ -137,10 +149,19 @@ def json_safe(value: Any) -> Any:
         return value if math.isfinite(value) else None
     if isinstance(value, int | str):
         return value
+    kind = getattr(getattr(value, "dtype", None), "kind", None)
+    if kind in ("M", "m"):
+        # `np.datetime64` at nanosecond resolution has no lossless Python
+        # equivalent, so `.item()` below would hand back a bare 19-digit
+        # integer and the model would read a timestamp as a number. Day
+        # resolution converts cleanly, which is why this stayed invisible.
+        return json_safe(pd.Timestamp(value) if kind == "M" else pd.Timedelta(value))
     if hasattr(value, "item"):  # numpy and pyarrow scalars
         try:
             return json_safe(value.item())
-        except (ValueError, TypeError):  # pragma: no cover - defensive
+        except (ValueError, TypeError):
+            # Reached by anything with an `item` that is not a 0-d scalar --
+            # an ndarray in a cell, which a groupby/apply result produces.
             return str(value)
     if isinstance(value, list | tuple):
         return [json_safe(item) for item in value]
@@ -190,12 +211,38 @@ def format_tool_message(result: ToolResult, table_note: str = "") -> str:
             {str(key): json_safe(cell) for key, cell in row.items()}
             for row in result.preview
         ]
-        parts.append("Ornek satirlar: " + json.dumps(rows, ensure_ascii=False))
+        spent = len("\n".join(parts)) + 1
+        parts.append(_preview_line(rows, TOOL_MESSAGE_MAX_CHARS - spent))
 
     text = "\n".join(parts)
     if len(text) > TOOL_MESSAGE_MAX_CHARS:
         text = text[: TOOL_MESSAGE_MAX_CHARS - 20] + "\n... (kisaltildi)"
     return text
+
+
+def _preview_line(rows: list[dict[str, Any]], budget: int) -> str:
+    """The preview, fitted to what is left of the message.
+
+    Dropped from the middle, never from the end. The preview is built last, so
+    slicing the finished message would always delete the newest rows first --
+    and `preview_rows` keeps both ends precisely because the last period is as
+    informative as the first. Losing it silently, under a `(kisaltildi)` that
+    does not say what went, is the worst of the three options.
+    """
+    for keep in range(len(rows), 0, -1):
+        if keep == len(rows):
+            chosen, label = rows, "Ornek satirlar"
+        else:
+            head = (keep + 1) // 2
+            chosen = rows[:head] + rows[len(rows) - (keep - head) :][: keep - head]
+            label = f"Ornek satirlar (ortadan {len(rows) - keep} satir atlandi)"
+        line = f"{label}: {json.dumps(chosen, ensure_ascii=False)}"
+        if len(line) <= budget:
+            return line
+    return (
+        f"Ornek satirlar mesaja sigmadi: {len(rows)} satir, "
+        f"sutunlar: {', '.join(rows[0])}"
+    )
 
 
 def format_sources(sources: list) -> str:

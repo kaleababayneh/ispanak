@@ -167,7 +167,18 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
                     return {"type": "object", **around}
                 target = resolve(defs.get(name, {}), chain | {name})
                 return {**target, **around}
-            return {key: resolve(value, chain) for key, value in node.items()}
+            resolved = {key: resolve(value, chain) for key, value in node.items()}
+            tag = resolved.get("discriminator")
+            if isinstance(tag, dict) and "mapping" in tag:
+                # A discriminator stores its `#/$defs/...` pointers as plain
+                # string VALUES of `mapping`, so the walk never sees them as
+                # references and they would leave here pointing at a `$defs`
+                # that no longer exists. Every branch carries its tag inline
+                # already, so the mapping adds nothing once the refs are gone.
+                resolved["discriminator"] = {
+                    key: value for key, value in tag.items() if key != "mapping"
+                }
+            return resolved
         if isinstance(node, list):
             return [resolve(item, chain) for item in node]
         return node
@@ -226,6 +237,13 @@ def _extra_key_errors(
         # whose shape the value could take are asked: `{"type": "null"}` has no
         # `properties`, so it "accepts" an object with a made-up key in it, and
         # a single branch accepting is enough to let the whole value through.
+        tagged = _tagged_branch(schema, branches, value)
+        if tagged is not None:
+            # A discriminated union routes strictly by its tag. Asking every
+            # branch would let the fields of the wrong one through -- the tag
+            # is present in each branch, so the wrong branch accepts them --
+            # and Pydantic would then drop every one onto its default.
+            return _extra_key_errors(tagged, value, loc)
         candidates = [b for b in branches if _branch_fits(b, value)]
         if not candidates:
             return []
@@ -236,30 +254,71 @@ def _extra_key_errors(
 
     if isinstance(value, dict):
         properties = schema.get("properties")
+        # `dict[str, Model]` renders with no `properties` at all and the value
+        # model under `additionalProperties`. Reading only `properties` walked
+        # straight past it, so the schema closed the inner model and the
+        # validation never looked inside.
+        rest = schema.get("additionalProperties")
         if not isinstance(properties, dict):
-            return []
+            if not isinstance(rest, dict):
+                return []
+            properties = {}
         errors: list[InitErrorDetails] = []
-        if schema.get("additionalProperties") is False:
+        if rest is False:
             errors = [
                 InitErrorDetails(
                     type="extra_forbidden", loc=(*loc, key), input=value[key]
                 )
-                for key in sorted(set(value) - set(properties))
+                # Sorted only to make the order deterministic; `key=str` because
+                # a non-string key would otherwise raise TypeError out of a
+                # method documented to raise ValidationError.
+                for key in sorted(set(value) - set(properties), key=str)
             ]
         for key, item in value.items():
             if key in properties:
                 errors.extend(_extra_key_errors(properties[key], item, (*loc, key)))
+            elif isinstance(rest, dict):
+                errors.extend(_extra_key_errors(rest, item, (*loc, key)))
         return errors
 
     if isinstance(value, list):
+        # `tuple[A, B]` renders as `prefixItems` with no `items`, so a fixed
+        # tuple of models was another edge the walk did not follow.
+        prefix = schema.get("prefixItems") or []
         items = schema.get("items")
         return [
             error
             for index, item in enumerate(value)
-            for error in _extra_key_errors(items, item, (*loc, index))
+            for error in _extra_key_errors(
+                prefix[index] if index < len(prefix) else items, item, (*loc, index)
+            )
         ]
 
     return []
+
+
+def _tagged_branch(schema: Any, branches: list[Any], value: Any) -> Any:
+    """The one branch a discriminated union's tag selects, if it selects one.
+
+    `None` when there is no discriminator, or when the tag is missing or names
+    nothing -- Pydantic phrases `union_tag_invalid` better than we would.
+    """
+    discriminator = schema.get("discriminator")
+    if not isinstance(discriminator, dict) or not isinstance(value, dict):
+        return None
+    name = discriminator.get("propertyName")
+    tag = value.get(name)
+    for branch in branches:
+        if not isinstance(branch, dict):  # pragma: no cover - not emitted
+            continue
+        declared = (branch.get("properties") or {}).get(name)
+        if not isinstance(declared, dict):
+            # Every branch of a discriminated union carries the tag as a field,
+            # so nothing Pydantic emits reaches this.
+            continue  # pragma: no cover - not produced by model_json_schema()
+        if declared.get("const") == tag or tag in (declared.get("enum") or []):
+            return branch
+    return None
 
 
 def _forbid_extra_properties(schema: dict[str, Any]) -> dict[str, Any]:

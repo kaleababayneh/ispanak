@@ -21,6 +21,12 @@ from lakehouse_agent.contracts import ColumnInfo
 from lakehouse_agent.llm import LLM
 
 
+def _detach(value: Any) -> Any:
+    """A copy a tool cannot edit its way back into the session through."""
+    copy = getattr(value, "model_copy", None)
+    return copy(deep=True) if callable(copy) else value
+
+
 class TableNotFound(KeyError):
     """A tool asked for a table reference the session does not have."""
 
@@ -63,11 +69,20 @@ class ToolContext:
 
         Snapshotted before wrapping, not proxied onto the live dict. A tool
         that overran its timeout is still holding this object, and it should
-        not observe a session that moved on without it either. Only the mapping
-        is copied; the frames inside are not, and `table()` copies those.
+        not observe a session that moved on without it either.
+
+        A proxy stops keys being added or removed, not the objects behind them
+        from being edited. The frames are handled by `table()`, which copies.
+        The `lineage` values are ordinary mutable models shared by identity
+        with the session, so they are copied here instead -- otherwise a tool
+        could rewrite a column's provenance in place, the write buffer would
+        stay empty, and the traceability panel would show the edit as if it had
+        always been there.
         """
         self._tables = MappingProxyType(dict(self._tables))
-        self.lineage = MappingProxyType(dict(self.lineage))
+        self.lineage = MappingProxyType(
+            {key: _detach(value) for key, value in self.lineage.items()}
+        )
 
     def table(self, ref: str | None = None) -> pd.DataFrame:
         """Return a table for reading. `ref=None` means the active table.
@@ -76,6 +91,10 @@ class ToolContext:
         what it was handed then mutates its own object, not the session's, so a
         half-finished step cannot corrupt a table the user already saw. Under
         pandas copy-on-write this costs nothing until something is written.
+
+        Shallow is exact, not loose: an object stored inside a cell is the same
+        object the session holds. No table in the gold contract nests one, and
+        a tool that starts stashing frames in cells has to copy them itself.
         """
         key = ref or self.active_table
         if key is None:

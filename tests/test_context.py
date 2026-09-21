@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from lakehouse_agent.agent.context import TableNotFound, ToolContext
+from lakehouse_agent.contracts import ColumnInfo
 from lakehouse_agent.testing.fake_llm import FakeLLM
 
 
@@ -156,3 +157,27 @@ def test_the_write_side_records_what_the_loop_merges_back(agent_settings):
 
 def test_has_table_says_no_when_there_is_no_active_table(agent_settings):
     assert make_ctx(agent_settings).has_table() is False
+
+
+def test_a_tool_cannot_rewrite_a_columns_provenance_in_place(agent_settings):
+    """A proxy stops keys being added or removed, not the objects behind them.
+
+    `lineage` values are ordinary mutable models shared by identity with the
+    session, so a tool could rewrite where a column came from, leave the write
+    buffer empty, and have the traceability panel show the edit as if it had
+    always been there.
+    """
+    column = ColumnInfo(name="reel", formula="value / tufe * 100", unit="TL")
+    lineage = {"t01_a.reel": column}
+    ctx = ToolContext(
+        session_id="s1",
+        step_no=1,
+        llm=FakeLLM(),
+        lake=None,
+        settings=agent_settings,
+        lineage=lineage,
+    )
+
+    ctx.lineage["t01_a.reel"].formula = "uydurma"
+
+    assert column.formula == "value / tufe * 100"

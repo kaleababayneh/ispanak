@@ -392,3 +392,105 @@ def test_the_gate_steps_aside_when_the_value_is_the_wrong_shape_entirely():
     assert registry.validate("nested_tool", {"loose": [{"ne": "olursa"}]}).loose == [
         {"ne": "olursa"}
     ]
+
+
+class Cell(BaseModel):
+    a: int = 1
+
+
+class Deflate(BaseModel):
+    op: Literal["deflate"] = "deflate"
+    base: str = "2021"
+
+
+class Rebase(BaseModel):
+    op: Literal["rebase"] = "rebase"
+    anchor: str = "2021-01"
+
+
+def test_the_gate_follows_the_two_edges_a_plain_walk_misses():
+    """`dict[str, Model]` and `tuple[Model, ...]` are shaped unlike everything
+    else Pydantic emits.
+
+    The first renders with no `properties` at all and the value model under
+    `additionalProperties`; the second with `prefixItems` and no `items`. The
+    schema closed the inner model in both cases while the walk went straight
+    past it -- the schema forbidding a key that validation then accepted and
+    dropped, which is the exact divergence this module exists to prevent.
+    """
+
+    class Shapes(BaseModel):
+        cells: dict[str, Cell] = Field(default_factory=dict)
+        pair: tuple[Cell, Cell] | None = None
+
+    registry = ToolRegistry.of([spec(args_model=Shapes)])
+
+    with pytest.raises(ValidationError) as excinfo:
+        registry.validate("nested_tool", {"cells": {"x": {"uydurma": 1}}})
+    assert excinfo.value.errors()[0]["loc"] == ("cells", "x", "uydurma")
+
+    with pytest.raises(ValidationError) as excinfo:
+        registry.validate("nested_tool", {"pair": [{"a": 1}, {"uydurma": 2}]})
+    assert excinfo.value.errors()[0]["loc"] == ("pair", 1, "uydurma")
+
+
+def test_a_tagged_union_is_read_by_its_tag_not_by_whichever_branch_agrees():
+    """Asking every branch is wrong once there is a discriminator.
+
+    The tag is a field of every branch, so `{op: "deflate", anchor: ...}` is
+    accepted whole by the `rebase` branch and the gate says nothing -- while
+    Pydantic routes strictly by the tag and drops `anchor` onto its default.
+    That is the wrong-value-silently failure in a different costume.
+    """
+
+    class Tagged(BaseModel):
+        step: Deflate | Rebase = Field(Deflate(), discriminator="op")
+
+    registry = ToolRegistry.of([spec(args_model=Tagged)])
+
+    with pytest.raises(ValidationError) as excinfo:
+        registry.validate("nested_tool", {"step": {"op": "deflate", "anchor": "x"}})
+    assert excinfo.value.errors()[0]["loc"] == ("step", "anchor")
+
+    assert (
+        registry.validate(
+            "nested_tool", {"step": {"op": "rebase", "anchor": "2021-01"}}
+        ).step.anchor
+        == "2021-01"
+    )
+
+    # An unknown tag is Pydantic's to phrase, not ours.
+    with pytest.raises(ValidationError) as excinfo:
+        registry.validate("nested_tool", {"step": {"op": "uydurma"}})
+    assert excinfo.value.errors()[0]["type"] == "union_tag_invalid"
+
+
+def test_no_unresolvable_pointer_leaves_the_process_in_any_shape():
+    """A discriminator stores its pointers as plain string VALUES of `mapping`.
+
+    The walk only ever rewrote a dict that had a `$ref` KEY, so `$defs` was
+    deleted and the mapping was left pointing into it. The old assertion
+    (`"$ref" not in ...`) could not see it: the document contains the pointer,
+    just not under that name.
+    """
+
+    class Tagged(BaseModel):
+        step: Deflate | Rebase = Field(Deflate(), discriminator="op")
+
+    parameters = function_schema(
+        ToolRegistry.of([spec(args_model=Tagged)]), "nested_tool"
+    )
+
+    assert "#/$defs/" not in json.dumps(parameters)
+    assert "$defs" not in parameters
+
+
+def test_a_non_string_argument_key_still_raises_a_validation_error():
+    """`validate` is documented to raise ValidationError. Sorting the extra
+    keys for a deterministic message must not turn that into a TypeError that
+    escapes the loop's retry path."""
+    registry = ToolRegistry.of([spec(args_model=Cell)])
+
+    with pytest.raises(ValidationError) as excinfo:
+        registry.validate("nested_tool", {"b": 1, 2: "x"})
+    assert len(excinfo.value.errors()) == 2

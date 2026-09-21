@@ -248,8 +248,9 @@ def _chart_ref_of(chart: Any) -> str:
     """The reference of a chart, however it is being carried.
 
     `ChartSpec` calls the field `chart_ref`; `contracts.Artifact` -- the shared
-    contract, and what `add_chart` is annotated to take -- calls it `ref`.
-    Reading only one of them is worse than counting was: an unrecognised
+    contract, and the other thing `add_chart` accepts, since it is annotated
+    `Any` -- calls it `ref`. Reading only one of them is worse than counting
+    was: an unrecognised
     carrier contributes no number at all, so the scan sees an empty list and
     hands out `c01` again for every chart in the session.
     """

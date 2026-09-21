@@ -215,3 +215,39 @@ zaten "kararı veren dtype değil" diyordu; ikisi artık aynı ilkeyi izliyor.
 ve `nan` okuyordu. Burası önizlemenin modele ulaştığı **tek** yer ve her araç
 buradan geçiyor -- önizlemesini `preview_rows` ile kurmayanlar da. Dönüşüm bu
 kapıya kondu, tek tek araçlara değil.
+
+## Araç mesajı kesilirken ortadan eleniyor, sondan değil
+`preview_rows` iki ucu da bilerek tutuyor ("son dönem ilki kadar bilgilendirici").
+Ama önizleme mesaja en son ekleniyor ve bitmiş metin 2000 karakterden kesiliyordu,
+yani kesme her zaman önce son satırları yiyordu -- üstelik `(kisaltildi)` neyin
+gittiğini söylemeden. Ölçüldü: FakeLake'in dört serilik demo penceresi, uyarılar
+ve kalite kartıyla birlikte 1961/2000 karakter -- tetiklenmiyor ama 39 karakter
+kalıyor. Önizleme artık kalan bütçeye göre ortadan eleniyor, etiket kaç satırın
+atlandığını yazıyor. Hiç sığmıyorsa yarım JSON yerine "sığmadı" deniyor.
+
+## Argüman kapısının izlemediği iki kenar
+`dict[str, Model]` hiç `properties` üretmiyor, değer modelini
+`additionalProperties` altına koyuyor; `tuple[A, B]` ise `items` olmadan
+`prefixItems` üretiyor. Şema ikisinde de iç modeli kapatıyordu, doğrulama ise
+yanından geçiyordu -- yani şema anahtarı yasaklarken doğrulama kabul edip
+sessizce atıyordu. Tam olarak bu modülün var olma sebebi olan sapma.
+
+Ayrıca ayırt edicili (discriminated) birleşimde her dalı sormak yanlış: etiket
+her dalın alanı olduğu için `{op: "deflate", anchor: ...}` yanlış dal tarafından
+bütünüyle kabul ediliyor ve kapı susuyordu; Pydantic ise katı biçimde etikete
+göre yönlendirip `anchor`'ı varsayılanına düşürüyordu. Artık etiket okunuyor.
+
+`discriminator.mapping` ise `#/$defs/...` işaretçilerini düz string **değer**
+olarak tutuyor; tarama yalnızca `$ref` **anahtarı** olan sözlükleri yeniden
+yazdığı için `$defs` siliniyor ve mapping boşluğa işaret ediyordu. Testimiz de
+göremiyordu (`"$ref" not in ...` — belge işaretçiyi içeriyor, sadece o adla
+değil). Mapping düşürüldü, test `#/$defs/` arıyor.
+
+## MappingProxyType anahtarı korur, arkasındaki nesneyi korumaz
+`lineage` değerleri oturumla kimlik paylaşan sıradan değiştirilebilir modeller.
+Bir araç bir sütunun nereden geldiğini yerinde değiştirebiliyor, yazma tamponu
+boş kalıyor ve izlenebilirlik paneli düzenlemeyi hep oradaymış gibi gösteriyordu.
+Değerler artık anlık görüntüye kopyalanıyor. Tablolar için aynı şey geçerli
+değil: `table()` zaten kopya veriyor -- ama sığ, yani hücre içinde duran bir
+nesne oturumunkiyle aynı nesne. Gold sözleşmesinde iç içe tablo yok; docstring
+artık bunu söylüyor.

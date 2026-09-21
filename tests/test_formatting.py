@@ -116,7 +116,7 @@ def test_quality_problems_travel_with_the_table():
 
 
 def test_a_chatty_tool_cannot_crowd_out_the_conversation():
-    """Capped at 2000 characters, as written in docs/contracts.md §4.
+    """Capped at 2000 characters, as written in docs/contracts.md section 4.
 
     One tool returning a huge preview would otherwise push the question itself
     out of the model's attention. Long output is a sign the tool should
@@ -131,7 +131,34 @@ def test_a_chatty_tool_cannot_crowd_out_the_conversation():
     )
 
     assert len(message) <= TOOL_MESSAGE_MAX_CHARS
-    assert message.endswith("... (kisaltildi)")
+
+
+def test_what_gets_dropped_is_the_middle_of_the_preview_not_its_end():
+    """The preview is assembled last, so slicing the finished message always
+    deleted the newest rows first -- and silently.
+
+    `preview_rows` keeps both ends on purpose: the last period is as
+    informative as the first. Cutting from the middle keeps that true, and the
+    label says how many rows went.
+    """
+    rows = [{"period": f"2021-{i + 1:02d}-01", "v": "x" * 200} for i in range(30)]
+    message = format_tool_message(ToolResult(ok=True, summary="Tamam.", preview=rows))
+
+    assert len(message) <= TOOL_MESSAGE_MAX_CHARS
+    assert "2021-01-01" in message  # first row survives
+    assert "2021-30-01" in message  # and so does the last
+    assert "satir atlandi" in message
+    assert not message.endswith("(kisaltildi)")
+
+
+def test_a_preview_that_cannot_fit_at_all_says_so_instead_of_half_a_row():
+    """Truncating JSON mid-object hands the model something it cannot read."""
+    message = format_tool_message(
+        ToolResult(ok=True, summary="Tamam.", preview=[{"v": "x" * 4000}])
+    )
+
+    assert "sigmadi" in message
+    assert "sutunlar: v" in message
 
 
 def test_the_preview_survives_json_dumps_for_every_column_gold_can_hand_us():
@@ -297,3 +324,56 @@ def test_a_nested_or_numpy_cell_is_converted_too():
     }
     assert json_safe(np.datetime64("2021-01-01")) == "2021-01-01"
     assert json_safe(object()).startswith("<object object")
+
+
+def test_a_duplicate_column_label_is_kept_rather_than_eaten():
+    """`to_dict` collapses duplicate labels to the last one and warns on
+    stderr, which nothing on the model or event path reads.
+
+    `describe_table` still lists the label twice, so the model would be told
+    the table has two such columns and handed one value for them.
+    """
+    frame = pd.DataFrame([[1.0, 2.0]], columns=["value", "value"])
+    rows = preview_rows(frame)
+
+    assert rows == [{"value": 1.0, "value__2": 2.0}]
+    json.dumps(rows)
+
+
+def test_a_nanosecond_numpy_timestamp_does_not_arrive_as_a_19_digit_number():
+    """`.item()` on `np.datetime64[ns]` has no lossless Python target and
+    returns a bare integer. Day resolution converts cleanly, which is why the
+    only case the suite covered stayed green."""
+    assert json_safe(np.datetime64("2021-01-01T12:00:00", "ns")) == (
+        "2021-01-01T12:00:00"
+    )
+    assert json_safe(np.datetime64("2021-01-01", "D")) == "2021-01-01"
+    assert json_safe(np.timedelta64(1, "D")) == "1 days 00:00:00"
+    assert json_safe(np.datetime64("NaT", "ns")) is None
+
+
+def test_an_array_in_a_cell_falls_back_to_text_instead_of_raising():
+    """A groupby/apply result is the ordinary way to get one. The branch was
+    marked defensive; it is reached."""
+    assert json_safe(np.array([1, 2])) == "[1 2]"
+
+
+def test_one_number_among_the_dates_is_enough_to_refuse_the_range():
+    """The guard asked whether every value was a number. One integer is enough
+    for `to_datetime` to place that row in 1970 and drag the range with it."""
+    mixed = pd.DataFrame({"period": [dt.date(2021, 1, 1), 2, dt.date(2021, 3, 1)]})
+
+    line = describe_table("t01_x", mixed)
+    assert "donem araligi okunamadi" in line
+    assert "1970" not in line
+
+
+def test_the_cap_still_holds_when_it_is_not_the_preview_that_is_long():
+    """Fitting the preview cannot save a message whose other parts already
+    overflow, so the blunt slice stays as the last line of defence."""
+    message = format_tool_message(
+        ToolResult(ok=True, summary="Tamam.", warnings=["u" * 500] * 6)
+    )
+
+    assert len(message) <= TOOL_MESSAGE_MAX_CHARS
+    assert message.endswith("... (kisaltildi)")

@@ -1,4 +1,4 @@
-# Sözleşmeler — v0.2
+# Sözleşmeler — v0.3
 
 İki şerit aynı anda geliştirip sonra birleştiriyor. Bu belge, "benim modülüm
 seninkine nasıl bağlanır" sorusunun yazılı cevabı. Amacı tam bir spesifikasyon
