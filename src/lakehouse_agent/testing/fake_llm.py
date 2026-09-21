@@ -119,9 +119,18 @@ class FakeLLM:
 
     @staticmethod
     def text(
-        content: str, *, prompt_tokens: int = 10, completion_tokens: int = 5
+        content: str,
+        *,
+        prompt_tokens: int = 10,
+        completion_tokens: int = 5,
+        duration_ms: int = 5,
     ) -> ChatResult:
-        """A plain answer with no tool call."""
+        """A plain answer with no tool call.
+
+        `duration_ms` is how long the call claims to have taken. The loop adds
+        it to the turn's working time, so a test can make the model slow
+        without making the clock lie.
+        """
         return ChatResult(
             content=content,
             raw_message={"role": "assistant", "content": content},
@@ -130,9 +139,9 @@ class FakeLLM:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 calls=1,
-                duration_ms=5,
+                duration_ms=duration_ms,
             ),
-            duration_ms=5,
+            duration_ms=duration_ms,
             model="fake",
         )
 
@@ -143,9 +152,15 @@ class FakeLLM:
         *,
         call_id: str = "call_1",
         content: str | None = None,
+        duration_ms: int = 5,
     ) -> ChatResult:
         """A reply asking for one tool."""
-        return FakeLLM.tool_calls([(name, arguments)], ids=[call_id], content=content)
+        return FakeLLM.tool_calls(
+            [(name, arguments)],
+            ids=[call_id],
+            content=content,
+            duration_ms=duration_ms,
+        )
 
     @staticmethod
     def tool_calls(
@@ -153,6 +168,7 @@ class FakeLLM:
         *,
         ids: list[str] | None = None,
         content: str | None = None,
+        duration_ms: int = 5,
     ) -> ChatResult:
         """A reply asking for several tools, to exercise the trimming rule."""
         ids = ids or [f"call_{i + 1}" for i in range(len(calls))]
@@ -171,8 +187,13 @@ class FakeLLM:
             tool_calls=parsed_calls,
             raw_message=trimmed,
             finish_reason="tool_calls",
-            usage=Usage(prompt_tokens=10, completion_tokens=5, calls=1, duration_ms=5),
-            duration_ms=5,
+            usage=Usage(
+                prompt_tokens=10,
+                completion_tokens=5,
+                calls=1,
+                duration_ms=duration_ms,
+            ),
+            duration_ms=duration_ms,
             model="fake",
         )
 

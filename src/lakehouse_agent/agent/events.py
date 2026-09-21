@@ -28,6 +28,7 @@ EventType = Literal[
     "sources",
     "quality_report",
     "approval_request",
+    "approval_decision",
     "done",
     "error",
 ]

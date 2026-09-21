@@ -53,6 +53,10 @@ class ToolContext:
     #: Read-only view of the session's tables. Access goes through `table()`.
     _tables: Mapping[str, pd.DataFrame] = field(default_factory=dict, repr=False)
 
+    #: References already handed out for tables that no longer exist. A removed
+    #: table must not free its number; see `SessionState.retired_tables`.
+    retired_refs: frozenset[str] = frozenset()
+
     #: Write buffer. The loop merges this into the session on success.
     written: dict[str, pd.DataFrame] = field(default_factory=dict)
     written_charts: list[Any] = field(default_factory=list)
@@ -123,8 +127,16 @@ class ToolContext:
         return key is not None and (key in self.written or key in self._tables)
 
     def new_table_ref(self, suffix: str) -> str:
-        """Generate the next reference. Tools never invent one."""
-        known = {**dict(self._tables), **self.written}
+        """Generate the next reference. Tools never invent one.
+
+        Retired references count as taken. A table the quality gate removed is
+        gone from the session but its number is still on a card the person
+        saw, and it is always the highest one, so reissuing it is the default
+        outcome rather than an edge case.
+        """
+        known: dict[str, Any] = dict.fromkeys(self.retired_refs)
+        known.update(self._tables)
+        known.update(self.written)
         return new_table_ref(known, suffix)
 
     def put_table(self, ref: str, frame: pd.DataFrame) -> None:

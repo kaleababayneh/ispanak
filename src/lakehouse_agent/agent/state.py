@@ -148,6 +148,10 @@ class SessionState:
     sources: list[Source] = field(default_factory=list)
     charts: list[ChartSpec] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
+    #: References of tables that were removed after being issued. Kept so a
+    #: number is never handed out twice: the quality gate removes the newest
+    #: table, which is exactly the one `new_table_ref` would otherwise reissue.
+    retired_tables: set[str] = field(default_factory=set)
 
     # --- per-turn bookkeeping --------------------------------------------
     turn_no: int = 0
@@ -234,7 +238,7 @@ def new_chart_ref(charts: list[Any]) -> str:
     out-of-range reference is built quietly here and only fails later, inside
     `ChartSpec` validation, where nothing points back to this function.
     """
-    refs = [_chart_ref_of(chart) for chart in charts]
+    refs = [chart_ref_of(chart) for chart in charts]
     used = [
         int(match.group(1)) for ref in refs if (match := re.fullmatch(r"c(\d+)", ref))
     ]
@@ -244,7 +248,7 @@ def new_chart_ref(charts: list[Any]) -> str:
     return ref
 
 
-def _chart_ref_of(chart: Any) -> str:
+def chart_ref_of(chart: Any) -> str:
     """The reference of a chart, however it is being carried.
 
     `ChartSpec` calls the field `chart_ref`; `contracts.Artifact` -- the shared
