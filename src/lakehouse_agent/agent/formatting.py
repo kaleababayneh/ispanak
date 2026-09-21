@@ -8,6 +8,11 @@ cannot copy them into its answer with one slipped decimal place.
 
 from __future__ import annotations
 
+import datetime as dt
+import math
+from decimal import Decimal
+from typing import Any
+
 import pandas as pd
 
 from lakehouse_agent.contracts import ToolResult
@@ -24,16 +29,23 @@ def describe_table(ref: str, frame: pd.DataFrame) -> str:
     columns = [str(column) for column in frame.columns]
     period_note = ""
     if "period" in frame.columns and len(frame):
-        try:
-            periods = pd.to_datetime(frame["period"])
-            period_note = (
-                f", {periods.min().strftime('%Y-%m')}"
-                f" - {periods.max().strftime('%Y-%m')}"
-            )
-        except (ValueError, TypeError):
-            # A period column we cannot read is a data problem, not a reason to
-            # lose a step that already produced a table.
+        column = frame["period"]
+        if pd.api.types.is_numeric_dtype(column):
+            # `to_datetime` reads a plain integer as nanoseconds since the
+            # epoch, so a column of 1, 2, 3 would be described as a range in
+            # January 1970. Saying nothing beats saying that confidently.
             period_note = ", donem araligi okunamadi"
+        else:
+            try:
+                periods = pd.to_datetime(column)
+                period_note = (
+                    f", {periods.min().strftime('%Y-%m')}"
+                    f" - {periods.max().strftime('%Y-%m')}"
+                )
+            except (ValueError, TypeError):
+                # A period column we cannot read is a data problem, not a
+                # reason to lose a step that already produced a table.
+                period_note = ", donem araligi okunamadi"
     return f"{ref}: {len(frame)} satir{period_note}, sutunlar: {', '.join(columns)}"
 
 
@@ -62,11 +74,57 @@ def preview_rows(frame: pd.DataFrame, rows: int = PREVIEW_ROWS) -> list[dict]:
         chosen = frame
     else:
         chosen = pd.concat([frame.head(rows), frame.tail(rows)])
-    safe = chosen.copy()
-    for column in safe.columns:
-        if pd.api.types.is_datetime64_any_dtype(safe[column]):
-            safe[column] = safe[column].dt.strftime("%Y-%m-%d")
-    return safe.to_dict(orient="records")
+    return [
+        {str(key): json_safe(value) for key, value in record.items()}
+        for record in chosen.to_dict(orient="records")
+    ]
+
+
+def json_safe(value: Any) -> Any:
+    """One cell, as something `json.dumps` will accept.
+
+    Converting per value rather than per dtype, because dtype is not what
+    decides. Gold stores `period` as `datetime.date` in an object column: no
+    dtype check sees it, and it reaches `json.dumps` as the unserialisable
+    thing it is. The failure would land on the event channel in the middle of a
+    turn, far from here and after the work was already done.
+
+    `NaN` is converted too. `json.dumps` writes it as a bare `NaN`, which is
+    not JSON and which the interface's `JSON.parse` rejects outright. Missing
+    stays missing -- it becomes `null`, it is not filled in.
+    """
+    if value is None or value is pd.NaT:
+        return None
+    if isinstance(value, bool):  # before int: bool is a subclass of it
+        return value
+    if isinstance(value, dt.datetime):  # before date: datetime is a subclass
+        stamp = pd.Timestamp(value)
+        if stamp.time() == dt.time(0, 0) and stamp.tz is None:
+            return stamp.strftime("%Y-%m-%d")
+        return stamp.isoformat()
+    if isinstance(value, dt.date):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, dt.timedelta):
+        return str(value)
+    if isinstance(value, pd.Period):
+        return str(value)
+    if isinstance(value, Decimal):
+        return None if value.is_nan() else float(value)
+    if isinstance(value, float):
+        # `inf` has the same problem as `NaN`: json.dumps emits `Infinity`.
+        return value if math.isfinite(value) else None
+    if isinstance(value, int | str):
+        return value
+    if hasattr(value, "item"):  # numpy and pyarrow scalars
+        try:
+            return json_safe(value.item())
+        except (ValueError, TypeError):  # pragma: no cover - defensive
+            return str(value)
+    if isinstance(value, list | tuple):
+        return [json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    return str(value)
 
 
 def format_tool_message(result: ToolResult, table_note: str = "") -> str:

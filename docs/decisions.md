@@ -120,3 +120,52 @@ hesaplıyor (`ctx.written`, `ctx.new_active`) -- beyana değil gerçeğe bakmak
 bilinçli bir tercihti. Okunmayan bir beyan bırakmak, birinin onu doldurup bir
 etki beklemesine davetiye; kaldırıldı. `brief_name` duruyor çünkü sunumun altı
 aracıyla bizim fonksiyonlarımızı eşleyecek `docs/tools.md` ona dayanacak.
+
+## Model uydurduğu argüman adıyla yanlış tabloyu analiz edebiliyordu
+Pydantic'in varsayılanı `extra="ignore"`. Şema modele "bu aracın alanları
+şunlar" diyordu ama doğrulama fazlasını sessizce atıyordu. Şemanın tamamı
+modele Türkçe açıklamalarla gidiyor, yani `table_ref` yerine `tablo` yazmak
+beklenen kayma; MIA testinde modelin açıklamasız bir alana SQL yazdığı zaten
+görülmüştü.
+
+Ölçüldü: `{"tablo": "t02_deflate", "column": "TP_KTF12"}` çağrısı `table_ref`i
+`None` bırakıyor, `None` aktif tablo demek, araç `t01`i analiz edip `ok=True`
+ve beş anomali bildiriyordu. Doğru anahtarla aynı çağrı üç anomali veriyor.
+Özet, tarihler ve kaynaklar tutarlı görünüyor ve hepsi yanlış tabloya ait.
+
+Karar: kural araç kaydında, argüman modellerinde değil. Şemaya
+`additionalProperties: false`, doğrulamaya bilinmeyen anahtar reddi eklendi.
+Her araç modeline `extra="forbid"` yazmak da olurdu ama o modeller aracı
+yazanın; "şema ile doğrulama ayrışmaz" sözü kaydın sözü ve yarın bu dosyayı
+hiç okumamış birinin kaydettiği araç için de geçerli olmalı.
+
+## preview_rows "JSON-safe" diyordu, gold'un period sütununu serileştiremiyordu
+Yalnızca `datetime64` sütunlar çevriliyordu. Gold sözleşmesi `period`i
+`datetime.date` olarak saklıyor -- object dtype, hiçbir dtype kontrolü görmez.
+Yani gerçek bir gold tablosunun önizlemesi `json.dumps`'ta patlıyordu; hata da
+burada değil, tur ortasında olay kanalında çıkacaktı. `Timedelta`, `Period`,
+`Decimal` aynı durumda. `NaN` ayrı bir sorun: `json.dumps` onu çıplak `NaN`
+yazıyor, bu geçerli JSON değil ve arayüzdeki `JSON.parse` reddediyor.
+
+Çevrim artık dtype başına değil değer başına, çünkü kararı veren dtype değil.
+Eksik eksik kalıyor: `null` oluyor, doldurulmuyor (CLAUDE.md #2).
+
+## Üç sessiz sınır: yüzüncü tablo, yüzüncü grafik, sayısal period sütunu
+- `t{n:02d}` genişlemeye devam ediyor ama desen tam iki basamak kabul ediyordu;
+  yüzüncü tablo `ValueError` fırlatıyordu -- hem de `pragma: no cover -
+  defensive` ile işaretli, yani ulaşılamaz sanılan bir satırda. Desen `\d{2,}`
+  oldu, mevcut her referans hâlâ geçerli.
+- `new_chart_ref` hâlâ *sayarak* numaralandırıyordu (tablolarda düzeltilen
+  hatanın aynısı) ve desen kontrolü yoktu: `c100` sessizce üretilip çok sonra
+  `ChartSpec` doğrulamasında patlardı.
+- `describe_table` sayısal bir `period` sütununu `to_datetime`'a veriyordu; o da
+  tamsayıyı epoch'tan nanosaniye okuyor. Modelin tablo hakkında okuduğu tek
+  satır "1970-01 - 1970-01" diyordu. Artık okumayı reddediyor.
+
+## ToolContext'in salt-okunur yarısı salt-okunur değildi
+`_tables` ve `lineage` `Mapping` diye yazılmış, `dict` olarak veriliyordu --
+üstelik oturumun kendi sözlükleri. Bir araç yazma tamponunu tamamen atlayıp
+doğrudan oturuma yazabilirdi; iptal edilen adımın iz bırakmaması sözü de
+böylece kalkardı ve hiçbir test kırılmazdı. Artık `MappingProxyType`, üstelik
+anlık görüntü üzerinden: zaman aşımına uğramış bir araç oturumun ilerlemesini
+de görmemeli.

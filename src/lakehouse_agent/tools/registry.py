@@ -12,7 +12,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+from pydantic_core import InitErrorDetails
 
 from lakehouse_agent.agent.context import ToolContext
 from lakehouse_agent.contracts import ToolResult
@@ -104,15 +105,25 @@ class ToolRegistry:
                     "function": {
                         "name": spec.name,
                         "description": spec.description_tr,
-                        "parameters": _inline_refs(spec.args_model.model_json_schema()),
+                        "parameters": tool_schema(spec.args_model),
                     },
                 }
             )
         return rendered
 
     def validate(self, name: str, raw_args: dict[str, Any]) -> BaseModel:
-        """Validate arguments against the tool's model. Raises ValidationError."""
-        return self.require(name).args_model.model_validate(raw_args)
+        """Validate arguments against the tool's model. Raises ValidationError.
+
+        A key the model made up is rejected, not dropped. Pydantic's default is
+        `extra="ignore"`, which would silently discard it and leave the field it
+        was aiming at on its default -- and for `table_ref` that default is the
+        active table, so a misspelled key turns into a confident answer about
+        the wrong table with nothing anywhere saying so. The schema now says
+        `additionalProperties: false`, and this is the half that enforces it.
+        """
+        model = self.require(name).args_model
+        _reject_unknown_keys(name, model, raw_args)
+        return model.model_validate(raw_args)
 
     def execute(self, name: str, args: BaseModel, ctx: ToolContext) -> ToolResult:
         """Run the tool. Synchronous: the loop calls this off the event loop."""
@@ -136,6 +147,10 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
 
     def resolve(node: Any, depth: int = 0) -> Any:
         if depth > 10:  # pragma: no cover - defensive against a cyclic model
+            # Drop the pointer rather than let it out. A dangling `$ref` is the
+            # unresolvable schema this function exists to prevent.
+            if isinstance(node, dict):
+                return {key: value for key, value in node.items() if key != "$ref"}
             return node
         if isinstance(node, dict):
             ref = node.get("$ref")
@@ -150,3 +165,70 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
         return node
 
     return resolve(schema)
+
+
+def tool_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """The JSON schema for one tool's arguments, as the model receives it."""
+    return _forbid_extra_properties(_inline_refs(model.model_json_schema()))
+
+
+def _accepted_keys(model: type[BaseModel]) -> set[str]:
+    """Every key the model is allowed to send: field names and their aliases."""
+    keys: set[str] = set()
+    for name, info in model.model_fields.items():
+        keys.add(name)
+        for alias in (info.alias, info.validation_alias, info.serialization_alias):
+            if isinstance(alias, str):
+                keys.add(alias)
+    return keys
+
+
+def _reject_unknown_keys(
+    tool: str, model: type[BaseModel], raw_args: dict[str, Any]
+) -> None:
+    """Raise the same `extra_forbidden` error Pydantic would.
+
+    Built by hand rather than by forcing `extra="forbid"` onto every argument
+    model, because those models belong to whoever wrote the tool; the rule that
+    the schema and the validation agree belongs here, and it has to hold for a
+    tool registered tomorrow by someone who never read this file.
+    """
+    if not isinstance(raw_args, dict):
+        return
+    if model.model_config.get("extra") == "allow":
+        return
+    unknown = sorted(set(raw_args) - _accepted_keys(model))
+    if not unknown:
+        return
+    raise ValidationError.from_exception_data(
+        model.__name__,
+        [
+            InitErrorDetails(type="extra_forbidden", loc=(key,), input=raw_args[key])
+            for key in unknown
+        ],
+    )
+
+
+def _forbid_extra_properties(schema: dict[str, Any]) -> dict[str, Any]:
+    """Close every modelled object in the schema.
+
+    Only objects that declare `properties` are closed. A field typed
+    `dict[str, Any]` renders as an object with no `properties`, and closing that
+    would forbid the free-form payload it exists to carry.
+    """
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            closed = {key: walk(value) for key, value in node.items()}
+            if (
+                closed.get("type") == "object"
+                and "properties" in closed
+                and "additionalProperties" not in closed
+            ):
+                closed["additionalProperties"] = False
+            return closed
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        return node
+
+    return walk(schema)

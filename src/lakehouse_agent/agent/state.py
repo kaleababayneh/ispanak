@@ -225,4 +225,28 @@ def new_table_ref(tables: dict[str, Any], suffix: str) -> str:
 
 
 def new_chart_ref(charts: list[Any]) -> str:
-    return f"c{len(charts) + 1:02d}"
+    """Generate the next chart reference: c01, c02, ...
+
+    Numbered from the highest reference seen, for the same reason tables are:
+    counting hands out a number that is still in use the moment anything is
+    removed from the list. Charts had kept the counting version even after
+    tables were fixed, and they get the pattern check too -- without it an
+    out-of-range reference is built quietly here and only fails later, inside
+    `ChartSpec` validation, where nothing points back to this function.
+    """
+    used = [
+        int(match.group(1))
+        for chart in charts
+        if (match := re.match(r"c(\d+)$", str(_chart_ref_of(chart))))
+    ]
+    ref = f"c{max(used, default=0) + 1:02d}"
+    if not re.fullmatch(CHART_REF_PATTERN, ref):  # pragma: no cover - defensive
+        raise ValueError(f"Uretilen grafik anahtari desene uymuyor: {ref!r}")
+    return ref
+
+
+def _chart_ref_of(chart: Any) -> str:
+    """The reference of a chart, however it is being carried."""
+    if isinstance(chart, dict):
+        return str(chart.get("chart_ref", ""))
+    return str(getattr(chart, "chart_ref", ""))

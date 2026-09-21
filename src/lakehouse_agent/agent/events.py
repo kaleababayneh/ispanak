@@ -13,7 +13,7 @@ removes that machinery and keeps events in the order they happened.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, get_args
 
 from pydantic import BaseModel, Field
 
@@ -34,20 +34,9 @@ EventType = Literal[
 
 #: The same list, available at runtime so a test can compare it with the table
 #: in docs/contracts.md. A written contract nothing checks drifts within days.
-EVENT_TYPES: tuple[str, ...] = (
-    "plan",
-    "step_start",
-    "step_end",
-    "table_update",
-    "chart",
-    "answer_delta",
-    "verification",
-    "sources",
-    "quality_report",
-    "approval_request",
-    "done",
-    "error",
-)
+#: Read off the `Literal` rather than written out again: two hand-kept copies
+#: of one list are a drift guard that can itself drift.
+EVENT_TYPES: tuple[str, ...] = get_args(EventType)
 
 
 class Event(BaseModel):

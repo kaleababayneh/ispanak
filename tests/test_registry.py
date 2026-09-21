@@ -5,10 +5,10 @@ If it is wrong the model writes wrong arguments, and the failure looks like the
 model being stupid rather than like a bug in here.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from lakehouse_agent.agent.context import ToolContext
 from lakehouse_agent.contracts import ToolResult
@@ -121,3 +121,99 @@ def test_tools_are_listed_in_a_stable_order():
     make otherwise identical requests look different to a cache."""
     registry = ToolRegistry.of([spec(name="z_tool"), spec(name="a_tool")])
     assert registry.names() == ["a_tool", "z_tool"]
+
+
+class FreeFormArgs(BaseModel):
+    """A tool with a field the model is meant to fill freely."""
+
+    table_ref: str = Field(..., pattern=r"^t\d{2,}_[a-z][a-z0-9_]{0,24}$")
+    options: dict[str, str] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+def test_a_key_the_model_made_up_is_refused_not_dropped():
+    """The silent failure this registry existed to make impossible.
+
+    Pydantic ignores unknown keys by default. A model writing `tablo` instead
+    of `table_ref` -- and the whole schema reaches it in Turkish, so that slip
+    is the expected one -- would have its key dropped, `table_ref` left at
+    `None`, and `None` means the active table. The tool then analyses a
+    different table than the one asked for and reports success. Nothing in the
+    result, the summary or the sources says which table it actually read.
+    """
+    registry = ToolRegistry.of([spec(args_model=FreeFormArgs)])
+
+    with pytest.raises(ValidationError) as excinfo:
+        registry.validate("nested_tool", {"tablo": "t02_deflate"})
+
+    assert "tablo" in str(excinfo.value)
+    assert excinfo.value.errors()[0]["type"] == "extra_forbidden"
+
+
+def test_the_schema_says_the_same_thing_the_validation_enforces():
+    """Both halves of the rule, pinned together.
+
+    Closing only the validation would let the model be blamed for a field list
+    it was never given; closing only the schema would be a promise nothing
+    keeps.
+    """
+    parameters = function_schema(ToolRegistry.of([spec()]), "nested_tool")
+
+    assert parameters["additionalProperties"] is False
+    assert parameters["properties"]["window"]["additionalProperties"] is False
+
+
+def test_a_free_form_field_is_left_open():
+    """A mapping field has no `properties`, and closing it would forbid every
+    key it exists to carry.
+
+    That is why the rule is "objects that declare properties", not "every
+    object". `dict[str, str]` already carries an `additionalProperties` of its
+    own -- the value type -- and that must survive untouched; `dict[str, Any]`
+    carries nothing and must stay untouched too.
+    """
+    registry = ToolRegistry.of([spec(args_model=FreeFormArgs)])
+    parameters = function_schema(registry, "nested_tool")
+
+    assert parameters["additionalProperties"] is False
+    assert parameters["properties"]["options"]["additionalProperties"] == {
+        "type": "string"
+    }
+    assert parameters["properties"]["context"]["additionalProperties"] is True
+
+    args = registry.validate(
+        "nested_tool",
+        {"table_ref": "t01_a", "options": {"ne": "olursa"}, "context": {"x": [1]}},
+    )
+    assert args.options == {"ne": "olursa"}
+    assert args.context == {"x": [1]}
+
+
+@pytest.mark.parametrize(
+    "extra, in_schema, keeps_unknown",
+    [("allow", True, True), ("forbid", False, False), (None, False, False)],
+)
+def test_the_two_halves_agree_whatever_the_tool_author_chose(
+    extra, in_schema, keeps_unknown
+):
+    """The rule is "schema and validation say the same thing", not "everything
+    is closed".
+
+    A tool author who deliberately opens their model keeps it open on both
+    sides; one who says nothing gets it closed on both sides. Pydantic writes
+    `additionalProperties` itself for the first two, which is what the schema
+    pass keys on -- it only fills in the case where nothing was said.
+    """
+    config = {} if extra is None else {"model_config": ConfigDict(extra=extra)}
+    model = type(
+        "Args", (BaseModel,), {"__annotations__": {"a": int}, "a": 1, **config}
+    )
+    registry = ToolRegistry.of([spec(args_model=model)])
+
+    assert function_schema(registry, "nested_tool")["additionalProperties"] is in_schema
+
+    if keeps_unknown:
+        assert registry.validate("nested_tool", {"b": 2}).b == 2
+    else:
+        with pytest.raises(ValidationError):
+            registry.validate("nested_tool", {"b": 2})

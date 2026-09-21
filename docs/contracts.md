@@ -118,7 +118,9 @@ Her araç `ToolResult` döndürür. En önemli kural: **model tabloyu görmez, �
 görür.** Tam tablo oturum deposunda kalır ve doğrudan arayüze gider. Böylece
 bağlam şişmez ve model rakamları kopyalarken basamak kaydırmaz.
 
-`table_ref` deseni: `^t\d{2}_[a-z][a-z0-9_]{0,24}$`, örnek `t01_get_series`.
+`table_ref` deseni: `^t\d{2,}_[a-z][a-z0-9_]{0,24}$`, örnek `t01_get_series`.
+`chart_ref` deseni: `^c\d{2,}$`, örnek `c01`. İkisi de en az iki basamak;
+yüzüncü tabloda numara genişler, desen bunu kabul eder.
 
 Üretimi yalnızca `ToolContext.new_table_ref()` yapar. Desen araç şemasında
 modele de görünür, yani model `"konut_tablosu"` uydurursa doğrulama anında
@@ -169,7 +171,7 @@ Agent her adımda bir olay yayınlar, arayüz olay türüne göre çizer. Agent
 | `chart` | `{chart_ref, plotly_json}` | grafik |
 | `answer_delta` | `{text}` | cevap akışı |
 | `verification` | `{passed, flags}` | doğrulanamayan ifadeler |
-| `sources` | `[{series_id \| url, name, fetched_at}]` | kaynak listesi |
+| `sources` | `{sources: [{series_id \| url, name, fetched_at}]}` | kaynak listesi |
 | `quality_report` | `{table_ref, rows, freq, missing_pct, ...}` | kalite kartı |
 | `approval_request` | `{request_id, kind, question, options, default}` | onay kartı |
 | `done` / `error` | `{...}` | kapanış |
@@ -177,10 +179,13 @@ Agent her adımda bir olay yayınlar, arayüz olay türüne göre çizer. Agent
 **Payload kuralı:** JSON serileştirilebilir olmalı. DataFrame asla konmaz,
 yalnızca `preview` satırları.
 
-**Sapma koruması (aşama 3'te gelecek):** `agent/events.py` yazıldığında bu
-tablodaki adlar koddaki `EventType` ile bir testle karşılaştırılacak. Şu an
-`EventType` henüz yok, yani bu tablo tek taraflı bir taahhüt; testi yazılana
-kadar elle güncel tutulmalı.
+**Payload sözlüktür.** `Event.payload` tipi `dict[str, Any]`; düz liste
+taşıyamaz. Tabloda liste görünen her payload bir anahtarın altındadır.
+
+**Sapma koruması:** `agent/events.py` yazıldı, bu tablodaki adlar koddaki
+`EventType` ile `tests/test_events.py` içinde **iki yönlü** karşılaştırılıyor:
+kodda olup belgede olmayan da, belgede olup kodda olmayan da testi kırar.
+`EVENT_TYPES` ayrıca `EventType`'tan türetiliyor, elle yazılmıyor.
 
 ---
 

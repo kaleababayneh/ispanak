@@ -24,12 +24,12 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 # produces `t01_get_series`, `t02_deflate`, ... and this pattern is also sent to
 # the model inside the tool schema, so a hallucinated name like "konut_tablosu"
 # is rejected by validation before it can reach a tool.
-TABLE_REF_PATTERN = r"^t\d{2}_[a-z][a-z0-9_]{0,24}$"
+TABLE_REF_PATTERN = r"^t\d{2,}_[a-z][a-z0-9_]{0,24}$"
 
 TableRef = Annotated[str, StringConstraints(pattern=TABLE_REF_PATTERN)]
 
 # A chart reference: c01, c02, ...
-CHART_REF_PATTERN = r"^c\d{2}$"
+CHART_REF_PATTERN = r"^c\d{2,}$"
 
 ChartRef = Annotated[str, StringConstraints(pattern=CHART_REF_PATTERN)]
 

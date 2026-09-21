@@ -5,6 +5,10 @@ Context stays small, and a model that never holds the digits cannot copy them
 into an answer with a decimal place slipped.
 """
 
+import datetime as dt
+import json
+from decimal import Decimal
+
 import pandas as pd
 
 from lakehouse_agent.agent.formatting import (
@@ -123,3 +127,72 @@ def test_a_chatty_tool_cannot_crowd_out_the_conversation():
 
     assert len(message) <= TOOL_MESSAGE_MAX_CHARS
     assert message.endswith("... (kisaltildi)")
+
+
+def test_the_preview_survives_json_dumps_for_every_column_gold_can_hand_us():
+    """The claim in the docstring, actually checked.
+
+    Only `datetime64` columns were normalised, and gold does not use one: the
+    contract stores `period` as `datetime.date`, which lands in an object
+    column no dtype check looks at. So the preview of a real gold table could
+    not be serialised, and the failure would surface on the event channel in
+    the middle of a turn rather than here.
+    """
+    frame = pd.DataFrame(
+        {
+            "period": [dt.date(2021, 1, 1), dt.date(2021, 2, 1)],  # gold's dtype
+            "stamp": pd.date_range("2021-01-01", periods=2, freq="MS"),
+            "span": pd.to_timedelta([1, 2], unit="D"),
+            "quarter": pd.period_range("2021Q1", periods=2, freq="Q"),
+            "money": [Decimal("1.5"), Decimal("2.5")],
+            "value": [1.0, float("nan")],
+        }
+    )
+
+    rows = preview_rows(frame)
+    json.dumps(rows)  # the assertion: this used to raise TypeError
+
+    assert rows[0]["period"] == "2021-01-01"
+    assert rows[0]["stamp"] == "2021-01-01"
+    assert rows[0]["quarter"] == "2021Q1"
+    assert rows[0]["money"] == 1.5
+    assert "1 days" in rows[0]["span"]
+
+
+def test_a_missing_value_becomes_null_not_the_word_nan():
+    """`json.dumps` writes NaN as a bare `NaN`, which is not JSON.
+
+    `JSON.parse` on the interface side rejects it outright, so the event that
+    carried it is lost. Missing stays missing -- it becomes `null`; nothing is
+    filled in (CLAUDE.md #2).
+    """
+    frame = pd.DataFrame({"value": [1.0, float("nan"), float("inf")]})
+    rows = preview_rows(frame)
+
+    assert rows[1]["value"] is None
+    assert rows[2]["value"] is None
+    assert "NaN" not in json.dumps(rows)
+    assert json.loads(json.dumps(rows))[1]["value"] is None
+
+
+def test_a_timestamp_carrying_a_time_does_not_lose_it():
+    """Dates print short, because every series here is monthly or coarser.
+
+    An intraday stamp is another matter: silently dropping the time would make
+    two different rows read as the same period.
+    """
+    frame = pd.DataFrame({"period": [pd.Timestamp("2021-01-01T14:30:00")]})
+    assert preview_rows(frame)[0]["period"] == "2021-01-01T14:30:00"
+
+
+def test_an_integer_period_column_is_not_reported_as_1970():
+    """`to_datetime` reads plain integers as nanoseconds since the epoch.
+
+    A column of 1, 2, 3 was described as "1970-01 - 1970-01" -- a confident,
+    wrong answer in the one line the model reads about the table. Refusing to
+    read it is the honest output.
+    """
+    line = describe_table("t01_x", pd.DataFrame({"period": [1, 2, 3], "v": [1.0] * 3}))
+
+    assert "donem araligi okunamadi" in line
+    assert "1970" not in line

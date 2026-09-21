@@ -76,3 +76,58 @@ def test_generated_references_account_for_what_this_step_already_wrote(agent_set
 
     assert first == "t02_x"
     assert second == "t03_y"
+
+
+def test_a_tool_cannot_write_into_the_session_through_the_read_only_halves(
+    agent_settings,
+):
+    """`_tables` and `lineage` were typed `Mapping` and handed over as `dict`.
+
+    The loop passes the session's own dictionaries, so the annotation described
+    an intention nothing enforced: a tool could insert a table or a lineage
+    entry straight into the session, bypassing the write buffer entirely. An
+    abandoned or timed-out step would then leave exactly the trace the buffer
+    exists to prevent, and no test would have failed.
+    """
+    tables = {"t01_a": pd.DataFrame({"v": [1.0]})}
+    lineage = {}
+    ctx = ToolContext(
+        session_id="s1",
+        step_no=1,
+        llm=FakeLLM(),
+        lake=None,
+        settings=agent_settings,
+        active_table="t01_a",
+        lineage=lineage,
+        _tables=tables,
+    )
+
+    with pytest.raises(TypeError):
+        ctx._tables["t02_b"] = pd.DataFrame()
+    with pytest.raises(TypeError):
+        ctx.lineage["t01_a.v"] = "anything"
+
+    assert "t02_b" not in tables
+    assert lineage == {}
+
+    ctx.put_table("t02_b", pd.DataFrame({"v": [2.0]}))
+    assert "t02_b" not in tables  # the buffer, not the session
+    assert ctx.table("t02_b")["v"].tolist() == [2.0]
+
+
+def test_the_view_is_a_snapshot_so_a_late_step_cannot_see_the_session_move(
+    agent_settings,
+):
+    """A tool that overran its timeout is still holding this object.
+
+    It should not observe a session that carried on without it, any more than
+    it should be able to write to one.
+    """
+    tables = {"t01_a": pd.DataFrame({"v": [1.0]})}
+    ctx = make_ctx(agent_settings, tables, active="t01_a")
+
+    tables["t02_added_later"] = pd.DataFrame()
+
+    assert not ctx.has_table("t02_added_later")
+    with pytest.raises(TableNotFound):
+        ctx.table("t02_added_later")

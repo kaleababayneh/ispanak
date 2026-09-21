@@ -21,21 +21,59 @@ from lakehouse_agent.agent.events import EVENT_TYPES, Event, ListSink, emit
 DOCS = Path(__file__).resolve().parents[1] / "docs" / "contracts.md"
 
 
+def documented_event_names() -> set[str]:
+    """The names in the event table of docs/contracts.md, read as written.
+
+    Read out of the table rather than searched for across the whole file. The
+    search could only ever ask "is this code name mentioned somewhere?", which
+    answers one direction and cannot see a name the document invented.
+    """
+    text = DOCS.read_text(encoding="utf-8")
+    section = text.split("## 6. Olay listesi", 1)[1].split("\n## ", 1)[0]
+    names: set[str] = set()
+    for line in section.splitlines():
+        if not line.startswith("|") or line.startswith("|---"):
+            continue
+        first_cell = line.strip("|").split("|")[0]
+        names.update(re.findall(r"`([a-z_]+)`", first_cell))
+    return names
+
+
 def test_documented_event_names_match_the_code():
-    """The drift guard.
+    """The drift guard, both ways.
 
     docs/contracts.md is what the other lane implements against. If someone
     adds an event in code and forgets the table, the interface silently never
     handles it; if someone edits the table and not the code, they build against
-    something that never fires. Neither shows up until integration day.
+    something that never fires. Neither shows up until integration day -- and
+    the second one used to pass here, because the check only ever looked for
+    code names in the document.
     """
-    text = DOCS.read_text(encoding="utf-8")
-    documented = set(re.findall(r"`(" + "|".join(EVENT_TYPES) + r")`", text))
+    documented = documented_event_names()
+    assert documented, "Olay tablosu okunamadi; testin kendisi bozulmus."
+
     missing = sorted(set(EVENT_TYPES) - documented)
+    invented = sorted(documented - set(EVENT_TYPES))
     assert missing == [], (
         f"docs/contracts.md'de gecmeyen olay turleri: {missing}. "
         "Belge ile kod ayrisirsa arayuz olmayan bir olaya gore yazilir."
     )
+    assert invented == [], (
+        f"Belgede olan ama kodda olmayan olay turleri: {invented}. "
+        "Arayuz bunlari bekler ve hicbiri gelmez."
+    )
+
+
+def test_the_runtime_list_cannot_drift_from_the_type():
+    """`EVENT_TYPES` used to be the same twelve names typed out a second time.
+
+    A drift guard that is itself two hand-kept copies is not a guard.
+    """
+    from typing import get_args
+
+    from lakehouse_agent.agent.events import EventType
+
+    assert EVENT_TYPES == get_args(EventType)
 
 
 def test_emit_without_a_sink_is_a_no_op():

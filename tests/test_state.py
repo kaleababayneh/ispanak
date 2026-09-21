@@ -10,13 +10,14 @@ import pandas as pd
 import pytest
 
 from lakehouse_agent.agent.state import (
+    ChartSpec,
     SessionState,
     initial_state,
     new_chart_ref,
     new_table_ref,
     slug,
 )
-from lakehouse_agent.contracts import TABLE_REF_PATTERN, Source
+from lakehouse_agent.contracts import CHART_REF_PATTERN, TABLE_REF_PATTERN, Source
 
 FETCHED_AT = pd.Timestamp("2026-09-15T06:00:00Z").to_pydatetime()
 
@@ -74,9 +75,45 @@ def test_a_removed_table_does_not_free_its_number_for_reuse():
     assert new_table_ref(tables, "c") == "t03_c"
 
 
+def _chart(ref: str) -> ChartSpec:
+    return ChartSpec(chart_ref=ref, table_ref="t01_a")
+
+
 def test_chart_refs_count_up():
     assert new_chart_ref([]) == "c01"
-    assert new_chart_ref([1, 2]) == "c03"
+    assert new_chart_ref([_chart("c01"), _chart("c02")]) == "c03"
+
+
+def test_a_removed_chart_does_not_free_its_number_either():
+    """The same bug tables had, left behind when tables were fixed.
+
+    A chart list that loses an entry -- a re-plot replacing one, a rejected
+    table taking its chart with it -- would hand the next chart a reference
+    that is still on screen, and the interface keys on that reference.
+    """
+    charts = [_chart("c01"), _chart("c02")]
+    del charts[0]
+    assert new_chart_ref(charts) == "c03"
+
+
+def test_references_stay_valid_past_the_hundredth_one():
+    """`t99_x` used to be the last reference that existed.
+
+    `t{n:02d}` keeps widening but the pattern accepted exactly two digits, so
+    the hundredth table raised -- on a line marked `pragma: no cover -
+    defensive`, i.e. believed unreachable. Charts had no check at all and would
+    have returned `c100` for `ChartSpec` to reject later, far from here.
+    """
+    tables = {f"t{n:02d}_a": None for n in range(1, 100)}
+    ref = new_table_ref(tables, "b")
+    assert ref == "t100_b"
+    assert pd.Series([ref]).str.fullmatch(TABLE_REF_PATTERN).all()
+
+    charts = [_chart(f"c{n:02d}") for n in range(1, 100)]
+    chart_ref = new_chart_ref(charts)
+    assert chart_ref == "c100"
+    assert pd.Series([chart_ref]).str.fullmatch(CHART_REF_PATTERN).all()
+    assert _chart(chart_ref).chart_ref == "c100"  # and ChartSpec still takes it
 
 
 def test_step_numbers_are_unique_across_turns():

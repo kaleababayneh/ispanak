@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 import pandas as pd
@@ -50,6 +51,23 @@ class ToolContext:
     written: dict[str, pd.DataFrame] = field(default_factory=dict)
     written_charts: list[Any] = field(default_factory=list)
     new_active: str | None = None
+
+    def __post_init__(self) -> None:
+        """Make the read-only halves actually read-only.
+
+        The loop hands over the session's own `tables` and `lineage` dicts, so
+        typing them `Mapping` documented an intention that nothing enforced: a
+        tool could write straight into the session through either, and the
+        whole point of the write buffer -- that an abandoned step leaves no
+        trace -- would be gone without a single failing test.
+
+        Snapshotted before wrapping, not proxied onto the live dict. A tool
+        that overran its timeout is still holding this object, and it should
+        not observe a session that moved on without it either. Only the mapping
+        is copied; the frames inside are not, and `table()` copies those.
+        """
+        self._tables = MappingProxyType(dict(self._tables))
+        self.lineage = MappingProxyType(dict(self.lineage))
 
     def table(self, ref: str | None = None) -> pd.DataFrame:
         """Return a table for reading. `ref=None` means the active table.
