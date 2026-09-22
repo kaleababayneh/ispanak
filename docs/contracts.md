@@ -348,6 +348,31 @@ yüksek" sorusunun cevabı böylece araçtan gelir, modelin saymasından değil.
 
 ---
 
+## 7.2 Öncüllük (`test_causality`, 22 Eyl)
+
+`analysis/causality.py` saf, `tools/analysis.py` sarmalar. Aynı tablodan iki
+sütun alır, iki tablo yazar (hiçbiri aktif tabloyu değiştirmez):
+
+- **Granger tablosu**, yön başına bir satır: `yon, en_iyi_gecikme, p_degeri,
+  anlamli, gozlem, donusum`.
+- **Gecikmeli korelasyon tablosu**, −n…+n gecikme için `korelasyon` ve
+  `gozlem`. Pozitif gecikme = ilk sütun önde (x[t−k] ile y[t]).
+
+Kurallar:
+
+- Durağanlık şart. ADF durağan demiyorsa fark alınır; sütunun türü stok ya da
+  akımsa log-fark (değişim = büyüme oranı), oran ve endekste düz fark. Tür
+  sütunun soyağacından okunur; bilinmiyorsa düz fark. Uygulanan dönüşüm
+  tabloda yazar.
+- Eşik `0,05 / denenen gecikme` (Bonferroni): altı gecikmenin en iyisini
+  almak yirmide bir yanlış alarmı dörtte bire çıkarır.
+- Gecikme başına en az 3 gözlem + 10 taban; seri kısaysa gecikme sayısı
+  düşürülür, tek gecikmeye bile yetmiyorsa araç reddeder.
+- Özet metni her zaman "bu nedensellik kanıtı değildir, üçüncü etkenler
+  dışlanmadı" cümlesini taşır; `prompts/answer.md` kural 7 modeli buna bağlar.
+
+---
+
 ## 8. Onay noktaları
 
 Üç tane, fazlası değil. Kararı döngü verir, araçlar değil.

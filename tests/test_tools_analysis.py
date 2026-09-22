@@ -477,3 +477,143 @@ def test_column_lineage_traces_upstream_source_series(analysis_tools):
 def _new_ctx(analysis_tools, tables, **kwargs):
     ToolContext = sys.modules["lakehouse_agent.agent.context"].ToolContext
     return ToolContext(tables, **kwargs)
+
+
+# --- test_causality -----------------------------------------------------------
+
+
+def _leading_frame(n=90, lag=3, seed=7):
+    """`kredi` follows `fiyat` by `lag` months: a known answer."""
+    rng = np.random.default_rng(seed)
+    fiyat = pd.Series(rng.normal(size=n)).cumsum() + 100
+    return pd.DataFrame(
+        {
+            "period": _monthly_periods(n),
+            "fiyat": fiyat,
+            "kredi": 0.8 * fiyat.shift(lag) + rng.normal(scale=0.5, size=n),
+        }
+    )
+
+
+def test_causality_writes_both_its_tables_and_names_them(analysis_tools):
+    """Two results, two tables: the directions, and the correlation by lag.
+    The second is named in the summary, because the model is told to read the
+    strength from it and only sees what the summary mentions."""
+    from lakehouse_agent.tools.analysis import TestCausalityArgs
+
+    ctx = _new_ctx(
+        analysis_tools,
+        {"t01_get_series": _leading_frame()},
+        active_table="t01_get_series",
+    )
+
+    result = analysis_tools.make_test_causality().fn(
+        TestCausalityArgs(column="fiyat", against="kredi"), ctx
+    )
+
+    assert result.ok
+    assert len(ctx.written) == 2
+    assert result.table_ref in ctx.written
+    assert len(ctx.written[result.table_ref]) == 2  # one row per direction
+    lag_ref = next(ref for ref in ctx.written if ref != result.table_ref)
+    assert lag_ref in result.summary
+    assert "Granger anlaminda oncul" in result.summary
+
+
+def test_causality_never_changes_the_active_table(analysis_tools):
+    """Analysis results are read, not worked on (docs/contracts.md §5)."""
+    from lakehouse_agent.tools.analysis import TestCausalityArgs
+
+    ctx = _new_ctx(
+        analysis_tools,
+        {"t01_get_series": _leading_frame()},
+        active_table="t01_get_series",
+    )
+
+    analysis_tools.make_test_causality().fn(
+        TestCausalityArgs(column="fiyat", against="kredi"), ctx
+    )
+
+    assert ctx.active_table == "t01_get_series"
+
+
+def test_causality_says_which_column_is_missing(analysis_tools):
+    from lakehouse_agent.tools.analysis import TestCausalityArgs
+
+    ctx = _new_ctx(
+        analysis_tools,
+        {"t01_get_series": _leading_frame()},
+        active_table="t01_get_series",
+    )
+
+    result = analysis_tools.make_test_causality().fn(
+        TestCausalityArgs(column="fiyat", against="yok"), ctx
+    )
+
+    assert result.ok is False and "'yok'" in result.summary
+
+
+def test_causality_refuses_a_column_against_itself(analysis_tools):
+    from lakehouse_agent.tools.analysis import TestCausalityArgs
+
+    ctx = _new_ctx(
+        analysis_tools,
+        {"t01_get_series": _leading_frame()},
+        active_table="t01_get_series",
+    )
+
+    result = analysis_tools.make_test_causality().fn(
+        TestCausalityArgs(column="fiyat", against="fiyat"), ctx
+    )
+
+    assert result.ok is False and "iki farklı sütun" in result.summary
+
+
+def test_causality_reports_a_series_too_short_instead_of_failing(analysis_tools):
+    from lakehouse_agent.tools.analysis import TestCausalityArgs
+
+    ctx = _new_ctx(
+        analysis_tools,
+        {"t01_get_series": _leading_frame(n=12)},
+        active_table="t01_get_series",
+    )
+
+    result = analysis_tools.make_test_causality().fn(
+        TestCausalityArgs(column="fiyat", against="kredi"), ctx
+    )
+
+    assert result.ok is False
+    assert "Öncüllük sınanamadı" in result.summary
+    assert ctx.written == {}
+
+
+def test_causality_differences_a_level_in_logs_and_an_index_as_it_is(analysis_tools):
+    """A balance's change is a growth rate; an index's change is already a
+    change. The decision comes from the lineage the earlier tools recorded."""
+    from lakehouse_agent.tools.analysis import TestCausalityArgs
+
+    lineage = {
+        "t01_get_series.kredi": StubColumnInfo(kind="stock", source_series=["bddk:x"]),
+        "t01_get_series.fiyat": StubColumnInfo(kind="index", source_series=["evds:y"]),
+    }
+    ctx = _new_ctx(
+        analysis_tools,
+        {"t01_get_series": _leading_frame()},
+        active_table="t01_get_series",
+        lineage=lineage,
+    )
+
+    result = analysis_tools.make_test_causality().fn(
+        TestCausalityArgs(column="fiyat", against="kredi"), ctx
+    )
+
+    transforms = dict(
+        zip(
+            ctx.written[result.table_ref]["yon"],
+            ctx.written[result.table_ref]["donusum"],
+            strict=True,
+        )
+    )
+    assert transforms["fiyat -> kredi"] == "fark"  # the index
+    assert transforms["kredi -> fiyat"] == "log-fark"  # the balance
+    assert all(c.source_series == ["bddk:x", "evds:y"] for c in result.columns)

@@ -964,6 +964,31 @@ Sonuç:  Havuz indeksi, indirilen dosyalar ve DuckDB dosyası silinerek koşuldu
         867 test geçti. Kural: repoda olmayan bir dosyaya bağlı test yazılmaz;
         gold repoda olduğu için gerçek veriyle test yazılabilir, indeks değil.
 
+## Öncüllük aracı (`test_causality`, 22 Eyl)
+Bağlam: Altı aracın beşincisi ve örnek senaryonun üçüncü sorusu ("faiz düştüğü
+        halde kredilerin artmamasının sebebi fiyat artışı olabilir mi?") tam
+        olarak bunu soruyor. Araç yokken agent nedensellikten söz etmiyordu —
+        doğru davranış, ama ölçemediği için.
+Karar:  İki ölçüm birlikte veriliyor, çünkü farklı sorulara cevap veriyorlar:
+        Granger "bu tesadüf mü?" (iki yönde, 1..n gecikme, ssr F testi),
+        gecikmeli korelasyon "ne kadar güçlü ve hangi gecikmede?". p-değeri
+        büyüklük hakkında bir şey söylemez; korelasyon tablosu okunur olanı.
+        Durağanlaştırma zorunlu (trendli iki seri konusu ne olursa olsun
+        ilişkili çıkar); dönüşüm seri başına, sütunun türüne göre seçiliyor.
+        Eşik Bonferroni ile düzeltiliyor ve kaç gecikme denendiği yazılıyor.
+        Saf fonksiyonun adı `lead_lag`: "test_" ile başlayan bir modül
+        fonksiyonunu pytest test sanıp toplamaya çalışıyor. Araç adı
+        `test_causality` kalıyor — model onu soruya göre görüyor.
+Sonuç:  Sentetik çiftte (kredi, fiyatı 3 ay gecikmeyle izliyor) doğru yön
+        anlamlı, ters yön değil; korelasyon zirvesi tam 3. gecikmede.
+        Gerçek veride (KFE ile BDDK konut kredisi bakiyesi, 2021-01 – 2025-12,
+        59 gözlem): **hiçbir yönde anlamlı öncüllük yok** (kfe→kredi p=0,109;
+        kredi→kfe p=0,109; eşik 0,0083). Gecikmeli korelasyon zirvesini −3'te
+        yapıyor (r=0,42), yani zayıf da olsa kredi fiyatın önünde gidiyor —
+        sorunun ima ettiğinin tersi yön. Canlı koşuda model aracı kendisi
+        çağırdı ve sonucu "iki yönde de anlamlı öncüllük yok" diye, gecikme ve
+        p değerleriyle aktardı; doğrulayıcı bayrağı yok.
+
 ## 23 Eylül incelemesinin düzeltmeleri
 Bağlam: Adım 1 (`feat/real-tools`) dört ayrı incelemeden geçti. Bulguların
         üçü ölçülerek doğrulandı ve testle sabitlendi; kalanlar aşağıda
