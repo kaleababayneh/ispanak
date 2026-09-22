@@ -30,7 +30,12 @@ from lakehouse_agent.testing.fake_lake import (
 )
 from lakehouse_agent.testing.fake_llm import FakeLLM
 from lakehouse_agent.tools import lakehouse
-from lakehouse_agent.tools.lakehouse import TOOLS, column_name
+from lakehouse_agent.tools.lakehouse import (
+    TOOLS,
+    TransformArgs,
+    column_name,
+    make_transform_table,
+)
 from lakehouse_agent.tools.registry import ToolRegistry
 
 REGISTRY = ToolRegistry.of(TOOLS)
@@ -714,9 +719,12 @@ def test_real_search_without_embeddings_says_its_ranking_is_coarse():
     assert all(hit["eslesme"] == "kelime" for hit in result.preview)
     assert "eslesen seri yok" not in result.summary
 
-    # The words are in the series' own text: the coarse search still finds it.
-    found = session.run("search_catalog", query="TÜFE genel endeks")
-    assert "evds:TP.TUKFIY2025.GENEL" in [hit["series_id"] for hit in found.preview]
+    # What still works when the ranking is coarse: naming the series. A query
+    # carrying an id is answered by that series alone, whatever the search is
+    # able to do that day -- which is the escape hatch the model is told about.
+    named = session.run("search_catalog", query="evds:TP.TUKFIY2025.GENEL verisi")
+    assert [hit["series_id"] for hit in named.preview] == ["evds:TP.TUKFIY2025.GENEL"]
+    assert named.preview[0]["eslesme"] == "kod"
 
 
 def test_real_weekly_series_can_come_back_weekly(real):
@@ -815,3 +823,100 @@ def test_ytd_is_refused_for_a_balance(scenario):
 
     assert not result.ok
     assert "aylik bir akim degil" in result.summary
+
+
+# --- transform_table: top ----------------------------------------------------
+
+
+def _top_context(frame, ref="t01_read_url"):
+    return ToolContext(
+        session_id="s1",
+        step_no=1,
+        llm=FakeLLM([]),
+        lake=None,
+        settings=AgentSettings(MIA_API_KEY="test-only"),
+        active_table=ref,
+        _tables={ref: frame},
+    )
+
+
+def test_top_names_the_rows_where_a_column_is_highest():
+    """ "Which month was the highest?" is counting, and the model may not
+    count (planner rule 1). The rows are named and their values returned, so
+    the answer can quote them."""
+    frame = pd.DataFrame(
+        {
+            "period": pd.to_datetime(["2026-01-01", "2026-02-01", "2026-03-01"]),
+            "hacim": [93824682381.0, 90534914196.0, 151349741320.0],
+        }
+    )
+    spec = make_transform_table()
+
+    result = spec.fn(
+        TransformArgs(op="top", column="hacim", n=2, table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert result.ok
+    assert "2026-03" in result.summary and "151349741320" in result.summary
+    assert "2026-02" not in result.summary  # only the two asked for
+    assert [row["satir"] for row in result.preview] == ["2026-03", "2026-01"]
+
+
+def test_top_works_on_a_table_that_has_no_period_column():
+    """A document read from a URL is often a printed table whose rows are
+    named, not dated; every other operation needs a period and this one
+    cannot."""
+    frame = pd.DataFrame(
+        {"AY": ["Ocak", "Subat", "Mart"], "hacim": [93.0, 90.0, 151.0]}
+    )
+    spec = make_transform_table()
+
+    result = spec.fn(
+        TransformArgs(op="top", column="hacim", n=1, table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert result.ok and "Mart: 151" in result.summary
+
+
+def test_top_can_ask_for_the_lowest_and_says_what_it_could_not_rank():
+    frame = pd.DataFrame(
+        {"AY": ["Ocak", "Subat", "Mart"], "hacim": [93.0, float("nan"), 151.0]}
+    )
+    spec = make_transform_table()
+
+    result = spec.fn(
+        TransformArgs(
+            op="top", column="hacim", n=2, ascending=True, table_ref="t01_read_url"
+        ),
+        _top_context(frame),
+    )
+
+    assert "en dusuk" in result.summary
+    assert result.preview[0]["satir"] == "Ocak"
+    assert "1 satir bos deger" in result.summary
+
+
+def test_top_refuses_a_column_that_is_not_numbers():
+    frame = pd.DataFrame({"AY": ["Ocak", "Subat"], "hacim": [1.0, 2.0]})
+    spec = make_transform_table()
+
+    result = spec.fn(
+        TransformArgs(op="top", column="AY", table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert result.ok is False and "sayisal" in result.summary
+
+
+def test_top_adds_no_column():
+    """It reports; it does not change the table a person is looking at."""
+    frame = pd.DataFrame({"AY": ["Ocak", "Subat"], "hacim": [1.0, 2.0]})
+    ctx = _top_context(frame)
+
+    make_transform_table().fn(
+        TransformArgs(op="top", column="hacim", table_ref="t01_read_url"), ctx
+    )
+
+    assert ctx.written == {}

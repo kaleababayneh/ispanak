@@ -161,10 +161,12 @@ def test_the_keyword_search_offers_candidates_and_warns_they_are_coarse(session)
     whole pool. It still answers with candidates and never claims the pool
     lacks the data (planner rule 5) -- but the credit query's own series is
     no longer among them, and the warning the model reads says the ranking
-    is coarse. Measured 22 Sep: the credit query's own series is not among
-    the five candidates here, while the semantic search puts it 4th
-    (eval/results/search_eval_2026-09-22.json). Not asserted as an absence:
-    the fallback's ranking depends on whether the pool index is built.
+    is coarse. Measured 22 Sep over the 45k pool: neither query's own series
+    is among its five candidates, while the semantic search puts them 3rd and
+    4th (eval/results/search_eval_2026-09-22.json). What is asserted is what
+    holds whatever the ranking does -- candidates, and the warning that says
+    not to read them as a semantic match. Which series come back is left out
+    on purpose: it depends on data that is not in the repository.
     """
     state, _, _, _ = session
     credit, rate = _tool_message(state, "c1"), _tool_message(state, "c2")
@@ -172,7 +174,8 @@ def test_the_keyword_search_offers_candidates_and_warns_they_are_coarse(session)
     for message in (credit, rate):
         assert "aday seri bulundu" in message
         assert "kelime eslesmesiyle bulundu" in message
-    assert RATE_ID in rate  # the rate query's words are in its series' name
+        assert '"eslesme": "kelime"' in message
+        assert "eslesen seri yok" not in message
 
 
 def test_the_conversion_to_months_reaches_the_answer(session):

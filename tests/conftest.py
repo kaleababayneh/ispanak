@@ -47,6 +47,32 @@ def _gold_db_outside_the_repo(tmp_path_factory):
     gold.GOLD_DB_PATH = original
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _no_pool_index_from_the_machine(tmp_path_factory):
+    """No test may use the search index that happens to be on this machine.
+
+    `data/pool_index` is derived and gitignored: it exists wherever someone
+    ran the builder and nowhere else, CI included. A search behaves
+    differently with and without it -- the keyword fallback takes the index's
+    full-text order rather than walking the catalog -- so a test that reads
+    whichever one is lying around passes for its author and fails in CI,
+    which is exactly what happened on 22 Sep (two tests, green locally, red
+    on the first push).
+
+    Tests that are about the index build their own and pass `index_path`;
+    this only moves the default out of reach. Session-scoped on purpose: a
+    function-scoped patch is applied *after* a module-scoped fixture has
+    already built its adapter, which is how the scenario's session kept
+    reading the real index while every other test was insulated from it.
+    """
+    from lakehouse_agent.tools import lake_adapter
+
+    missing = tmp_path_factory.mktemp("havuz") / "indeks-yok"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(lake_adapter, "POOL_INDEX_PATH", missing)
+        yield
+
+
 @pytest.fixture
 def agent_settings(monkeypatch, tmp_path) -> AgentSettings:
     """Settings with a throwaway key and a per-test data directory."""

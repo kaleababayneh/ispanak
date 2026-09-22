@@ -904,6 +904,66 @@ Karar:  `AgentConfig.max_steps = 12`. Bu bir tavan, hedef değil: senaryonun
         Tur süresi zaten `total_budget_s` (180 sn) ile sınırlı; adım sayısı
         onu aşamaz.
 
+## Web URL aracı (`read_url`, 22 Eyl)
+Bağlam: Gereksinim demo günü prompt'ta URL verileceğini açıkça söylüyor ve iki
+        örnek adres paylaşmış. Havuzda bu yolun hiçbir kodu yoktu.
+Ölçüm:  Adresler önce elle incelendi (ikisi de kamuya açık):
+        - `borsaistanbul.com/endeks/xtumy` sunucuda render ediliyor; metaveri
+          tablosu okunuyor (XTUMY'nin adı **BIST TUM-100**, BIST 100 değil),
+          ama "Güncel Endeks Değerleri" tablosu HTML'de boş — onu JavaScript
+          dolduruyor. Sayfanın JS paketlerinde veri uç noktası görünmüyor.
+          Endeksin tarihsel serisi zaten havuzda (`evds:TP.MK.F.BILESIK`,
+          `...BILESIK.TUM`).
+        - Kıymetli madenler sayfasında tablo yok, 21 PDF bağlantısı var; veri
+          `kmp_au.pdf`'te. PDF'in metin katmanı sağlam ama tablosunda çizgi yok:
+          pdfplumber'ın varsayılan (çizgi tabanlı) çıkarımı tek sütun döndürdü,
+          metin hizalı çıkarım 11 sütunlu doğru tabloyu verdi.
+Karar:  - Playwright yok. İki hedef de sunucuda render ediliyor; JavaScript'li
+          sayfalarda önce sayfaya gömülü JSON denenir, o da yoksa araç durumu
+          dürüstçe söyler. Tarayıcı kararı Docker imajı kurulurken verilir.
+        - PDF'te çizgi tabanlı çıkarım bozuksa metin hizalı çıkarıma düşülür;
+          başlık, ilk sayı satırına kadarki satırların sütun sütun birleşimidir
+          (basılı tabloların başlığı üç satır olabiliyor).
+        - Bir belgeden çıkan her veri tablosu ayrı oturum tablosu olur (en çok
+          10). Tek tablo alıp gerisini özetlemek bilgi kaybı; hepsini almak da
+          yerleşim tablolarıyla oturumu şişirir — eleme + üst sınır ikisini
+          birden çözüyor.
+        - `prepare_table` genişletildi (plan 3.9'un istediği gibi): tarih sütunu
+          adı ne olursa olsun bulunur ve `period` olur, Türkçe sayı biçimi
+          çevrilir, ikisi de kalite kartına yazılır.
+        - `transform_table`'a `top` işlemi eklendi. "Hangi ay en yüksek"
+          sorusunu bir araç cevaplamalı (planner kural 1) ve bu işlem `period`
+          sütunu olmayan tablolarda da çalışmalı.
+Sonuç:  Canlı koşu: soru bir sayfa adresiyle geldi → araç sayfayı okudu, PDF
+        bağlantısını listeledi → PDF'i okudu (13 satır: 12 ay + toplam) → `top`
+        ile sıraladı → cevap: "Mart / March: 151.349.741.325 TL", toplam satırı
+        ayrı belirtilmiş, kaynak adresle verilmiş, doğrulayıcı bayrağı yok.
+        Bilinen eksik: "Ocak / January" gibi ay adları tarihe çevrilmiyor (yıl
+        tablonun içinde değil, başlığında), bu yüzden böyle bir tablo zaman
+        serisi araçlarına (anomali, kırılma) girmiyor; `top` ve `mark` çalışır.
+
+## Testler makinedeki havuz indeksini kullanamaz (22 Eyl, CI hatası)
+Bağlam: PR #11'in ilk CI koşusunda iki test kırmızı döndü, oysa ikisi de yerelde
+        yeşildi. Sebep: `data/pool_index` türetilmiş ve gitignore'da — indeksi
+        kuran makinede var, CI'da yok. Kelime yedeği indeks varsa tam metin
+        (BM25) sırasını kullanıyor, yoksa kataloğu baştan tarıyor; iki sıralama
+        farklı olduğu için "doğru seri ilk beşte" diyen iki iddia ortamına göre
+        değişiyordu.
+Karar:  `tests/conftest.py`'de oturum kapsamlı autouse fikstür
+        `lake_adapter.POOL_INDEX_PATH`'i var olmayan bir yola çeviriyor. İndeksi
+        sınayan testler kendi indekslerini kurup `index_path` veriyor.
+        Kapsam oturum: test kapsamlı bir yama, modül kapsamlı fikstürler (senaryo
+        oturumu) adapter'ını zaten kurduktan sonra uygulanıyordu — senaryo bu
+        yüzden gerçek indeksi okumaya devam ediyordu.
+        İki testin iddiaları da indeksten bağımsız hale getirildi: kelime
+        yedeğinde hangi serilerin çıktığı değil, aday döndüğü, adayların
+        "kelime" diye işaretlendiği ve "havuzda yok" denmediği sınanıyor. Belirli
+        bir seriye ulaşmanın ortamdan bağımsız yolu kimliğiyle aramaktır; test
+        artık onu gösteriyor (`eslesme: kod`).
+Sonuç:  Havuz indeksi, indirilen dosyalar ve DuckDB dosyası silinerek koşuldu:
+        867 test geçti. Kural: repoda olmayan bir dosyaya bağlı test yazılmaz;
+        gold repoda olduğu için gerçek veriyle test yazılabilir, indeks değil.
+
 ## 23 Eylül incelemesinin düzeltmeleri
 Bağlam: Adım 1 (`feat/real-tools`) dört ayrı incelemeden geçti. Bulguların
         üçü ölçülerek doğrulandı ve testle sabitlendi; kalanlar aşağıda
