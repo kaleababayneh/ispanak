@@ -261,6 +261,59 @@ def test_build_gold_writes_dedup_stats_with_real_dropped_count(monkeypatch, tmp_
     assert stats["dropped_duplicates"] == 1
 
 
+def test_build_gold_drops_periods_after_until_but_keeps_whole_last_month(
+    monkeypatch, tmp_path
+):
+    """EVDS ingest fetches whole calendar years, so the current year's chunk
+    carries months past the project scope. build_gold cuts on period with
+    get(end=...)'s rule: the week starting Monday 2024-12-30 is December's
+    even though its Friday observation (03-01-2025) is January's."""
+    monkeypatch.chdir(tmp_path)
+    evds.CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "SERIE_CODE": "TP.KTF12",
+                "DATAGROUP_CODE": "bie_ktf",
+                "SERIE_NAME": "Konut Kredisi",
+                "SERIE_NAME_ENG": "Housing Loan",
+                "FREQUENCY_STR": "HAFTALIK(CUMA)",
+                "BIRIMI": "%",
+                "START_DATE": "01-01-2024",
+                "END_DATE": "10-01-2025",
+                "TOPIC_TITLE_TR": None,
+                "TAG": None,
+                "METADATA_LINK": None,
+                "NOTE": None,
+            }
+        ]
+    ).to_parquet(evds.CATALOG_PATH, index=False)
+
+    year_dir = evds.DATAGROUPS_DATA_ROOT / "bie_ktf"
+    year_dir.mkdir(parents=True)
+    pd.DataFrame({"Tarih": ["20-12-2024"], "TP_KTF12": ["1"]}).to_parquet(
+        year_dir / "2024.parquet", index=False
+    )
+    pd.DataFrame(
+        {
+            "Tarih": [
+                "03-01-2025",  # -> Monday 2024-12-30, kept
+                "10-01-2025",  # -> Monday 2025-01-06, dropped
+            ],
+            "TP_KTF12": ["2", "3"],
+        }
+    ).to_parquet(year_dir / "2025.parquet", index=False)
+
+    obs_path, _ = gold.build_gold(["evds:TP.KTF12"], until="2024-12")
+
+    observations = pd.read_parquet(obs_path)
+    assert list(observations["period"]) == [date(2024, 12, 16), date(2024, 12, 30)]
+
+    obs_path, _ = gold.build_gold(["evds:TP.KTF12"], until=None)
+
+    assert len(pd.read_parquet(obs_path)) == 3
+
+
 def test_get_accepts_year_month_bounds_and_keeps_whole_end_month(monkeypatch, tmp_path):
     """B'nin ölçtüğü çökme: gold.get(ids, "2021-01", "2025-12") ->
     ConversionException: invalid date field format (DuckDB "YYYY-MM"'i DATE

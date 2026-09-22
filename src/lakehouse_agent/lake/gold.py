@@ -45,6 +45,12 @@ SERIES_CATALOG_PATH = GOLD_ROOT / "series_catalog.parquet"
 GOLD_DB_PATH = GOLD_ROOT / "catalog.duckdb"
 DEDUP_STATS_PATH = GOLD_ROOT / "dedup_stats.json"
 
+# Project scope ends here (CLAUDE.md: 2021-01 -- 2026-06). EVDS ingest
+# fetches whole calendar years, so the 2026 chunk carries every month
+# published so far, while BDDK already stops at --until. The cut happens in
+# gold, never in bronze: bronze keeps whatever the source returned.
+GOLD_UNTIL = "2026-06"
+
 OBSERVATIONS_COLUMNS = [
     "series_id",
     "period",
@@ -205,11 +211,32 @@ def _validate_columns(df: pd.DataFrame, expected: list[str], *, label: str) -> N
         raise ValueError(f"{label}: şema uyuşmazlığı -- {', '.join(parts)}")
 
 
-def build_gold(series_ids: Iterable[str]) -> tuple[Path, Path]:
+def _clip_until(observations: pd.DataFrame, until: str) -> pd.DataFrame:
+    """Drop rows whose period starts after `until` ("YYYY-MM" or "YYYY-MM-DD").
+
+    Same bound as `get(end=...)`: a bare month keeps that whole month, so a
+    weekly period starting on the month's last Monday stays even though its
+    Friday observation date falls in the next month. The period column is
+    filtered, not converted -- it keeps the contract's DATE values.
+    """
+    cutoff = pd.Timestamp(_normalize_end(until))
+    keep = pd.to_datetime(observations["period"]) <= cutoff
+    dropped = int((~keep).sum())
+    if dropped:
+        logger.info("gold: %s sonrası %d gözlem kesildi", until, dropped)
+    return observations[keep].reset_index(drop=True)
+
+
+def build_gold(
+    series_ids: Iterable[str], *, until: str | None = GOLD_UNTIL
+) -> tuple[Path, Path]:
     """Assemble silver -> observations.parquet + series_catalog.parquet.
 
     series_ids may mix "evds:" and "bddk:" prefixes -- each source's silver
     + catalog builder runs independently and the results are concatenated.
+    Observations after `until` are dropped (see GOLD_UNTIL); None keeps
+    everything. series_catalog's start_date/end_date are left alone: they
+    describe the source series' own coverage, not what gold holds.
     """
     series_ids = list(series_ids)
     GOLD_ROOT.mkdir(parents=True, exist_ok=True)
@@ -238,6 +265,8 @@ def build_gold(series_ids: Iterable[str]) -> tuple[Path, Path]:
     )
     _validate_columns(observations, OBSERVATIONS_COLUMNS, label="observations")
     observations = observations[OBSERVATIONS_COLUMNS]
+    if until is not None:
+        observations = _clip_until(observations, until)
     observations.to_parquet(OBSERVATIONS_PATH, index=False)
 
     catalog = (
