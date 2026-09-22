@@ -315,7 +315,8 @@ Karar:  `_answer_abandoned_calls` cevabı yazmadan önce geçmişi tarayıp ceva
   bayrağına bakıyor. Bir aracı yeniden adlandırmak bir insan onayını sessizce
   devre dışı bırakmamalı.
 - Doğrulayıcı `asyncio.to_thread` içinde çalışıyor: bugün `NullVerifier` olduğu
-  için zararsız ama 5. aşamada model çağıracak ve arayüzü dondururdu.
+  için zararsız ama 5. aşamada model çağıracak ve arayüzü dondururdu. (22 Eyl:
+  varsayılan artık kural tabanlı `AnswerVerifier`, model çağırmıyor.)
 - `describe_table` okunamayan bir dönem sütunu yüzünden başarılı bir adımı
   düşüremiyor.
 - Başarısız adımlar da `step_start`/`step_end` yayınlıyor. Hatalı argüman ve
@@ -445,3 +446,227 @@ ekle") tam olarak böyle bozuluyordu; artık reddediliyor. İkincisi: hiçbir sa
 araç `warnings` döndürmüyordu, yani CLAUDE.md #3 ile planner 7. kuralı
 arasındaki tek yolun çevrimdışı testi yoktu. `deflate` artık baz dönemi uyarısı
 döndürüyor.
+
+## Tek geliştirici (22 Eylül)
+Bağlam: Ekip iki kişiydi (A: veri, B: agent); 22 Eylül'den itibaren yalnızca
+        Derya var.
+Karar:  Şerit ayrımı yazma iznini artık belirlemiyor; `docs/contracts.md` §9
+        tablosu tarihsel. CLAUDE.md buna göre güncellendi.
+Sonuç:  "A'ya sorulacak" diye bekleyen maddeler artık tek geliştiricinin kararı.
+
+## Arama indeksi havuzun kendi kataloğundan
+Bağlam: Eski indeks EVDS'nin ham kataloğunu (19,6 bin seri) indeksliyordu; havuzda
+        yalnızca 9 seri var. BDDK'nın böyle bir kataloğu olmadığından BDDK hiçbir
+        aramada çıkamıyordu, oysa senaryonun 2021–2025 kredi hacmini yalnızca
+        BDDK serisi karşılıyor. Organizatörlerin Slack cevabı
+        (~/Desktop/kkb/kkb-bilgiler.md): vektör veritabanı esas veri için değil,
+        "hangi veri hangi tabloda, hangi kolon neyi temsil ediyor" soruları için.
+Karar:  `LakeAdapter.search` gold `series_catalog` üzerinde arar. Arama metni:
+        ad + konu + etiket + birim + frekans + tür + kaynak (plan 2.5'in alanları
+        ve türün Türkçe adı). Skor kosinüs benzerliği; kimlik/kod birebir geçerse
+        yalnızca o seri. Embedding yapılamazsa kelime eşleşmesi + uyarı. Adayın
+        tarihleri havuzun gerçek kapsamı. `data/catalog.lance` ve `build_index.py`
+        havuz dışı keşif (ingest) için duruyor, aramada kullanılmıyor.
+Sonuç:  Ölçüm (22 Eyl, Qwen3-Embedding-8B, 9 seri): ilgili sorgularda en iyi
+        adayın en düşük skoru 0,470 ("enflasyon" → TÜFE). İlgisiz yedi sorgunun
+        dördü 0,40 altında (dolar 0,329, altın 0,262, cari açık 0,230, işsizlik
+        0,386), üçü üstünde (BIST 100 0,495, mevduat faizi 0,462, otomobil
+        kredisi 0,457). Eşik 0,40: bariz ilgisizi eler; kalanını ayırt etmek
+        modelin işi. Bilinen zaaf: "konut kredisi bakiyesi" sorgusunda
+        "Takipteki Konut Kredileri" (0,650) asıl bakiyenin (0,615) üstünde
+        çıkıyor. Kaynağın kendi tablo hiyerarşisini metne eklemek sıralamayı
+        değiştirmedi (ölçüldü). BDDK satırlarının konu/etiketi boş; 2. adımda
+        havuz genişlerken katalog metinleri de zenginleştirilecek.
+
+## Kimsenin yapmadığı seri seçimi modele "insan seçti" diye söylenmez
+Bağlam: Onay kapısı etkileşimsiz modda (CLI, eval) kartın varsayılanını, yani
+        aramanın en üst adayını uyguluyor ve modele "[Onay] Seri secimi: X. Bu
+        seriyle devam et, tekrar arama yapma." yazıyordu. Gerçek havuzda en üst
+        aday bazen yanlış (takipteki krediler); bu mesaj modelin adayları
+        okuyup doğru seriyi seçmesini engelliyordu ve olmayan bir insan kararını
+        ima ediyordu.
+Karar:  `ApprovalDecision.automatic`. Otomatik seri seçimi kayda ve olaya girer
+        ama modele mesaj olarak gitmez; model adaylardan kendisi seçer. Bir insan
+        seçtiğinde davranış aynı.
+Sonuç:  `approval_decision` olayına `automatic` alanı eklendi.
+
+## Gerçek Lakehouse araçları (tools/lakehouse.py)
+Karar:  - Sütun adı kuralı sahte araçlarla ortak tek fonksiyon (`column_name`):
+          `evds:TP.KTF12` → `TP_KTF12`. Testler, prompt örnekleri ve model aynı
+          adları görür.
+        - `get_series` her zaman aylık tablo döndürür; frekans parametresi yok.
+          Haftalık seri türüne göre aya çevrilir (bakiye: ay sonu, oran/endeks:
+          ortalama, akım: toplam), bu uyarıda ve sütun soyağacında yazar. Üç
+          aylık/yıllık seri reddedilir (aylığa çevirmek veri icat etmek olur).
+        - Havuzdan okunan tabloya kalite kartı eklenmez: `profile_table` birimi
+          hep boş döndüğü için kapı her seferinde açılırdı; kalite kartı demo
+          anında gelen tablolar içindir (plan 2.6). Eksik aylar uyarıda sayılır.
+        - `transform_table` işlemleri: diff, pct_change, yoy, change_since,
+          rebase, ratio, deflate, mark. Hepsi yeni sütun ekler, var olan adı
+          reddeder. `mark` koşulu sağlayan ayları özet metninde listeler: "hangi
+          aylar" sorusunu model saymaz (planner kural 1).
+        - `deflate` yalnızca stok/akım serilerine uygulanır; oran ve endeks
+          reddedilir. TÜFE sabit (TP.TUKFIY2025.GENEL); baz 2025 ortalaması = 100,
+          ya da `base_period` verilirse o ayın fiyatları. TÜFE kaynaklara eklenir.
+        - Önizlemede ondalıklar 4 haneye yuvarlanır (tablo tam kalır):
+          0.4499999999999993 gibi kayan nokta artıkları modele gitmesin.
+Sonuç:  Senaryonun üç sorusu gerçek araçlar ve gerçek gold ile tek oturumda
+        çalışıyor (tests/test_scenario.py). Gerçek veride "faiz düşerken kredi
+        artmayan aylar": 2021-02, 2021-05, 2023-12, 2024-01.
+
+## Model çağrıları tur bütçesine bağlı; zaman aşımı tekrar denenmez
+Bağlam: 22 Eyl `--live` koşusu: araç adımları 57 sn sürdü, sonra düşünme açık
+        cevap çağrısı üç kez 45 sn'lik zaman aşımına uğradı (138 sn); tur 195 sn
+        sürdü ve hiçbir cevap üretmedi. Bütçe yalnızca araç adımlarından önce
+        kontrol ediliyordu. O gün MIA 15 Eylül'e göre 6–10 kat yavaştı
+        (5,6–23 token/sn'ye karşı 61–136).
+Karar:  Zaman aşımı `llm.py`'de tekrar denenmez. Döngü her model çağrısına turun
+        kalan bütçesini `timeout_s` olarak verir; plan/gözlem için 10 sn'den az
+        kaldıysa çağrı yapılmaz ve cevaba geçilir; cevap en az 30 sn alır.
+        Düşünme açık bir çağrı zaman aşımına uğrarsa bir kez düşünme kapalı ve
+        `max_tokens=1024` ile denenir. Düşünme açık çağrıya token sınırı
+        konmadı: akıl yürütme token'ları sınırı tüketirse cevap boş kalır.
+Sonuç:  CLI başarısız turda da adımları ve tabloları gösteriyor.
+
+Ek (aynı gün, ilk `--real` koşusu): senaryonun 1. sorusunda model doğru serileri
+seçti, iki farkı aldı ve `mark` dört ayı listeledi; ardından gelen gözlem
+çağrısı (düşünme kapalı) 45 sn'yi aştı ve bitmiş analiz yine kayboldu. MIA
+8–22 token/sn çalışıyordu, istem 7,8 bin token'a çıkmıştı. İki değişiklik:
+- Gözlem çağrısı zaman aşımına uğrarsa araç döngüsü biter ve cevaba geçilir
+  (`truncated_reason="llm_error"`; cevap kesintiyi söyler). Gözlem yalnızca
+  sıradaki adıma karar verir, araç sonuçları zaten oturumda. 5xx hâlâ turu
+  düşürür: sunucu çökükse cevap çağrısı da aynı sunucuya gider.
+- Hata veren model çağrısı artık `step_end(ok=false)` yayınlıyor; açılan adım
+  kartı kapanmadan kalıyordu.
+- planner 14. kural: gözlem adımında cevap yazılmaz, "Veriler hazır." denir.
+  Gözlemde yazılan uzun özetler (ölçülen 257–320 token) cevap adımında yeniden
+  yazılıyordu.
+
+İkinci `--real` koşusu (22 Eyl, değişikliklerden sonra, üç soru tek oturum):
+üç tur da kesintisiz bitti (118 / 121 / 136 sn, bütçe 180). Model iki aramada da
+otomatik varsayılanı değil doğru seriyi seçti (en üstteki "Takipteki Konut
+Kredileri" idi). Cevaplardaki sayılar gold'dan yeniden hesaplanarak kontrol
+edildi: 2. ve 3. cevap tam doğru; 1. cevapta dört ay doğru, fakat "2021-05'te
+faiz %27,85 puan düştü" dedi (gerçek −0,2785 puan: 100 kat kayma) ve 2025 son
+çeyrek kredi artışını "14-20 bin" verdi (gerçek 16,6–20,2 bin). Sistematik
+çözüm cevaptaki sayıları araç çıktısıyla karşılaştıran doğrulayıcı (plan 5.3);
+o gelene kadar `transform_table` özetinde yeni sütunun birimi yazılıyor.
+Bağlam büyüyor: 3. turun beş çağrısı 59,5 bin prompt token'ı; mesaj geçmişi
+kırpma kararı artık ertelenemez. (İkisi de aynı gün geldi: aşağıda "Cevap
+doğrulayıcı" ve "Modelin gördüğü geçmiş".)
+
+## CLI'da üçüncü mod: --real
+Karar:  `--real` gerçek MIA + gerçek araçlar + gerçek veri; hiçbir sahte modül
+        import edilmez. `--question` birden çok kez verilebilir; sorular aynı
+        oturumun turlarıdır, böylece "tabloyu bozmadan" takip soruları önceki
+        tabloyu görür. `--fake` ve `--live` aynen duruyor.
+
+## Cevap doğrulayıcı (agent/verifier.py)
+Bağlam: 22 Eyl `--real` koşusunda cevap "%27,85 puan" dedi (gerçek −0,2785).
+        Model sayıyı araç çıktısından yanlış aktardı; bunu istem düzeltemez.
+Karar:  Kural tabanlı `AnswerVerifier` varsayılan doğrulayıcı; model çağırmaz,
+        tur bütçesinden süre yemez. Üç kontrol: (1) cevaptaki her sayı, kendi
+        yuvarlama hassasiyeti içinde tablolarda ya da araç mesajlarında
+        bulunmalı; "aştı/altında" sınır, "A ile B arasında" aralık,
+        "yaklaşık" %5 pay olarak okunur; bin/milyon/milyar ölçek kelimeleri ve
+        baz puan hesaba katılır; (2) anılan seri kimliği/kodu/URL kaynaklarda
+        olmalı; (3) anılan ay tabloların aralığında olmalı, soru, kullanıcı ya
+        da bir araç o ayı zaten anmadıysa. Bayraklar cevabın altına
+        "Doğrulanamayan ifadeler" olarak eklenir; cevap yeniden yazdırılmaz
+        (bir düşünme açık çağrı daha ve iyi bir cevabı bozma riski).
+        Göremedikleri modül belgesinde yazılı: tesadüfen tabloda olan yanlış
+        sayı, yön/işaret, yanlış aya bağlanmış doğru sayı, yazıyla sayı.
+Sonuç:  Üç canlı cevap aynı tablolarla tekrar oynatıldığında yalnızca "27,85"
+        işaretleniyor (tests/test_verifier.py); "14-20 bin" gerçek artışları
+        (16,6–20,2 bin) kapsayan bir aralık olduğu için geçiyor.
+
+## Modelin gördüğü geçmiş (agent/history.py)
+Bağlam: 3. turun beş çağrısı 59,5 bin prompt token'ı okudu, çoğu önceki turların
+        aday listeleri ve tablo önizlemeleri. Yavaş MIA gününde her token
+        gecikme.
+Karar:  `state.messages` hiç kırpılmaz (adım günlüğü ve izlenebilirlik paneli
+        onu okur). Modele giden görünümde önceki turlar yalnızca soru + son
+        cevap; içinde bulunulan tur tam. Tablolar kaybolmaz: sistem istemi her
+        tabloyu ve sütunlarını listeliyor. Görünümde çağrısı olmayan araç
+        mesajı gönderilmez (protokol hatası). Cevapsız çağrı bırakan bir tur
+        (kartta durdurma, çökme) sonraki tur başlarken kendi bölgesinde
+        onarılır; onarım adımı o turun numarasını taşır.
+
+## 22 Eyl incelemesinin düzeltmeleri
+Bağlam: Adım 1'in değişiklikleri çok ajanlı bir incelemeden geçti; 49 bulgu
+        doğrulandı. Doğrulayıcıyla ilgili olanlar yukarıda. Üçüncü `--real`
+        koşusu da bir bulgu ekledi: cevap düşünme açık 45 sn'de zaman aşımına
+        uğradı, düşünme kapalı yedeği de yine 45 sn ile sınırlandığı için
+        bütçede yaklaşık bir dakika dururken düştü (MIA 7–10 token/sn).
+Karar:  Zaman bütçesi:
+        - MIA istemcisi verilen bütçeye tam uyar (`LLM_TIMEOUT_S` ile
+          kırpmaz); sınırı döngü seçer. Bütçe bir yeniden denemeyi durdurursa
+          hata `LlmTimeoutError` olur, 503'ten sonra bile: gözlemdeki
+          "elindekiyle cevapla" kurtarması o zaman da çalışır. Yeniden deneme
+          başlayamayacaksa beklenmez.
+        - Çağrının payı başta bir kez hesaplanır; cevabın 30 sn tabanı artık
+          deneme başına değil toplam (eskiden bütçeyi 60 sn aşabiliyordu).
+        - Cevabın düşünme kapalı denemesi kalan payın tamamını alır. Oturumun
+          son model çağrılarında ölçülen hız düşünme açık cevabı (800 token;
+          15 Eyl ölçümü 750) pencereye sığdıramıyorsa cevap baştan düşünme
+          kapalı başlar.
+        - Başarısız model adımı gerçek süresini ve son denemenin düşünme
+          bayrağını raporlar; her türlü hata ya da iptalde adım kartı kapanır.
+        - CLI bütün soruları tek olay döngüsünde çalıştırır.
+        - Cevap istemine turun ilk 10 uyarısı gider (sonuncular değil), fazlası
+          sayılır: birim dönüşümü uyarısı artık sonraki uyarılarla düşmüyor.
+        Arama ve onay:
+        - Seri seçimi kapısı yalnızca skorlar yakınsa açılır; birim/tür farkı
+          tek başına açmaz (havuzda 36 çiftin 31'i farklıydı). Sorguda koduyla
+          geçen seriler seçim sayılmaz.
+        - Kod eşleşmesi noktalama, kesme işareti ve sütun adı biçimini tanır;
+          kelime yedeği Türkçe harfleri katlar, alt çizgiyi böler; kelime
+          yedeği boş dönerse araç "havuzda yok" demez.
+        - Embedding hatası 180 sn hatırlanır; kapsam okuması yalnızca başarıda
+          önbelleğe alınır.
+        - Geçersiz/başka karta ait cevap yüzünden varsayılana düşülen karar
+          otomatiktir; otomatik kalite kararı "[Otomatik] ..." diye söylenir.
+        Araçlar:
+        - Oran serisinin farkı birimi "yuzde puan" (türe bakarak; havuzdaki
+          faizin birimi "Ağırlıklı ortalama", "%" değil, bu yüzden eski kontrol
+          gerçek veride hiç çalışmıyordu).
+        - `deflate` yalnızca TL cinsinden, henüz reelleştirilmemiş aylık
+          stok/akım tutarına uygulanır (adet ve reel sütun reddedilir); kural
+          sahte araçlarla ortak (`deflate_refusal`). Baz ay tablonun dışında
+          olabilir; baz ay sütun adına girer (`reel_X_202512`).
+        - Aynı adı başka bir hesap tutuyorsa (başka payda, başka koşul) sütun
+          `_2` ekiyle eklenir; "aynı işlem yapılmış" yalnızca gerçekten aynı
+          işlemse (op, girdiler, formül) söylenir.
+        - İşlemin kullanmadığı argüman reddedilir; `period` ya da sayısal
+          olmayan sütun anlaşılır bir hatayla reddedilir.
+        - `into='active'` boş ayları birleşmiş tabloda sayar, özet tablonun
+          aylarını söyler.
+        - Haftalık seriler için "ay sonu bakiyesi" iddiası kaldırıldı: hafta
+          Pazartesi gününün ayına sayılıyor, uyarı bunu söylüyor; eksik
+          haftayla hesaplanan ay (2020-12: 1/4 hafta) ayrıca uyarılıyor.
+          Haftayı gözlem tarihine göre aya koymak adım 2'de.
+        - `--live` artık gerçek araçları FakeLake üzerinde çalıştırıyor; sahte
+          `transform_table` istemin istediği `mark`'ı bilmiyordu.
+        - `catalog.duckdb` parquet dosyalarından eskiyse yeniden kuruluyor.
+        - planner v3: örnekteki "toplam kredi serisi" ifadesi yanlış seriye
+          (tüketici kredileri toplamı) işaret ediyordu; adet sayıları
+          reelleştirilmez.
+
+
+Dördüncü `--real` koşusu (22 Eyl, düzeltmelerden sonra, üç soru tek oturum): üç
+tur da kesintisiz bitti (137 / 62 / 26 sn). 1. turda son model çağrılarının
+hızı ~26 token/sn ölçüldü, düşünme açık cevap denendi ve 45 sn'de düştü;
+düşünme kapalı yedek kalan payın tamamını aldı (~72 sn) ve 31 sn'de bitti.
+22 Eylül'deki altı düşünme açık cevap denemesinin altısı da zaman aşımına
+uğradı; başarılı tek örnek 15 Eylül'deki. Cevaplar gold'dan kontrol edildi:
+- 1. cevap: dört ay doğru; 2025-08..12 aylık artış "14-20 milyar" doğru
+  (14,1–20,2). Fakat "2021-2023 boyunca faiz %17-20, bakiye 275-300 milyar"
+  2023'ün ikinci yarısı için yanlış (faiz 32,8–42,4; bakiye 447 milyara
+  çıkıyor). Doğrulayıcı bunu göremez: aralık dönemin bir kısmı için doğru,
+  yanlış olan bağlandığı dönem (modül belgesindeki kör nokta).
+- 2. cevap: sayılar doğru, ama "1.716.202" (gerçek 1.716.202,69, yuvarlanmamış
+  kırpılmış) işaretlendi. Yanlış alarm; doğrulayıcı artık kırpılmış sayıyı da
+  kabul ediyor (son hanede bir birim yukarısı).
+- 3. cevap: doğru.
+Gözlem çağrısı yine uzun bir cevap yazdı (734 token, 30 sn; planner 14. kurala
+rağmen).

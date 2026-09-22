@@ -377,6 +377,24 @@ def test_get_filters_by_series_id_and_period_range(monkeypatch, tmp_path):
     assert result["value"].iloc[0] == 151.5
 
 
+def test_a_duckdb_file_older_than_the_parquet_is_rebuilt(monkeypatch, tmp_path):
+    """catalog.duckdb is derived and gitignored; built only when missing, it
+    kept serving the old tables after a pull updated the committed parquet."""
+    import os
+
+    monkeypatch.chdir(tmp_path)
+    _write_bronze_catalog_and_year(tmp_path)
+    gold.build_gold(["evds:TP.KFE.TR"])
+    assert len(gold.get(["evds:TP.KFE.TR"])) == 2  # builds catalog.duckdb
+
+    observations = pd.read_parquet(gold.OBSERVATIONS_PATH)
+    observations.iloc[:1].to_parquet(gold.OBSERVATIONS_PATH, index=False)
+    built = gold.GOLD_DB_PATH.stat().st_mtime
+    os.utime(gold.OBSERVATIONS_PATH, (built + 10, built + 10))
+
+    assert len(gold.get(["evds:TP.KFE.TR"])) == 1
+
+
 def test_wide_pivots_one_column_per_series(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     _write_bronze_catalog_and_year(tmp_path)

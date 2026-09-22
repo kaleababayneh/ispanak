@@ -499,17 +499,17 @@ class FakeLake:
     def search(self, query: str, k: int = 20) -> list[CatalogHit]:
         """Keyword overlap, plus an exact-match shortcut for explicit series codes.
 
-        The scores are not similarities in 0..1. The real catalog uses hybrid
-        search whose fused scores are only comparable within one query, so
-        ambiguity downstream is judged as a *ratio* between the top two hits,
-        never as an absolute gap. This fake reproduces that property.
+        The overlap scores are on another scale than the real pool search's
+        cosine similarities (tools/lake_adapter.py). Ambiguity downstream is
+        judged as a *ratio* between the top two hits, which holds on both, so
+        the gate behaves here as it does on the real pool.
         """
         code_match = re.search(r"\b(?:TP|TP\.)[A-Z0-9._]+\b", query.upper())
         if code_match:
             wanted = code_match.group(0).lstrip(".")
             for series_id in SCENARIO_SERIES:
                 if series_id.split(":", 1)[-1].upper() == wanted:
-                    return [self._hit(series_id, 1.0)]
+                    return [self._hit(series_id, 1.0, match="code")]
 
         tokens = {t for t in re.split(r"\W+", query.casefold()) if len(t) > 2}
         scored: list[tuple[float, str]] = []
@@ -521,9 +521,14 @@ class FakeLake:
                 scored.append((rank_score, series_id))
 
         scored.sort(key=lambda pair: (-pair[0], pair[1]))
-        return [self._hit(series_id, score) for score, series_id in scored[:k]]
+        return [
+            self._hit(series_id, score, match="keyword")
+            for score, series_id in scored[:k]
+        ]
 
-    def _hit(self, series_id: str, score: float) -> CatalogHit:
+    def _hit(
+        self, series_id: str, score: float, *, match: str | None = None
+    ) -> CatalogHit:
         meta = SCENARIO_SERIES[series_id]
         return CatalogHit(
             series_id=series_id,
@@ -538,6 +543,7 @@ class FakeLake:
             start_date=START,
             end_date=END,
             score=round(score, 4),
+            match=match,
         )
 
     # -- demo-time helpers (thin until the real ones land) -----------------

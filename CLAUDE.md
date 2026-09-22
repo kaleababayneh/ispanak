@@ -7,28 +7,17 @@ Uzun açıklamalar `docs/` altına, buraya sadece **kural** yaz.
 
 KKB Hackathon 2026. EVDS + BDDK verisini (2021-01 – 2026-06) bronze→silver→gold
 katmanlarına indiren, DuckDB + LanceDB üzerinden sorgulanabilir hale getiren ve bir
-LangGraph agent'ına araç olarak sunan Python projesi. Teslim: 20 Eylül.
+kendi agent döngüsüne (LangGraph değil, `docs/decisions.md`) araç olarak sunan
+Python projesi. Teslim tarihi 20 Eylül'den ertelendi.
 
-## Şeritler ve sahiplik (ÖNEMLİ)
+## Geliştirici ve sahiplik (ÖNEMLİ)
 
-Ben (Burak) **A şeridi = veri ve hesap** sahibiyim. Sadece şu yollarda değişiklik yap:
+22 Eylül'den beri projenin **tek geliştiricisi Derya**; eski A (veri) ve B (agent)
+şeritlerinin ikisi de onun. Repo'nun her yoluna yazılabilir; `docs/contracts.md`
+§9'daki sahiplik tablosu tarihsel. Aşağıdaki sözleşmeler yine bağlayıcı: bir
+şema değişikliği önce `docs/contracts.md`'ye yazılır ve kullanıcıya sorulur.
 
-```
-src/lakehouse_agent/ingest/      # evds.py, bddk_monthly.py, bddk_weekly.py, bddk_finturk.py, run.py
-src/lakehouse_agent/lake/        # silver.py, gold.py, catalog.py, quality.py
-src/lakehouse_agent/analysis/    # transforms.py, anomaly.py, change.py   (causality.py = B, DOKUNMA)
-src/lakehouse_agent/tools/analysis.py   # sadece detect_anomalies / detect_changes sarmalayıcıları
-tests/test_evds.py tests/test_silver.py tests/test_transforms.py tests/test_anomaly.py tests/test_change.py
-docs/data_dictionary.md docs/data_quality.md
-ingest/bddk_rows.yaml
-```
-
-Şu yollara **asla** yazma (başka kişilerin şeridi, merge conflict = zaman kaybı):
-`agent/`, `api/`, `ui/`, `tools/registry.py`, `tools/lakehouse.py`, `tools/web_*.py`,
-`tools/chart.py`, `llm.py`, `eval/`, `deploy/`, `Dockerfile`, `.github/`.
-Bir şey gerekiyorsa kodu yazma; bana "B'den şunu iste" diye söyle.
-
-## Sözleşmeler (değiştirilemez — B ve C bunlara göre kod yazıyor)
+## Sözleşmeler (değiştirilemez — agent ve araçlar bunlara göre yazıldı)
 
 `data/gold/observations.parquet` sütunları, tam olarak:
 `series_id, period, freq, value, unit, source, fetched_at`
@@ -88,7 +77,7 @@ uv run python -m lakehouse_agent.ingest.run --source evds --since 2021-01 --unti
 
 kod + test + docstring + (gerekiyorsa) `docs/data_dictionary.md` güncellemesi +
 `ruff check` temiz + `uv run pytest` yeşil + main'de çalışıyor.
-PR'lar 400 satırın altında; PR'ımı B inceliyor.
+PR boyutu için sınır yok; iş mantıksal bütün olarak tek PR'da gider (tek geliştirici).
 
 ## Sık düşülen tuzaklar (bunlara karşı kod yaz)
 
@@ -99,7 +88,8 @@ PR'lar 400 satırın altında; PR'ımı B inceliyor.
   alan adlarında büyük/küçük harf sürprizi olur. İlk yanıtı gözle doğrula, varsayma.
 - BDDK sayıları `"1.234.567,89"` biçiminde; binlik ayıracı nokta, ondalık virgül.
 - BDDK kâr-zarar kalemleri yıl başından kümülatif (`ytd`); Ocak değeri akımla eşitse doğrulanır.
-- TÜFE Ocak 2026'dan itibaren 2025=100 bazında; zincirleme gerekiyor, `evds:TUFE_ZINCIR`.
+- TÜFE: `evds:TP.TUKFIY2025.GENEL`, 2025=100, **zincirleme yok** (TÜİK yeni bazı
+  geriye doğru hesaplamış; `docs/decisions.md`). `evds:TUFE_ZINCIR` yok.
 - STL 24 dönemden kısa seride çalışmaz → IQR fallback.
 
 ## EVDS v3 — doğrulanmış gerçekler (12 Eyl 2026, smoke test ile ölçüldü)

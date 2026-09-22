@@ -56,10 +56,16 @@ def test_defaults_match_the_mia_guide(monkeypatch):
     assert settings.mia_ocr_model == "kkbhackathon2026/Unlimited-OCR"
 
 
-def test_timeout_default_fits_inside_the_turn_budget(monkeypatch):
-    """Three attempts at the default timeout must stay under the 180s turn budget."""
+def test_timeout_default_is_a_cap_that_can_bind(monkeypatch):
+    """The timeout caps one call, not three: timeouts are not retried. A cap
+    under the shortest attempt the client will start would refuse every call,
+    and one over the turn budget would cap nothing."""
+    from lakehouse_agent.agent.loop import AgentConfig
+    from lakehouse_agent.llm import MIN_ATTEMPT_S
+
     monkeypatch.setenv("MIA_API_KEY", "k")
-    assert AgentSettings().llm_timeout_s * 3 < 180
+    timeout = AgentSettings().llm_timeout_s
+    assert MIN_ATTEMPT_S < timeout < AgentConfig().total_budget_s
 
 
 def test_derived_paths_hang_off_data_dir(monkeypatch, tmp_path):

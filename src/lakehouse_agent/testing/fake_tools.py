@@ -25,6 +25,7 @@ from lakehouse_agent.contracts import (
     Source,
     ToolResult,
 )
+from lakehouse_agent.tools.lakehouse import column_name, deflate_refusal
 from lakehouse_agent.tools.registry import ToolRegistry, ToolSpec
 
 FETCHED_AT = pd.Timestamp("2026-09-15T06:00:00Z").to_pydatetime()
@@ -125,16 +126,9 @@ def _months(start: str, end: str) -> pd.DatetimeIndex:
     return pd.date_range(f"{start}-01", f"{end}-01", freq="MS")
 
 
-def _column_name(series_id: str) -> str:
-    """`evds:TP.KTF12` -> `TP_KTF12`, `bddk:aylik:...:sektor` -> `aylik_..._sektor`.
-
-    Only the source prefix is stripped. BDDK ids use ':' as a hierarchy
-    separator, so taking the last segment would collapse every consumer-credit
-    series onto the name `sektor`. How the data lane names these for real is
-    still an open question; when it answers, this is the one place to change.
-    """
-    _, _, rest = series_id.partition(":")
-    return (rest or series_id).replace(":", "_").replace(".", "_")
+#: The real tools' naming rule, not a copy of it: a fake that names columns its
+#: own way lets a test pass against names production never produces.
+_column_name = column_name
 
 
 def make_get_series() -> ToolSpec:
@@ -244,20 +238,43 @@ def make_transform_table() -> ToolSpec:
 
         ref = args.table_ref or ctx.active_table or ""
         warnings: list[str] = []
+        upstream = ctx.lineage.get(f"{ref}.{args.column}")
         if args.op == "deflate":
-            new_name = f"reel_{args.column}"
+            # The real tool's own rule, called rather than restated: a fake
+            # that allowed a rate is how the 22 Sep live run produced a "real
+            # rate", and a fake stricter or looser than production lets a test
+            # pass that production would fail.
+            refusal = deflate_refusal(args.column, upstream)
+            if refusal:
+                return ToolResult(ok=False, summary=refusal)
+        new_name = (
+            f"reel_{args.column}" if args.op == "deflate" else f"{args.column}_diff"
+        )
+        if new_name in frame.columns:
+            # Deterministic here (no base month, no second argument), so the
+            # same name is the same operation -- the real tool's message.
+            return ToolResult(
+                ok=False,
+                summary=(
+                    f"'{new_name}' sutunu ayni islemle zaten hesaplanmis; "
+                    "mevcut sutunu kullan."
+                ),
+            )
+        if args.op == "deflate":
             frame[new_name] = frame[args.column] * 0.8
             # A real deflated column descends from two series, the nominal one
             # and the price index, so the chain is read off the input column's
             # own lineage rather than asserted from nothing.
-            upstream = ctx.lineage.get(f"{ref}.{args.column}")
             column = ColumnInfo(
                 name=new_name,
+                unit=upstream.unit,
+                kind=upstream.kind,
+                freq=upstream.freq,
                 op="deflate",
                 formula="reel = nominal x TUFE_baz / TUFE_t",
                 inputs=[args.column],
                 source_series=[
-                    *(upstream.source_series if upstream else []),
+                    *upstream.source_series,
                     "evds:TP.TUKFIY2025.GENEL",
                 ],
                 tool="transform_table",
@@ -272,7 +289,6 @@ def make_transform_table() -> ToolSpec:
                 "rakamlar reel, nominal degil."
             )
         else:
-            new_name = f"{args.column}_diff"
             frame[new_name] = frame[args.column].diff()
             column = ColumnInfo(
                 name=new_name,

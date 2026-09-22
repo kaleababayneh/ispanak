@@ -112,6 +112,12 @@ class ApprovalDecision(BaseModel):
     choice: str
     note: str | None = None
 
+    #: True when no person answered and the card's default was applied (tests,
+    #: CLI, eval). Kept on the decision because what the model is told
+    #: afterwards depends on it: a default must not be passed off as a person's
+    #: choice.
+    automatic: bool = False
+
 
 class VerificationFlag(BaseModel):
     kind: Literal[
@@ -152,6 +158,11 @@ class SessionState:
     #: number is never handed out twice: the quality gate removes the newest
     #: table, which is exactly the one `new_table_ref` would otherwise reissue.
     retired_tables: set[str] = field(default_factory=set)
+    #: Where each turn's question sits in `messages`, and where each final
+    #: answer does. What the model is shown of earlier turns is built from
+    #: these (`agent/history.py`); `messages` itself keeps everything.
+    turn_starts: list[int] = field(default_factory=list)
+    answer_indices: list[int] = field(default_factory=list)
 
     # --- per-turn bookkeeping --------------------------------------------
     turn_no: int = 0

@@ -328,3 +328,116 @@ def test_align_join_inner_keeps_only_common_periods():
     result, _ = transforms.align_join({"a": a, "b": b}, how="inner")
 
     assert list(result["period"]) == [date(2024, 2, 1)]
+
+
+# --- change_since -------------------------------------------------------
+
+
+def test_change_since_measures_every_period_against_one_base():
+    df = _series(
+        [date(2021, 1, 1), date(2021, 2, 1), date(2021, 3, 1)], [80.0, 100.0, 120.0]
+    )
+
+    result, formula = transforms.change_since(df, date(2021, 1, 1))
+
+    # (100/80 - 1) * 100 = 25, (120/80 - 1) * 100 = 50
+    assert list(result["value"]) == pytest.approx([0.0, 25.0, 50.0])
+    assert "value[2021-01-01]" in formula
+
+
+def test_change_since_refuses_a_base_period_that_is_not_there():
+    df = _series([date(2021, 2, 1)], [100.0])
+    with pytest.raises(ValueError, match="seride yok"):
+        transforms.change_since(df, date(2021, 1, 1))
+
+
+# --- ratio --------------------------------------------------------------
+
+
+def test_ratio_is_a_share_in_percent():
+    part = _series([date(2024, 1, 1), date(2024, 2, 1)], [25.0, 30.0])
+    whole = _series([date(2024, 1, 1), date(2024, 2, 1)], [100.0, 120.0])
+
+    result, formula = transforms.ratio(part, whole)
+
+    assert list(result["value"]) == pytest.approx([25.0, 25.0])
+    assert "* 100" in formula
+
+
+def test_ratio_leaves_a_missing_or_zero_denominator_missing():
+    """NaN, not 0 and not inf: a share that cannot be computed is unknown."""
+    part = _series(
+        [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)], [1.0, 2.0, 3.0]
+    )
+    whole = _series([date(2024, 1, 1), date(2024, 2, 1)], [10.0, 0.0])
+
+    result, _ = transforms.ratio(part, whole)
+
+    assert result["value"].iloc[0] == pytest.approx(10.0)
+    assert math.isnan(result["value"].iloc[1])
+    assert math.isnan(result["value"].iloc[2])
+
+
+def test_ratio_refuses_two_different_frequencies():
+    monthly = _series([date(2024, 1, 1), date(2024, 2, 1)], [1.0, 2.0])
+    weekly = _series([date(2024, 1, 1), date(2024, 1, 8)], [1.0, 2.0])
+    with pytest.raises(ValueError, match="farklı frekanslarda"):
+        transforms.ratio(monthly, weekly)
+
+
+# --- mark_periods -------------------------------------------------------
+
+
+def _scenario_diffs():
+    periods = [date(2024, m, 1) for m in (1, 2, 3, 4)]
+    rate = _series(periods, [float("nan"), -0.5, -0.2, 0.3])
+    credit = _series(periods, [float("nan"), 0.0, 5.0, -1.0])
+    return {"faiz_diff": rate, "kredi_diff": credit}
+
+
+def test_mark_periods_flags_where_every_condition_holds():
+    """The scenario's question: the rate fell and credit did not grow."""
+    result, formula = transforms.mark_periods(
+        _scenario_diffs(), [("faiz_diff", "<", 0), ("kredi_diff", "<=", 0)]
+    )
+
+    # Feb: -0.5 < 0 and 0.0 <= 0 -> True. Mar: credit grew -> False.
+    # Apr: rate rose -> False.
+    assert list(result["value"])[1:] == [True, False, False]
+    assert formula == "mark = faiz_diff < 0 AND kredi_diff <= 0"
+
+
+def test_mark_periods_leaves_an_unevaluable_period_unknown_not_false():
+    """The first month of a difference has no previous month. That is not
+    "the rate did not fall", and reporting it as False would be a claim."""
+    result, _ = transforms.mark_periods(
+        _scenario_diffs(), [("faiz_diff", "<", 0), ("kredi_diff", "<=", 0)]
+    )
+
+    assert result["value"].iloc[0] is pd.NA
+
+
+def test_mark_periods_is_false_when_one_condition_is_definitely_false():
+    """Kleene AND: unknown and False is False."""
+    periods = [date(2024, 1, 1), date(2024, 2, 1)]
+    series = {
+        "a": _series(periods, [float("nan"), 1.0]),
+        "b": _series(periods, [5.0, 5.0]),
+    }
+
+    result, _ = transforms.mark_periods(series, [("a", "<", 0), ("b", "<", 0)])
+
+    assert list(result["value"]) == [False, False]
+
+
+@pytest.mark.parametrize(
+    ("conditions", "match"),
+    [
+        ([], "en az bir"),
+        ([("yok", "<", 0)], "bilinmeyen seri"),
+        ([("faiz_diff", "=<", 0)], "bilinmeyen karşılaştırma"),
+    ],
+)
+def test_mark_periods_refuses_what_it_cannot_evaluate(conditions, match):
+    with pytest.raises(ValueError, match=match):
+        transforms.mark_periods(_scenario_diffs(), conditions)

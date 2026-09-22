@@ -42,6 +42,7 @@ from lakehouse_agent.agent.formatting import (
     json_safe,
     preview_rows,
 )
+from lakehouse_agent.agent.history import model_messages
 from lakehouse_agent.agent.prompts import load_prompt, render
 from lakehouse_agent.agent.state import (
     ApprovalDecision,
@@ -52,9 +53,17 @@ from lakehouse_agent.agent.state import (
     chart_ref_of,
     initial_state,
 )
+from lakehouse_agent.agent.verifier import AnswerVerifier
 from lakehouse_agent.config import AgentSettings
 from lakehouse_agent.contracts import ToolResult, Usage
-from lakehouse_agent.llm import LLM, LlmError, MiaLLM, ToolCall
+from lakehouse_agent.llm import (
+    LLM,
+    ChatResult,
+    LlmError,
+    LlmTimeoutError,
+    MiaLLM,
+    ToolCall,
+)
 from lakehouse_agent.tools.registry import ToolRegistry
 
 DATA_RANGE = "2021-01 – 2026-06"
@@ -81,8 +90,32 @@ class AgentConfig(BaseModel):
 
     #: Total working time. Measured on `active_s`, which excludes time spent
     #: waiting for a human: a jury thinking about an approval is not the agent
-    #: being slow.
+    #: being slow. Model calls are held to it too: a call's attempts all come
+    #: out of what was left of it when the call began (see `_chat`), not a
+    #: fresh client timeout per retry.
     total_budget_s: float = 180.0
+
+    #: A planning or observing call is not started with less budget than this;
+    #: the turn goes to its answer with what it has instead.
+    min_call_s: float = 10.0
+
+    #: The answer always gets at least this long in total, even past the
+    #: budget. A turn that did its work and then ran out of time to say so is
+    #: the worst way to end one, and it is how the 22 Sep live run ended.
+    answer_min_s: float = 30.0
+
+    #: Output cap for the thinking-off retry of a call that timed out. The
+    #: thinking-on call itself is not capped: reasoning tokens count against
+    #: `max_tokens`, and a cap low enough to matter can leave the answer empty.
+    fallback_max_tokens: int = 1024
+
+    #: A thinking-on answer is tried first only if the model's recent speed
+    #: could produce this many tokens inside the attempt's window; otherwise
+    #: the answer starts with thinking off and all the time there is. The one
+    #: thinking-on answer we measured (15 Sep) used 750 completion tokens; on
+    #: 22 Sep, at 7-10 tokens/s, every thinking-on answer timed out at 45 s,
+    #: and in the third run its thinking-off retry did too.
+    answer_thinking_tokens: int = 800
 
     #: A bad argument is fed back once. Insisting a second time means the model
     #: is not reading the error, and a third call would just burn quota.
@@ -109,7 +142,8 @@ class Verifier(Protocol):
 
 
 class NullVerifier:
-    """Passes everything. The real one arrives with the validation stage."""
+    """Passes everything. The default is `AnswerVerifier`; this is for a
+    caller that wants the answer unchecked."""
 
     def verify(self, answer: str, state: SessionState) -> VerificationResult:
         return VerificationResult(passed=True)
@@ -127,7 +161,7 @@ class AgentDeps:
     settings: AgentSettings
     lake: Any = None
     sink: EventSink | None = None
-    verifier: Verifier = field(default_factory=NullVerifier)
+    verifier: Verifier = field(default_factory=AnswerVerifier)
     config: AgentConfig = field(default_factory=AgentConfig)
 
     #: Async on purpose. In a chat interface, asking a human means awaiting a
@@ -158,6 +192,14 @@ class TurnResult(BaseModel):
 
 async def run_turn(state: SessionState, deps: AgentDeps, question: str) -> TurnResult:
     """Run one user turn end to end, mutating `state` as it goes."""
+    # A turn that died mid-step -- cancelled at an approval card, crashed
+    # between the model asking for a tool and the tool answering -- can leave
+    # a call with no tool message. Answered here, before this turn's first
+    # message, the reply lands in the dead turn's own stretch of the history,
+    # which the model sees collapsed to question and answer, call and reply
+    # dropped together. Answered at the end of this turn instead, it would
+    # sit in the part shown in full with its call out of view: a 400.
+    _answer_unanswered_calls(state, "Onceki tur yarida kaldi.", "abandoned")
     state.turn_no += 1
     state.steps_this_turn = 0
     state.active_s = 0.0
@@ -172,6 +214,7 @@ async def run_turn(state: SessionState, deps: AgentDeps, question: str) -> TurnR
     started = deps.clock()
     approvals_before = len(state.approvals)
     usage_before = state.usage
+    state.turn_starts.append(len(state.messages))
     state.messages.append({"role": "user", "content": question})
 
     try:
@@ -188,9 +231,25 @@ async def run_turn(state: SessionState, deps: AgentDeps, question: str) -> TurnR
             if state.truncated_reason:
                 break
 
-            await _llm_step(state, deps, node="observe", question=question)
+            try:
+                await _llm_step(state, deps, node="observe", question=question)
+            except LlmTimeoutError:
+                # Observing only decides the next move; every tool result is
+                # already in the session. Measured 22 Sep: an observe call ran
+                # past 45 s after the scenario's last tool had listed the
+                # months, and the whole finished analysis was thrown away.
+                # Answer with what there is, and say the turn was cut short.
+                # A 503 whose retry the budget stopped arrives here too: the
+                # client reports that as out of time (llm.py `out_of_time`).
+                state.truncated_reason = "llm_error"
+                state.pending_calls = []
+                break
 
-        await _answer_abandoned_calls(state)
+        _answer_unanswered_calls(
+            state,
+            _ABANDONED_DETAIL.get(state.truncated_reason or "", "Tur sonlandi."),
+            state.truncated_reason or "abandoned",
+        )
         answer = await _answer(state, deps, question)
         await _verify(state, deps, answer)
         answer = _append_flags(answer, state.verification)
@@ -267,6 +326,13 @@ async def _llm_step(
     thinking = deps.config.thinking.get(node, True)
     started_at = datetime.now(UTC)
 
+    if deps.config.total_budget_s - state.active_s < deps.config.min_call_s:
+        # Not enough budget left to plan the next move. The answer still runs,
+        # with what has been gathered and an honest "time ran out" in it.
+        state.truncated_reason = state.truncated_reason or "time_budget"
+        state.pending_calls = []
+        return
+
     # The model call is a step like any other. It was the only kind that never
     # published one, so an interface drawing step cards saw the tools and never
     # the thinking between them -- and these are precisely the steps that carry
@@ -283,21 +349,56 @@ async def _llm_step(
         args={},
     )
 
-    result = await asyncio.to_thread(
-        partial(
-            deps.llm.chat,
-            [{"role": "system", "content": system}, *state.messages],
+    spent = _Spent(thinking=thinking)
+    try:
+        result = await _chat(
+            state,
+            deps,
+            [{"role": "system", "content": system}, *model_messages(state)],
             tools=deps.registry.openai_tools() or None,
             thinking=thinking,
             tag=f"{node}@{prompt.tag}",
-            session_id=state.session_id,
+            spent=spent,
         )
-    )
+    except BaseException as exc:
+        # The card was opened above, so it is closed here whatever ended the
+        # call -- a timeout, a server error, a stopped turn -- or an interface
+        # drawing step cards shows it running forever; the turn may well carry
+        # on (see `run_turn`). `spent` says how long the call really ran and
+        # whether its last attempt had thinking on.
+        summary = str(exc)[:200] or type(exc).__name__
+        state.steps.append(
+            Step(
+                step_no=step_no,
+                turn_no=state.turn_no,
+                node=node_name,
+                ok=False,
+                summary=summary,
+                error=type(exc).__name__,
+                started_at=started_at,
+                duration_ms=spent.ms,
+                thinking=spent.thinking,
+                prompt_version=prompt.tag,
+            )
+        )
+        with contextlib.suppress(Exception):
+            await emit(
+                deps.sink,
+                state.session_id,
+                "step_end",
+                step_no=step_no,
+                node=node_name,
+                ok=False,
+                summary=summary,
+                error=type(exc).__name__,
+                duration_ms=spent.ms,
+                tokens=None,
+            )
+        raise
 
     state.messages.append(result.as_message())
     state.pending_calls = list(result.tool_calls)
     state.usage = state.usage + result.usage
-    state.active_s += result.duration_ms / 1000
 
     state.steps.append(
         Step(
@@ -307,9 +408,9 @@ async def _llm_step(
             summary=(result.content or "")[:200],
             ok=True,
             started_at=started_at,
-            duration_ms=result.duration_ms,
+            duration_ms=spent.ms,
             tokens=result.usage,
-            thinking=thinking,
+            thinking=spent.thinking,
             prompt_version=prompt.tag,
         )
     )
@@ -327,7 +428,7 @@ async def _llm_step(
         ok=True,
         summary=(result.content or "")[:200],
         error=None,
-        duration_ms=result.duration_ms,
+        duration_ms=spent.ms,
         tokens=result.usage.model_dump(),
     )
 
@@ -468,6 +569,19 @@ async def _act(
     if request is not None:
         try:
             decision = await _ask(state, deps, request)
+        except asyncio.CancelledError:
+            # A turn stopped while the card was open. Cancellation is not an
+            # `Exception`, so without this branch the call went unanswered.
+            message = "[HATA] Onay beklenirken tur durduruldu; arac calistirilmadi."
+            with contextlib.suppress(Exception):
+                await finish(
+                    message,
+                    ok=False,
+                    summary=message,
+                    error="cancelled",
+                    node="approval",
+                )
+            raise
         except Exception as exc:  # noqa: BLE001 - see below
             # A browser closed, a card timed out, the interface crashed. None
             # of that may leave the tool call unanswered: the session would
@@ -571,15 +685,37 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
     )
     started_at = datetime.now(UTC)
 
-    result = await asyncio.to_thread(
-        partial(
-            deps.llm.chat,
-            [{"role": "system", "content": system}, *state.messages],
+    spent = _Spent()
+    try:
+        result = await _chat(
+            state,
+            deps,
+            [{"role": "system", "content": system}, *model_messages(state)],
+            tools=None,
             thinking=deps.config.thinking.get("answer", True),
             tag=f"answer@{prompt.tag}",
-            session_id=state.session_id,
+            spent=spent,
+            last_chance=True,
         )
-    )
+    except BaseException as exc:
+        # Recorded, so the recap of a failed turn shows where it ended and
+        # what the answer cost; the third 22 Sep run lost two answer attempts
+        # (90 s) with no step saying so.
+        state.steps.append(
+            Step(
+                step_no=state.next_step_no(),
+                turn_no=state.turn_no,
+                node="answer",
+                ok=False,
+                summary=str(exc)[:200] or type(exc).__name__,
+                error=type(exc).__name__,
+                started_at=started_at,
+                duration_ms=spent.ms,
+                thinking=spent.thinking,
+                prompt_version=prompt.tag,
+            )
+        )
+        raise
 
     answer = result.content or ""
     if not answer.strip():
@@ -590,8 +726,8 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
         state.truncated_reason = state.truncated_reason or "llm_error"
         answer = "Model bu tur icin bir cevap uretmedi. Soruyu daraltip tekrar deneyin."
     state.messages.append({"role": "assistant", "content": answer})
+    state.answer_indices.append(len(state.messages) - 1)
     state.usage = state.usage + result.usage
-    state.active_s += result.duration_ms / 1000
     state.steps.append(
         Step(
             step_no=state.next_step_no(),
@@ -600,9 +736,9 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
             ok=True,
             summary=answer[:200],
             started_at=started_at,
-            duration_ms=result.duration_ms,
+            duration_ms=spent.ms,
             tokens=result.usage,
-            thinking=deps.config.thinking.get("answer", True),
+            thinking=spent.thinking,
             prompt_version=prompt.tag,
         )
     )
@@ -612,11 +748,143 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
     return answer
 
 
+@dataclass
+class _Spent:
+    """What one model call used, however it ended. The step card reports it:
+    a call that timed out still took its seconds, and after a retry the step
+    is the whole of it, not only the attempt that answered."""
+
+    seconds: float = 0.0
+    thinking: bool = False
+
+    @property
+    def ms(self) -> int:
+        return int(self.seconds * 1000)
+
+
+async def _chat(
+    state: SessionState,
+    deps: AgentDeps,
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[dict[str, Any]] | None,
+    thinking: bool,
+    tag: str,
+    spent: _Spent,
+    last_chance: bool = False,
+) -> ChatResult:
+    """One model call held to the turn's budget.
+
+    The call's allowance is what is left of `total_budget_s`, worked out once
+    -- for the answer (`last_chance`) never less than `answer_min_s` -- and
+    every attempt comes out of that one allowance, so a retry does not get a
+    fresh floor. A planning or observing attempt is also capped at the client
+    timeout, which leaves the turn time for what comes after it. The answer's
+    thinking-off attempt is not capped: nothing comes after it, and in the
+    third 22 Sep run a 45 s cap ended it with a minute of the budget unused.
+
+    A thinking-on attempt that times out is tried once more with thinking off
+    and a capped output: a different request, which a blind retry of the same
+    one is not -- thinking is where the time goes, about four times the tokens
+    by our own measurement. The thinking-on attempt is capped so that the
+    retry still gets `min_call_s`, and for the answer it is skipped outright
+    when the model's recent speed could not produce `answer_thinking_tokens`
+    inside it. Every second an attempt used is charged to the turn, and to
+    `spent`, whether it answered or not.
+    """
+    config = deps.config
+    cap = deps.settings.llm_timeout_s
+    floor = config.answer_min_s if last_chance else 0.0
+    allowance = max(config.total_budget_s - state.active_s, floor)
+
+    def left() -> float:
+        return allowance - spent.seconds
+
+    async def attempt(
+        think: bool, max_tokens: int | None, timeout: float
+    ) -> ChatResult:
+        spent.thinking = think
+        started = deps.clock()
+        try:
+            result = await asyncio.to_thread(
+                partial(
+                    deps.llm.chat,
+                    messages,
+                    tools=tools,
+                    thinking=think,
+                    max_tokens=max_tokens,
+                    tag=tag,
+                    session_id=state.session_id,
+                    timeout_s=timeout,
+                )
+            )
+        except BaseException:
+            elapsed = deps.clock() - started
+            spent.seconds += elapsed
+            state.active_s += elapsed
+            raise
+        spent.seconds += result.duration_ms / 1000
+        state.active_s += result.duration_ms / 1000
+        return result
+
+    window = min(cap, allowance - config.min_call_s)
+    think_first = thinking and window >= config.min_call_s
+    if think_first and last_chance:
+        think_first = _fast_enough(state, config.answer_thinking_tokens, window)
+    if think_first:
+        try:
+            return await attempt(True, None, window)
+        except LlmTimeoutError:
+            if left() < config.min_call_s:
+                raise
+    return await attempt(
+        False,
+        config.fallback_max_tokens if thinking else None,
+        left() if last_chance else min(cap, left()),
+    )
+
+
+#: How many of the session's latest model calls `_recent_rate` averages over.
+RATE_SAMPLE = 4
+
+
+def _recent_rate(state: SessionState) -> float | None:
+    """Completion tokens per second over the session's latest model calls.
+
+    Measured over each call's whole duration, prompt processing included: the
+    rate that decides whether an answer fits in a window. Pooled rather than
+    averaged per call, so a five-token reply that spent two seconds reading a
+    long prompt does not pass for the model being slow. None until a model
+    call has answered.
+    """
+    calls = [
+        step.tokens
+        for step in state.steps
+        if step.node in ("plan", "observe", "answer")
+        and step.ok
+        and step.tokens is not None
+        and step.tokens.duration_ms > 0
+    ][-RATE_SAMPLE:]
+    seconds = sum(usage.duration_ms for usage in calls) / 1000
+    tokens = sum(usage.completion_tokens for usage in calls)
+    if seconds <= 0 or tokens <= 0:
+        return None
+    return tokens / seconds
+
+
+def _fast_enough(state: SessionState, tokens: int, window_s: float) -> bool:
+    """Could the model, at its recent speed, write `tokens` in `window_s`?
+    With nothing measured yet, assume it can: the configured default holds."""
+    rate = _recent_rate(state)
+    return rate is None or rate * window_s >= tokens
+
+
 async def _verify(state: SessionState, deps: AgentDeps, answer: str) -> None:
     """Check the answer against the tool output, then publish the verdict."""
     started_at = datetime.now(UTC)
-    # Run off the event loop: the real verifier makes a model call, and doing
-    # that inline would freeze the interface for the length of it.
+    # Run off the event loop. `AnswerVerifier` is rule-based and quick, but a
+    # verifier is injected, and one that calls a model would otherwise freeze
+    # the interface for the length of that call.
     verification = await asyncio.to_thread(deps.verifier.verify, answer, state)
     state.verification = verification
     state.steps.append(
@@ -643,27 +911,32 @@ async def _verify(state: SessionState, deps: AgentDeps, answer: str) -> None:
 # --------------------------------------------------------------------------
 
 
-async def _answer_abandoned_calls(state: SessionState) -> None:
-    """Write a tool message for every call the loop never got to run.
+#: What an unanswered call's tool message says, by why the turn stopped.
+_ABANDONED_DETAIL = {
+    "step_limit": "Adim sinirina ulasildi.",
+    "time_budget": "Sure butcesi doldu.",
+}
+
+
+def _answer_unanswered_calls(state: SessionState, detail: str, error: str) -> None:
+    """Write a tool message for every call in the history that has none.
 
     The step limit and the time budget both stop the loop while an assistant
-    message asking for a tool is already in the history. Leaving it unanswered
-    makes the very next request a protocol error, so the turn would not merely
-    be truncated, it would fail on the final answer and take the rest of the
-    session with it. Scanning the history rather than just `pending_calls`
-    makes this a repair for the invariant itself, whatever broke it.
+    message asking for a tool is already in the history, and a turn that dies
+    mid-step leaves one too. Leaving it unanswered makes the very next request
+    a protocol error, so the turn would not merely be truncated, it would fail
+    on the final answer and take the rest of the session with it. Scanning
+    the history rather than just `pending_calls` makes this a repair for the
+    invariant itself, whatever broke it. The repair steps are stamped with
+    `state.turn_no`, which `run_turn` has not yet advanced when it repairs a
+    dead turn: they belong to that turn.
     """
     answered = {
         message["tool_call_id"]
         for message in state.messages
         if message.get("role") == "tool"
     }
-    detail = {
-        "step_limit": "Adim sinirina ulasildi.",
-        "time_budget": "Sure butcesi doldu.",
-    }.get(state.truncated_reason or "", "Tur sonlandi.")
-
-    for message in state.messages:
+    for message in list(state.messages):
         for call in message.get("tool_calls") or []:
             call_id = call.get("id")
             if not call_id or call_id in answered:
@@ -680,7 +953,7 @@ async def _answer_abandoned_calls(state: SessionState) -> None:
                     tool=(call.get("function") or {}).get("name"),
                     ok=False,
                     summary=text,
-                    error=state.truncated_reason or "abandoned",
+                    error=error,
                     started_at=datetime.now(UTC),
                 )
             )
@@ -1018,7 +1291,11 @@ async def _ask(
             turn_no=state.turn_no,
             node="approval",
             ok=True,
-            summary=f"{request.kind}: kullanici '{decision.choice}' secti",
+            summary=(
+                f"{request.kind}: otomatik varsayilan '{decision.choice}'"
+                if decision.automatic
+                else f"{request.kind}: kullanici '{decision.choice}' secti"
+            ),
             started_at=started_at,
         )
     )
@@ -1033,8 +1310,13 @@ async def _ask(
         kind=request.kind,
         choice=decision.choice,
         note=decision.note,
+        automatic=decision.automatic,
     )
     return decision
+
+
+#: How many of a turn's tool warnings go into the answer prompt by name.
+MAX_ANSWER_WARNINGS = 10
 
 
 def _collected_warnings(state: SessionState) -> list[str]:
@@ -1043,6 +1325,11 @@ def _collected_warnings(state: SessionState) -> list[str]:
     A tool saying "weekly series averaged to monthly" changes what the numbers
     mean; an answer that does not repeat it is quietly wrong. Failed steps come
     after, so the answer can be honest about what did not run.
+
+    The first warnings are kept, not the last: `get_series` puts its unit
+    conversions first, and keeping the tail let one call's coverage notes and
+    a later deflate push them out. What does not fit is counted, not dropped
+    silently -- the full text is still in the turn's tool messages.
     """
     failures = [
         f"{step.tool or step.node}: {step.error}"
@@ -1054,9 +1341,15 @@ def _collected_warnings(state: SessionState) -> list[str]:
         # for a tool that failed in turn 1.
         if step.error and step.turn_no == state.turn_no
     ]
-    # Capped separately. A single tail slice would let four failed steps push
-    # out the unit conversion the answer is obliged to mention.
-    return [*state.warnings[-4:], *failures[-3:]]
+    # Capped separately, so failed steps cannot push out the unit conversion
+    # the answer is obliged to mention.
+    warnings = list(dict.fromkeys(state.warnings))
+    kept = warnings[:MAX_ANSWER_WARNINGS]
+    if len(warnings) > len(kept):
+        kept.append(
+            f"(+{len(warnings) - len(kept)} uyari daha; tam metni arac mesajlarinda)"
+        )
+    return [*kept, *failures[-3:]]
 
 
 def _truncated_text(reason: str | None) -> str:
@@ -1167,19 +1460,23 @@ def _fake_script(question: str) -> list[Any]:
     ]
 
 
-def _fake_deps(question: str) -> AgentDeps:
+def _fake_deps(questions: list[str]) -> AgentDeps:
     """Build a fully offline dependency set.
 
     The import is inside the function on purpose. `lakehouse_agent.testing`
     ships in the installed package so this flag, the eval runner and the Docker
     image can all reach it, but no production code path may depend on the
     fakes, and a module-level import here would make one.
+
+    One scripted turn per question, in order, so several `--question`s replay
+    as several turns of the same session.
     """
     from lakehouse_agent.testing.fake_llm import FakeLLM
     from lakehouse_agent.testing.fake_tools import make_fake_registry
 
+    script = [item for question in questions for item in _fake_script(question)]
     return AgentDeps(
-        llm=FakeLLM(_fake_script(question)),
+        llm=FakeLLM(script),
         registry=make_fake_registry(),
         settings=AgentSettings(MIA_API_KEY="fake-key-unused-offline"),
         sink=JsonlSink(),
@@ -1187,16 +1484,19 @@ def _fake_deps(question: str) -> AgentDeps:
 
 
 def _live_deps() -> AgentDeps:
-    """Real model, fake tools.
+    """Real model, real tools, synthetic data (`FakeLake`).
 
     The one thing the offline suite cannot tell us: whether the model actually
     picks the right tool, fills its arguments from the schema, and writes
-    sensible Turkish. The tools stay fake so a failure here is unambiguous -- it
-    is the model or the prompt, never the data layer.
+    sensible Turkish. The tools are the real ones -- the fake registry's
+    `transform_table` knows two operations and the prompt asks for eight --
+    and the data is `FakeLake`'s, with planted answers, so a failure here is
+    the model or the prompt, never the pool's data.
     """
     from dotenv import find_dotenv, load_dotenv
 
-    from lakehouse_agent.testing.fake_tools import make_fake_registry
+    from lakehouse_agent.testing.fake_lake import FakeLake
+    from lakehouse_agent.tools.toolset import make_registry
 
     # An entrypoint, so it is allowed to load .env. `usecwd` because otherwise
     # dotenv searches next to this file instead of next to the project.
@@ -1207,16 +1507,49 @@ def _live_deps() -> AgentDeps:
     settings = get_agent_settings()
     return AgentDeps(
         llm=MiaLLM(settings),
-        registry=make_fake_registry(),
+        registry=make_registry(),
         settings=settings,
+        lake=FakeLake(),
         sink=JsonlSink(),
     )
 
 
-def _summarise(state: SessionState, result: TurnResult) -> None:
-    """A human-readable recap on stderr, so stdout stays pure JSONL."""
+def _real_deps() -> AgentDeps:
+    """Real model, real tools, real data: what the demo runs.
+
+    No fakes are imported here, so this mode cannot put a synthetic number on
+    screen. The lake reads the committed gold data and, on the first search,
+    embeds the pool catalog once (cached on disk afterwards).
+    """
+    from dotenv import find_dotenv, load_dotenv
+
+    load_dotenv(find_dotenv(usecwd=True))
+
+    from lakehouse_agent.config import get_agent_settings
+    from lakehouse_agent.tools.lake_adapter import LakeAdapter
+    from lakehouse_agent.tools.toolset import make_registry
+
+    settings = get_agent_settings()
+    return AgentDeps(
+        llm=MiaLLM(settings),
+        registry=make_registry(),
+        settings=settings,
+        lake=LakeAdapter(),
+        sink=JsonlSink(),
+    )
+
+
+def _summarise(state: SessionState, result: TurnResult | None) -> None:
+    """A human-readable recap on stderr, so stdout stays pure JSONL.
+
+    Also printed when the turn failed (`result` None): the steps that did run
+    and the tables they built are still the session's, and a bare error line
+    hid them -- the 22 Sep live run lost a finished analysis that way.
+    """
     print("", file=sys.stderr)
     for step in state.steps:
+        if step.turn_no != state.turn_no:
+            continue
         mark = "ok" if step.ok is not False else "HATA"
         detail = f" [{step.tool}]" if step.tool else ""
         print(
@@ -1224,6 +1557,15 @@ def _summarise(state: SessionState, result: TurnResult) -> None:
             f"{step.duration_ms:>6} ms  {step.summary[:60]}",
             file=sys.stderr,
         )
+    for ref, frame in state.tables.items():
+        marker = " (aktif)" if ref == state.active_table else ""
+        print(f"\n  TABLO {describe_table(ref, frame)}{marker}", file=sys.stderr)
+    if result is None:
+        print(
+            f"\n  kesinti {state.truncated_reason or 'yok'} | CEVAP YOK\n",
+            file=sys.stderr,
+        )
+        return
     print(
         f"\n  sure {result.duration_ms} ms | token "
         f"{result.usage.prompt_tokens}+{result.usage.completion_tokens} | "
@@ -1233,17 +1575,23 @@ def _summarise(state: SessionState, result: TurnResult) -> None:
     print(f"\n  CEVAP: {result.answer}\n", file=sys.stderr)
 
 
-def _cli(argv: list[str] | None = None) -> int:
-    """`python -m lakehouse_agent.agent.loop --fake --question "..."`
+DEFAULT_QUESTION = "Konut kredisi faizi nasil seyretti?"
 
-    Two modes. `--fake` is offline and deterministic: the smoke test the suite
-    relies on. `--live` swaps in the real model but keeps the fake tools, which
-    is the only way to see whether MIA chooses correctly before the real tools
-    exist.
+
+def _cli(argv: list[str] | None = None) -> int:
+    """`python -m lakehouse_agent.agent.loop --real --question "..." [--question ...]`
+
+    Three modes, and no default, because they differ in what is real. `--fake`
+    is offline and deterministic: the smoke test the suite relies on. `--live`
+    is the real model and tools over synthetic data, to judge the model alone.
+    `--real` is the real model over the real tools and data: the demo.
+
+    Each `--question` is one turn of the same session, so a follow-up such as
+    "tabloyu bozmadan ..." sees the table the previous question built.
     """
     import argparse
 
-    parser = argparse.ArgumentParser(description="Agent dongusunu tek tur calistirir")
+    parser = argparse.ArgumentParser(description="Agent dongusunu calistirir")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
         "--fake",
@@ -1253,27 +1601,56 @@ def _cli(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--live",
         action="store_true",
-        help="Gercek MIA modeli, sahte araclar; MIA_API_KEY gerekli",
+        help="Gercek MIA modeli ve araclar, sentetik veri (FakeLake); MIA_API_KEY gerekli",
     )
-    parser.add_argument("--question", default="Konut kredisi faizi nasil seyretti?")
+    mode.add_argument(
+        "--real",
+        action="store_true",
+        help="Gercek MIA modeli, gercek araclar ve veri; MIA_API_KEY gerekli",
+    )
+    parser.add_argument(
+        "--question",
+        action="append",
+        help="Sorulacak soru; birden cok verilirse ayni oturumda sirayla sorulur",
+    )
     args = parser.parse_args(argv)
+    questions = args.question or [DEFAULT_QUESTION]
 
     state = initial_state("cli")
     try:
-        deps = _live_deps() if args.live else _fake_deps(args.question)
+        if args.real:
+            deps = _real_deps()
+        elif args.live:
+            deps = _live_deps()
+        else:
+            deps = _fake_deps(questions)
     except Exception as exc:  # noqa: BLE001 - a missing key is a normal outcome
         print(f"Ayarlar okunamadi: {exc}", file=sys.stderr)
         print("MIA_API_KEY .env dosyasinda tanimli mi?", file=sys.stderr)
         return 2
 
-    try:
-        result = asyncio.run(run_turn(state, deps, args.question))
-    except AgentError as exc:
-        print(json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False))
-        return 1
+    async def run_all() -> int:
+        # One event loop for every question. `asyncio.run` per question waited
+        # at each exit for any tool thread a step timeout had abandoned, which
+        # held the next question back for as long as that tool kept running.
+        code = 0
+        for question in questions:
+            try:
+                result = await run_turn(state, deps, question)
+            except AgentError as exc:
+                print(
+                    json.dumps(
+                        {"type": "error", "message": str(exc)}, ensure_ascii=False
+                    )
+                )
+                _summarise(state, None)
+                return 1
+            _summarise(state, result)
+            if not result.answer:
+                code = 1
+        return code
 
-    _summarise(state, result)
-    return 0 if result.answer else 1
+    return asyncio.run(run_all())
 
 
 if __name__ == "__main__":  # pragma: no cover

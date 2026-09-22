@@ -288,7 +288,7 @@ def build_gold(
     return OBSERVATIONS_PATH, SERIES_CATALOG_PATH
 
 
-def _ensure_tables(db_path: Path = GOLD_DB_PATH) -> None:
+def _ensure_tables(db_path: Path | None = None) -> None:
     """(Re)materialize the two parquet files as native tables inside the
     DuckDB file itself, not as views over external parquet paths.
 
@@ -299,7 +299,9 @@ def _ensure_tables(db_path: Path = GOLD_DB_PATH) -> None:
     external access) means later read-only queries never need to touch the
     filesystem beyond that one file.
     """
-    con = duckdb.connect(str(db_path))
+    # Resolved at call time: a default bound at import would ignore a test's
+    # (or a caller's) change of GOLD_DB_PATH.
+    con = duckdb.connect(str(db_path or GOLD_DB_PATH))
     try:
         con.execute(
             "CREATE OR REPLACE TABLE observations AS "
@@ -313,6 +315,23 @@ def _ensure_tables(db_path: Path = GOLD_DB_PATH) -> None:
         con.close()
 
 
+def _stale(db_path: Path) -> bool:
+    """Missing, or older than a parquet file it copies.
+
+    The file is derived and gitignored. Built only when missing, it kept
+    serving the old tables after a pull that updated the committed parquet --
+    and the adapter, which reads the catalog parquet directly, then disagreed
+    with it about which series exist.
+    """
+    if not db_path.exists():
+        return True
+    built = db_path.stat().st_mtime
+    return any(
+        source.exists() and source.stat().st_mtime > built
+        for source in (OBSERVATIONS_PATH, SERIES_CATALOG_PATH)
+    )
+
+
 def connect() -> duckdb.DuckDBPyConnection:
     """Read-only DuckDB connection over the `observations` / `series_catalog`
     tables.
@@ -324,7 +343,7 @@ def connect() -> duckdb.DuckDBPyConnection:
     GOLD_DB_PATH (see _ensure_tables), ordinary SELECTs against them still
     work with external access fully disabled.
     """
-    if not GOLD_DB_PATH.exists():
+    if _stale(GOLD_DB_PATH):
         _ensure_tables()
     return duckdb.connect(
         str(GOLD_DB_PATH), read_only=True, config={"enable_external_access": "false"}
