@@ -29,13 +29,14 @@ OBSERVATION_COLUMNS = [
     "unit",
     "source",
     "fetched_at",
+    "obs_date",
 ]
 
 
 # --- shapes ---------------------------------------------------------------
 
 
-def test_get_returns_the_seven_gold_columns_in_order(fake_lake):
+def test_get_returns_the_gold_columns_in_order(fake_lake):
     frame = fake_lake.get([CREDIT_SERIES], "2021-01", "2021-06")
     assert list(frame.columns) == OBSERVATION_COLUMNS
 

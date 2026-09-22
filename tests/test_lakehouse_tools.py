@@ -134,9 +134,9 @@ def test_a_weekly_rate_is_averaged_into_months_and_says_so(session):
     )
 
     assert any(RATE in w and "ortalamasi" in w for w in result.warnings)
-    # The month a week counts in is its Monday's, and that is said; "month-end
-    # balance" was a claim the data does not support.
-    assert any("Pazartesi" in w for w in result.warnings)
+    # The month a week counts in is the one it was observed in, and that is
+    # said: until 22 Sep it was silently its Monday's.
+    assert any("gozlendigi gunun" in w for w in result.warnings)
     column = result.columns[0]
     assert (column.freq, column.kind, column.op) == ("M", "rate", "to_freq")
     assert "ortalamasi" in column.formula
@@ -652,20 +652,51 @@ def test_real_count_of_houses_is_not_deflated(real):
     assert "parasal bir tutar degil" in result.summary
 
 
-def test_real_weekly_month_with_missing_weeks_is_pointed_out(real):
+def test_real_weekly_series_has_no_phantom_month_before_the_window(real):
     """Asked from 2020-12, the pool's single December week (Monday 28 Dec,
-    observed 1 Jan) came back as a "monthly average" with no word said."""
+    observed Friday 1 Jan) came back as a December "monthly average". By
+    observation date that week is January's, and there is no December."""
     result = real.run(
         "get_series", series_ids=["evds:TP.KTF12"], start="2020-12", end="2021-03"
     )
 
-    partial = [w for w in result.warnings if "eksik haftayla" in w]
-    assert partial and "2020-12 (1/4 hafta)" in partial[0]
+    months = list(real.table["period"].dt.strftime("%Y-%m"))
+    assert months == ["2021-01", "2021-02", "2021-03"]
+    assert not [w for w in result.warnings if "eksik haftayla" in w]
+    assert any("Istenen baslangic 2020-12" in w for w in result.warnings)
 
 
-def test_real_search_without_embeddings_does_not_claim_absence():
-    """ "enflasyon" shares no word with the CPI's catalog text; on the keyword
-    fallback, "the pool lacks it" was a false claim about the pool."""
+def test_a_month_with_fewer_weeks_than_fridays_is_pointed_out():
+    """January 2021 has five Fridays; a series with four of them makes a
+    monthly average from part of the month, which the table cannot show."""
+    from lakehouse_agent.tools.lakehouse import _partial_period_warnings
+
+    fridays = ["2021-01-01", "2021-01-08", "2021-01-15", "2021-01-29"]
+    long = pd.DataFrame(
+        {
+            "series_id": "evds:TP.X",
+            "obs_date": pd.to_datetime(fridays),
+            "value": 1.0,
+        }
+    )
+    info = {"evds:TP.X": pd.Series({"freq": "W"})}
+
+    warnings = _partial_period_warnings(
+        long, ["evds:TP.X"], {"evds:TP.X": "TP_X"}, info, "M"
+    )
+
+    assert warnings == [
+        "TP_X: su donemler eksik haftayla hesaplandi, deger donemin tamamini "
+        "yansitmiyor: 2021-01 (4/5 hafta)."
+    ]
+
+
+def test_real_search_without_embeddings_says_its_ranking_is_coarse():
+    """On the keyword fallback the model has to learn two things: these
+    candidates were not ranked by meaning, and an empty answer would prove
+    nothing about the pool (planner rule 5). Over 45k series a short query
+    now matches something whatever it asks -- what it must not do is look
+    like a semantic hit."""
     from lakehouse_agent.lake import gold
     from lakehouse_agent.tools.lake_adapter import LakeAdapter
 
@@ -678,9 +709,109 @@ def test_real_search_without_embeddings_does_not_claim_absence():
     session = Session(LakeAdapter(embed_documents=unavailable, embed_query=unavailable))
 
     result = session.run("search_catalog", query="enflasyon")
-    assert result.ok and result.preview == []
-    assert "gostermez" in result.summary
+    assert result.ok
+    assert any("kelime eslesmesiyle" in warning for warning in result.warnings)
+    assert all(hit["eslesme"] == "kelime" for hit in result.preview)
     assert "eslesen seri yok" not in result.summary
 
-    found = session.run("search_catalog", query="tufe")
+    # The words are in the series' own text: the coarse search still finds it.
+    found = session.run("search_catalog", query="TÜFE genel endeks")
     assert "evds:TP.TUKFIY2025.GENEL" in [hit["series_id"] for hit in found.preview]
+
+
+def test_real_weekly_series_can_come_back_weekly(real):
+    """ "Haftalik goster": the table keeps the weeks, and nothing is
+    converted, so nothing is said about a conversion."""
+    result = real.run(
+        "get_series",
+        series_ids=["evds:TP.KTF12"],
+        start="2021-01",
+        end="2021-02",
+        freq="W",
+    )
+
+    assert result.ok, result.summary
+    assert len(real.table) == 9  # Fridays 1 Jan .. 26 Feb 2021, by their Mondays
+    assert result.columns[0].freq == "W"
+    assert not any("cevrildi" in w for w in result.warnings)
+    assert "hafta" in result.summary
+
+
+def test_a_monthly_series_is_not_put_in_a_weekly_table(real):
+    """Each week would repeat the month's value: data made up (CLAUDE.md #4)."""
+    result = real.run(
+        "get_series",
+        series_ids=["bddk:aylik:tuketici:konut:TL:sektor"],
+        start="2021-01",
+        end="2021-03",
+        freq="W",
+    )
+
+    assert not result.ok
+    assert "veri uydurmak" in result.summary
+
+
+def test_a_quarterly_table_takes_the_quarters_last_balance(real):
+    from lakehouse_agent.lake import gold
+
+    result = real.run(
+        "get_series",
+        series_ids=["bddk:aylik:tuketici:konut:TL:sektor"],
+        start="2021-01",
+        end="2021-06",
+        freq="Q",
+    )
+
+    monthly = gold.get(["bddk:aylik:tuketici:konut:TL:sektor"], "2021-01", "2021-06")
+    assert list(real.table.iloc[:, 1]) == [
+        monthly["value"].iloc[2],
+        monthly["value"].iloc[5],
+    ]
+    assert any("ceyregin son degeri" in w for w in result.warnings)
+    assert "2021-Q1 - 2021-Q2" in result.summary
+
+
+def test_into_active_refuses_another_frequency(real):
+    real.run(
+        "get_series",
+        series_ids=["bddk:aylik:tuketici:konut:TL:sektor"],
+        start="2021-01",
+        end="2021-06",
+    )
+
+    result = real.run(
+        "get_series",
+        series_ids=["evds:TP.KTF12"],
+        start="2021-01",
+        end="2021-06",
+        freq="W",
+        into="active",
+    )
+
+    assert not result.ok
+    assert "freq='M'" in result.summary
+
+
+def test_ytd_rebuilds_the_running_total_of_a_monthly_flow(real):
+    """House sales are a monthly flow: January's total is January's sales,
+    February's is January plus February."""
+    real.run(
+        "get_series",
+        series_ids=["evds:TP.AKONUTSAT1.KTRTOPLAM"],
+        start="2024-01",
+        end="2024-03",
+    )
+
+    result = real.run("transform_table", op="ytd", column="TP_AKONUTSAT1_KTRTOPLAM")
+
+    sales = list(real.table["TP_AKONUTSAT1_KTRTOPLAM"])
+    totals = list(real.table["TP_AKONUTSAT1_KTRTOPLAM_yilbasi"])
+    assert result.ok
+    assert totals == [sales[0], sales[0] + sales[1], sum(sales)]
+
+
+def test_ytd_is_refused_for_a_balance(scenario):
+    result = scenario.run("transform_table", op="ytd", column=CREDIT)
+
+    assert not result.ok
+    assert "aylik bir akim degil" in result.summary

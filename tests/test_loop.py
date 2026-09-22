@@ -872,6 +872,27 @@ def test_a_failed_retry_records_the_attempts_that_ran():
     assert plan.duration_ms == 90_000  # 45 s thinking on, then 45 s off
 
 
+def test_the_answer_request_does_not_end_on_the_models_own_note():
+    """Ending on the observe step's "Veriler hazir." made DeepSeek continue
+    that message instead of answering (22 Sep: 16 tokens of nonsense)."""
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            FakeLLM.text("Veriler hazir."),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    turn(state, deps)
+
+    sent = deps.llm.calls[-1]["messages"]
+    assert sent[-1]["role"] == "tool"
+    assert all(m.get("content") != "Veriler hazir." for m in sent)
+    # The session keeps it; only the request leaves it out.
+    assert any(m.get("content") == "Veriler hazir." for m in state.messages)
+
+
 def test_a_failed_answer_is_in_the_step_log():
     """Both answer attempts timing out ended the turn with no step saying
     where it ended or what the answer had cost."""
@@ -2006,3 +2027,72 @@ def test_fetching_into_the_active_table_refuses_to_rename_a_column_it_finds():
     assert list(state.tables["t01_get_series"].columns) == ["period", "TP_KTF12"]
     assert not any("_x" in str(column) for column in state.tables["t01_get_series"])
     assert "zaten var" in tool_messages(state)[-1]["content"]
+
+
+# --------------------------------------------------------------------------
+# The observing call's output cap
+# --------------------------------------------------------------------------
+
+
+def _chat_calls(deps, node):
+    return [
+        call
+        for call in deps.llm.calls
+        if call["kind"] == "chat" and str(call["tag"] or "").startswith(node)
+    ]
+
+
+def test_only_the_observing_call_is_capped():
+    """Observing says what to do next in a sentence; it is not where the
+    answer is written (planner rule 14). Planning and answering are not
+    capped: a cap low enough to stop prose would cut a plan's tool call or
+    an answer in half."""
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE),
+            FakeLLM.text("Veriler hazir."),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    turn(state, deps)
+
+    assert [call["max_tokens"] for call in _chat_calls(deps, "observe")] == [
+        deps.config.observe_max_tokens
+    ]
+    assert [call["max_tokens"] for call in _chat_calls(deps, "plan")] == [None]
+    assert [call["max_tokens"] for call in _chat_calls(deps, "answer")] == [None]
+
+
+def test_a_tool_call_cut_off_by_the_cap_is_asked_for_again_uncapped():
+    """Trimming prose is the point; trimming an action is not. A capped
+    observing call that came back mid-tool-call is redone with no cap, and
+    the loop runs the tool it then asks for."""
+    truncated = FakeLLM.tool_call(*FETCH_CREDIT, call_id="cut")
+    truncated = truncated.model_copy(update={"finish_reason": "length"})
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE),
+            truncated,
+            FakeLLM.tool_call(*FETCH_CREDIT, call_id="whole"),
+            FakeLLM.text("Veriler hazir."),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    turn(state, deps)
+
+    observing = _chat_calls(deps, "observe")
+    assert [call["max_tokens"] for call in observing] == [
+        deps.config.observe_max_tokens,
+        None,  # asked again, uncapped
+        deps.config.observe_max_tokens,
+    ]
+    assert [
+        call["id"]
+        for message in assistant_tool_calls(state)
+        for call in message["tool_calls"]
+    ] == ["call_1", "whole"]
+    assert not orphan_call_ids(state)

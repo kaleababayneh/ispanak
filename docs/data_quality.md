@@ -2,25 +2,221 @@
 
 Otomatik üretildi: `python -m lakehouse_agent.lake.quality`. Kaynak: `data/gold/observations.parquet` + `data/gold/series_catalog.parquet`.
 
-Silver aşamasında birleştirilen mükerrer (aynı seri+dönem) satır sayısı: 8.
+Silver aşamasında birleştirilen mükerrer (aynı seri+dönem) satır sayısı: 13668.
+
+## ⚠️ Eksik dönem uyarısı
+
+- **evds:TP.ALTINPIYASA.ISSAY04** (Altın - İşlem Sayısı - Euro/ons): 1338 eksik dönem
+- **evds:TP.ALTINPIYASA.MIKT04** (Altın - İşlem Miktarı (kg) - Euro/ons): 1338 eksik dönem
+- **evds:TP.ALTINPIYASA.HACM04** (Altın - İşlem Hacmi - Euro/ons): 1338 eksik dönem
+- **evds:TP.ALTINPIYASA.AGORT04** (Altın - Ağırlıklı Ortalama - Euro/ons): 1303 eksik dönem
+- **evds:TP.ALTINPIYASA.KAP04** (Altın - Kapanış Fiyatı  - Euro/ons): 1303 eksik dönem
+- **evds:TP.PLATINPIYASA.KAP03** (Platin - Kapanış Fiyatı - USD/ons): 1264 eksik dönem
+- **evds:TP.PLATINPIYASA.MIKT03** (Platin - İşlem Miktarı (kg) - USD/ons): 1264 eksik dönem
+- **evds:TP.PLATINPIYASA.AGORT03** (Platin - Ağırlıklı Ortalama - USD/ons): 1264 eksik dönem
+- **evds:TP.PLATINPIYASA.HACM03** (Platin - İşlem Hacmi - USD/ons): 1264 eksik dönem
+- **evds:TP.PLATINPIYASA.ISSAY03** (Platin - İşlem Sayısı - USD/ons): 1264 eksik dönem
+- **evds:TP.PY.P08.ON** ((ON) TCMB İşlemleri SATIŞ Tutarı (Bin TL) (1 Gecelik İşlem)): 1138 eksik dönem
+- **evds:TP.PY.P03.KV** ((KV) Çift Taraflı İşlem Hacmi (Bin TL) (Kırık Vade)): 1126 eksik dönem
+- **evds:TP.PY.P04.KV** ((KV) Gerçekleşen En DÜŞÜK Basit Faiz Oranı (%) (Kırık Vade)): 1126 eksik dönem
+- **evds:TP.PY.P05.KV** ((KV) Gerçekleşen En YUKSEK Basit Faiz Oranı (%) (Kırık Vade)): 1126 eksik dönem
+- **evds:TP.PY.P06.KV** ((KV) Gerçekleşen Basit Faiz Oranı AĞIRLIKLI ORTALAMA (%) (Kırık Vade)): 1126 eksik dönem
+- **evds:TP.PY.P08.KV** ((KV) TCMB İşlemleri SATIŞ Tutarı (Bin TL) (Kırık Vade)): 1126 eksik dönem
+- **evds:TP.TLDOV03.FWD** (7. Yurt Dışı Merkez ve Şubeler (Vadeli)): 1103 eksik dönem
+- **evds:TP.ALTINPIYASA.KAP05** (Altın - Kapanış Fiyatı  - TL/gr): 1046 eksik dönem
+- **evds:TP.ALTINPIYASA.AGORT05** (Altın - Ağırlıklı Ortalama - TL/gr): 1046 eksik dönem
+- **evds:TP.ALTINPIYASA.MIKT05** (Altın - İşlem Miktarı (kg) - TL/gr): 1042 eksik dönem
+- **evds:TP.ALTINPIYASA.ISSAY05** (Altın - İşlem Sayısı - TL/gr): 1042 eksik dönem
+- **evds:TP.ALTINPIYASA.HACM05** (Altın - İşlem Hacmi - TL/gr): 1042 eksik dönem
+- **evds:TP.PY.P03.2H** ((2H) Çift Taraflı İşlem Hacmi (Bin TL) (2 Haftalık İşlem)): 1038 eksik dönem
+- **evds:TP.PY.P05.2H** ((2H) Gerçekleşen En YUKSEK Basit Faiz Oranı (%) (2 Haftalık İşlem)): 1038 eksik dönem
+- **evds:TP.PY.P06.2H** ((2H) Gerçekleşen Basit Faiz Oranı AĞIRLIKLI ORTALAMA (%) (2 Haftalık İşlem)): 1038 eksik dönem
+- **evds:TP.PY.P08.2H** ((2H) TCMB İşlemleri SATIŞ Tutarı (Bin TL) (2 Haftalık İşlem)): 1038 eksik dönem
+- **evds:TP.PY.P04.2H** ((2H) Gerçekleşen En DÜŞÜK Basit Faiz Oranı (%) (2 Haftalık İşlem)): 1038 eksik dönem
+- **evds:TP.DF.DE.HACM** (DÖVİZ/EFEKTİF Hacim (USD) (İşlem hacimleri ve adetleri çift taraflıdır)): 826 eksik dönem
+- **evds:TP.DF.DE.ADED** (DÖVİZ/EFEKTİF Adet (İşlem hacimleri ve adetleri çift taraflıdır)): 826 eksik dönem
+- **evds:TP.DF.PT.HACM** (PİYASA TOPLAMI Hacim (USD) (İşlem hacimleri ve adetleri çift taraflıdır)): 822 eksik dönem
+- **evds:TP.DF.PT.ADED** (PİYASA TOPLAMI Adet (İşlem hacimleri ve adetleri çift taraflıdır)): 822 eksik dönem
+- **evds:TP.GUMUSPIYASA.KAP05** (Gümüş - Kapanış Fiyatı - TL/gr): 733 eksik dönem
+- **evds:TP.GUMUSPIYASA.AGORT05** (Gümüş - Ağırlıklı Ortalama - TL/gr): 733 eksik dönem
+- **evds:TP.GUMUSPIYASA.ISSAY05** (Gümüş - İşlem Sayısı - TL/gr): 733 eksik dönem
+- **evds:TP.GUMUSPIYASA.MIKT05** (Gümüş - İşlem Miktarı (kg) - TL/gr): 733 eksik dönem
+- **evds:TP.GUMUSPIYASA.HACM05** (Gümüş - İşlem Hacmi - TL/gr): 733 eksik dönem
+- **evds:TP.RP02.MYT** (Müşterilerle Yapılan Ters Repo İşlemleri): 703 eksik dönem
+- **evds:TP.OSGMFAST.AKO** (2.3. Katılımcı Ödemesi (Tutar)): 626 eksik dönem
+- **evds:TP.OSGMFAST.CKO** (1.3. Katılımcı Ödemesi (Adet)): 626 eksik dönem
+- **evds:TP.PY.P09.KVI** ((KVI) TCMB İşlemleri İhale İlan Tutarı (Bin TL) (Kırık Vade Depo Alım İhalesi)): 505 eksik dönem
+- **evds:TP.PY.P11.KVI** ((KVI) Kırık Vade TL Depo Alım İhalesi - En Yüksek Teklif Faizi (%)): 505 eksik dönem
+- **evds:TP.PY.P07.KVI** ((KVI) TCMB İşlemleri ALIŞ Tutarı (Bin TL) (Kırık Vade Depo Alım İhalesi)): 505 eksik dönem
+- **evds:TP.PY.P04.KVI** ((KVI) Gerçekleşen En DÜŞÜK Basit Faiz Oranı (%) (Kırık Vade Depo Alım İhalesi)): 505 eksik dönem
+- **evds:TP.PY.P05.KVI** ((KVI) Gerçekleşen En YÜKSEK Basit Faiz Oranı (%) (Kırık Vade Depo Alım İhalesi)): 505 eksik dönem
+- **evds:TP.PY.P12.KVI** ((KVI) Kırık Vade TL Depo Alım İhalesi - En Düşük Teklif Faizi (%)): 505 eksik dönem
+- **evds:TP.PY.P06.KVI** ((KVI) Gerçekleşen Basit Faiz Oranı AĞIRLIKLI ORTALAMA (%) (Kırık Vade Depo Alım İhalesi)): 505 eksik dönem
+- **evds:TP.PY.P10.KVI** ((KVI) Kırık Vade TL Depo Alım İhalesi - Toplam Teklif Tutarı (Bin TL)): 505 eksik dönem
+- **evds:TP.PY.P12.KV2** ((KV2) Kırık Vade-2 TL Depo Alım İhalesi - En Düşük Teklif Faizi (%)): 483 eksik dönem
+- **evds:TP.PY.P11.KV2** ((KV2) Kırık Vade-2 TL Depo Alım İhalesi - En Yüksek Teklif Faizi (%)): 483 eksik dönem
+- **evds:TP.PY.P10.KV2** ((KV2) Kırık Vade-2 TL Depo Alım İhalesi - Toplam Teklif Tutarı (Bin TL)): 483 eksik dönem
+- **evds:TP.PY.P09.KV2** ((KV2) TCMB İşlemleri İhale İlan Tutarı (Bin TL) (Kırık Vade Depo Alım İhalesi)): 483 eksik dönem
+- **evds:TP.GUMUSPIYASA.KAP02** (Gümüş - Kapanış Fiyatı - TL/kg): 461 eksik dönem
+- **evds:TP.GUMUSPIYASA.AGORT02** (Gümüş - Ağırlıklı Ortalama - TL/kg): 461 eksik dönem
+- **evds:TP.PY.P07.1HI** ((1HI) TCMB İşlemleri ALIŞ Tutarı (Bin TL) (1 Haftalık Depo Alım İhalesi)): 394 eksik dönem
+- **evds:TP.PY.P04.1HI** ((1HI) Gerçekleşen En DÜŞÜK Basit Faiz Oranı (%) (1 Haftalık Depo Alım İhalesi)): 394 eksik dönem
+- **evds:TP.PY.P05.1HI** ((1HI) Gerçekleşen En YUKSEK Basit Faiz Oranı (%) (1 Haftalık Depo Alım İhalesi)): 394 eksik dönem
+- **evds:TP.PY.P06.1HI** ((1HI) Gerçekleşen Basit Faiz Oranı AĞIRLIKLI ORTALAMA (%) (1 Haftalık Depo Alım İhalesi)): 394 eksik dönem
+- **evds:TP.PY.P03.1HI** ((1HI) Çift Taraflı İşlem Hacmi (Bin TL) (1 Haftalık Depo Alım İhalesi)): 394 eksik dönem
+- **evds:TP.PY.P11.1HI** ((1HI) 1 Haftalık TL Depo Alım İhalesi - En Yüksek Teklif Faizi (%)): 389 eksik dönem
+- **evds:TP.PY.P12.1HI** ((1HI) 1 Haftalık TL Depo Alım İhalesi - En Düşük Teklif Faizi (%)): 389 eksik dönem
+- **evds:TP.PY.P10.1HI** ((1HI) 1 Haftalık TL Depo Alım İhalesi - Toplam Teklif Tutarı (Bin TL)): 389 eksik dönem
+- **evds:TP.GUMUSPIYASA.ISSAY02** (Gümüş - İşlem Sayısı - TL/kg): 374 eksik dönem
+- **evds:TP.GUMUSPIYASA.MIKT02** (Gümüş - İşlem Miktarı (kg) - TL/kg): 374 eksik dönem
+- **evds:TP.GUMUSPIYASA.HACM02** (Gümüş - İşlem Hacmi - TL/kg): 374 eksik dönem
+- **evds:TP.GUMUSPIYASA.HACM04** (Gümüş - İşlem Hacmi - Euro/ons): 368 eksik dönem
+- **evds:TP.GUMUSPIYASA.KAP04** (Gümüş - Kapanış Fiyatı - Euro/ons): 368 eksik dönem
+- **evds:TP.GUMUSPIYASA.ISSAY04** (Gümüş - İşlem Sayısı - Euro/ons): 368 eksik dönem
+- **evds:TP.GUMUSPIYASA.AGORT04** (Gümüş - Ağırlıklı Ortalama - Euro/ons): 368 eksik dönem
+- **evds:TP.GUMUSPIYASA.MIKT04** (Gümüş - İşlem Miktarı (kg) - Euro/ons): 368 eksik dönem
+- **evds:TP.PY.P09.1HI** ((1HI) TCMB İşlemleri İhale İlan Tutarı (Bin TL) (1 Haftalık Depo Alım İhalesi)): 352 eksik dönem
+- **evds:TP.GUMUSPIYASA.AGORT03** (Gümüş - Ağırlıklı Ortalama - USD/ons): 328 eksik dönem
+- **evds:TP.GUMUSPIYASA.KAP03** (Gümüş - Kapanış Fiyatı - USD/ons): 328 eksik dönem
+- **evds:TP.PY.P10.2HI** ((2HI) 2 Haftalık TL Depo Alım İhalesi - Toplam Teklif Tutarı (Bin TL)): 324 eksik dönem
+- **evds:TP.PY.P12.2HI** ((2HI) 2 Haftalık TL Depo Alım İhalesi - En Düşük Teklif Faizi (%)): 324 eksik dönem
+- **evds:TP.PY.P11.2HI** ((2HI) 2 Haftalık TL Depo Alım İhalesi - En Yüksek Teklif Faizi (%)): 324 eksik dönem
+- **evds:TP.PY.P09.2HI** ((2HI) TCMB İşlemleri İhale İlan Tutarı (Bin TL) (2 Haftalık Depo Alım İhalesi)): 323 eksik dönem
+- **evds:TP.GUMUSPIYASA.MIKT03** (Gümüş - İşlem Miktarı (kg) - USD/ons): 300 eksik dönem
+- **evds:TP.GUMUSPIYASA.HACM03** (Gümüş - İşlem Hacmi - USD/ons): 300 eksik dönem
+- **evds:TP.GUMUSPIYASA.ISSAY03** (Gümüş - İşlem Sayısı - USD/ons): 300 eksik dönem
+- **evds:TP.PALADYUMPIYASA.AGORT03** (Paladyum - Ağırlıklı Ortalama - USD/ons): 259 eksik dönem
+- **evds:TP.PALADYUMPIYASA.HACM03** (Paladyum - İşlem Hacmi - USD/ons): 259 eksik dönem
+- **evds:TP.PALADYUMPIYASA.MIKT03** (Paladyum - İşlem Miktarı (kg) - USD/ons): 259 eksik dönem
+- **evds:TP.PALADYUMPIYASA.KAP03** (Paladyum - Kapanış Fiyatı - USD/ons): 259 eksik dönem
+- **evds:TP.PALADYUMPIYASA.ISSAY03** (Paladyum - İşlem Sayısı - USD/ons): 259 eksik dönem
+- **evds:TP.PY.P07.4HI** ((4HI) TCMB İşlemleri ALIŞ Tutarı (Bin TL) (4 Haftalık Depo Alım İhalesi)): 220 eksik dönem
+- **evds:TP.PY.P05.4HI** ((4HI) Gerçekleşen En YUKSEK Basit Faiz Oranı (%) (4 Haftalık Depo Alım İhalesi)): 220 eksik dönem
+- **evds:TP.PY.P06.4HI** ((4HI) Gerçekleşen Basit Faiz Oranı AĞIRLIKLI ORTALAMA (%) (4 Haftalık Depo Alım İhalesi)): 220 eksik dönem
+- **evds:TP.PY.P04.4HI** ((4HI) Gerçekleşen En DÜŞÜK Basit Faiz Oranı (%) (4 Haftalık Depo Alım İhalesi)): 220 eksik dönem
+- **evds:TP.PY.P11.4HI** ((4HI) 4 Haftalık TL Depo Alım İhalesi - En Yüksek Teklif Faizi (%)): 220 eksik dönem
+- **evds:TP.PY.P03.4HI** ((4HI) Çift Taraflı İşlem Hacmi (Bin TL) (4 Haftalık Depo Alım İhalesi)): 220 eksik dönem
+- **evds:TP.PY.P10.4HI** ((4HI) 4 Haftalık TL Depo Alım İhalesi - Toplam Teklif Tutarı (Bin TL)): 220 eksik dönem
+- **evds:TP.PY.P12.4HI** ((4HI) 4 Haftalık TL Depo Alım İhalesi - En Düşük Teklif Faizi (%)): 220 eksik dönem
+- **evds:TP.PY.P09.4HI** ((4HI) TCMB İşlemleri İhale İlan Tutarı (Bin TL) (4 Haftalık Depo Alım İhalesi)): 218 eksik dönem
+- **evds:TP.PY.P05.2HI** ((2HI) Gerçekleşen En YUKSEK Basit Faiz Oranı (%) (2 Haftalık Depo Alım İhalesi)): 215 eksik dönem
+- **evds:TP.PY.P07.2HI** ((2HI) TCMB İşlemleri ALIŞ Tutarı (Bin TL) (2 Haftalık Depo Alım İhalesi)): 215 eksik dönem
+- **evds:TP.PY.P03.2HI** ((2HI) Çift Taraflı İşlem Hacmi (Bin TL) (2 Haftalık Depo Alım İhalesi)): 215 eksik dönem
+- **evds:TP.PY.P06.2HI** ((2HI) Gerçekleşen Basit Faiz Oranı AĞIRLIKLI ORTALAMA (%) (2 Haftalık Depo Alım İhalesi)): 215 eksik dönem
+- **evds:TP.PY.P04.2HI** ((2HI) Gerçekleşen En DÜŞÜK Basit Faiz Oranı (%) (2 Haftalık Depo Alım İhalesi)): 215 eksik dönem
+- **evds:TP.PY.P04.KV2** ((KV2) Gerçekleşen En DÜŞÜK Basit Faiz Oranı (%) (İkinci Kırık Vade Depo Alım İhalesi)): 208 eksik dönem
+- **evds:TP.PY.P06.KV2** ((KV2) Gerçekleşen Basit Faiz Oranı AĞIRLIKLI ORTALAMA (%) (İkinci Vade Depo Alım İhalesi)): 208 eksik dönem
+- **evds:TP.PY.P05.KV2** ((KV2) Gerçekleşen En YÜKSEK Basit Faiz Oranı (%) (İkinci Vade Depo Alım İhalesi)): 208 eksik dönem
+- **evds:TP.PY.P07.KV2** ((KV2) TCMB İşlemleri ALIŞ Tutarı (Bin TL) (Kırık Vade Depo Alım İhalesi)): 208 eksik dönem
+- **evds:TP.PY.P06.1H** ((1H) Gerçekleşen Basit Faiz Oranı AĞIRLIKLI ORTALAMA (%) (1 Haftalık İşlem)): 173 eksik dönem
+- **evds:TP.PY.P04.1H** ((1H) Gerçekleşen En DÜŞÜK Basit Faiz Oranı (%) (1 Haftalık İşlem)): 173 eksik dönem
+- **evds:TP.PY.P05.1H** ((1H) Gerçekleşen En YUKSEK Basit Faiz Oranı (%) (1 Haftalık İşlem)): 173 eksik dönem
+- **evds:TP.PY.P08.1H** ((1H) TCMB İşlemleri SATIŞ Tutarı (Bin TL) (1 Haftalık İşlem)): 173 eksik dönem
+- **evds:TP.PY.P03.1H** ((1H) Çift Taraflı İşlem Hacmi (Bin TL) (1 Haftalık İşlem)): 173 eksik dönem
+- **evds:TP.OSGMFAST.AKSKIY** (5.2. FAST TR Karekod ile iş yeri ödemesi (Tutar)): 168 eksik dönem
+- **evds:TP.OSGMFAST.CKSKIY** (4.2. FAST TR Karekod ile iş yeri ödemesi (Adet)): 168 eksik dönem
+- **evds:TP.BL108** (P10.Değerleme Hesabı TL): 160 eksik dönem
+- **evds:TP.PY.P06.ONI** ((ONI) Gecelik TL Depo Alım İhalesi - Ağırlıklı Ortalama Faiz (%)): 125 eksik dönem
+- **evds:TP.PY.P12.ONI** ((ONI) Gecelik TL Depo Alım İhalesi - En Düşük Teklif Faizi (%)): 125 eksik dönem
+- **evds:TP.PY.P07.ONI** ((ONI) Gecelik TL Depo Alım İhalesi - Kabul Edilen Tutar (Bin TL)): 125 eksik dönem
+- **evds:TP.PY.P11.ONI** ((ONI) Gecelik TL Depo Alım İhalesi - En Yüksek Teklif Faizi (%)): 125 eksik dönem
+- **evds:TP.PY.P09.ONI** ((ONI) Gecelik TL Depo Alım İhalesi - İhale Tutarı (Bin TL)): 125 eksik dönem
+- **evds:TP.PY.P04.ONI** ((ONI) Gecelik TL Depo Alım İhalesi - Gerçekleşen En Düşük Faiz (%)): 125 eksik dönem
+- **evds:TP.PY.P10.ONI** ((ONI) Gecelik TL Depo Alım İhalesi - Toplam Teklif Tutarı (Bin TL)): 125 eksik dönem
+- **evds:TP.PY.P05.ONI** ((ONI) Gecelik TL Depo Alım İhalesi - Gerçekleşen En Yüksek Faiz (%)): 125 eksik dönem
+- **evds:TP.BISTTLREF.DUSUK** (BIST TLREF Endeksi - En Düşük Değer (Endeks Kodu: BISTTLREF - TL)): 80 eksik dönem
+- **evds:TP.BISTTLREF.YUKSEK** (BIST TLREF Endeksi - En Yüksek Değer (Endeks Kodu: BISTTLREF - TL)): 80 eksik dönem
+- **evds:TP.BISTTLREF.ORAN** (BIST TLREF -Türk Lirası Gecelik Referans Faiz Oranı (ISIN:TRIXIST00015)): 80 eksik dönem
+- **evds:TP.BISTTLREF.KAPANIS** (BIST TLREF Endeksi - Kapanış Değeri (Endeks Kodu: BISTTLREF - TL)): 80 eksik dönem
+- **evds:TP.ALTINPIYASA.KAP03** (Altın - Kapanış Fiyatı  - USD/ons): 79 eksik dönem
+- **evds:TP.ALTINPIYASA.AGORT03** (Altın - Ağırlıklı Ortalama - USD/ons): 79 eksik dönem
+- **evds:TP.ALTINPIYASA.MIKT03** (Altın - İşlem Miktarı (kg) - USD/ons): 71 eksik dönem
+- **evds:TP.ALTINPIYASA.ISSAY03** (Altın - İşlem Sayısı - USD/ons): 71 eksik dönem
+- **evds:TP.ALTINPIYASA.HACM03** (Altın - İşlem Hacmi - USD/ons): 71 eksik dönem
+- **evds:TP.ALTINPIYASA.MIKT02** (Altın - İşlem Miktarı (kg) - TL/kg): 70 eksik dönem
+- **evds:TP.ALTINPIYASA.KAP02** (Altın - Kapanış Fiyatı  - TL/kg): 70 eksik dönem
+- **evds:TP.ALTINPIYASA.HACM02** (Altın - İşlem Hacmi - TL/kg): 70 eksik dönem
+- **evds:TP.ALTINPIYASA.ISSAY02** (Altın - İşlem Sayısı - TL/kg): 70 eksik dönem
+- **evds:TP.ALTINPIYASA.AGORT02** (Altın - Ağırlıklı Ortalama - TL/kg): 70 eksik dönem
+- **evds:TP.TLDOV03.SWP** (9. Yurt Dışı Merkez ve Şubeler (Swap)): 68 eksik dönem
+- **evds:TP.TLDOV01.FWD** (1. Yurt İçi Interbank (Vadeli)): 65 eksik dönem
+- **evds:TP.TLDOV03.SPT** (8. Yurt Dışı Merkez ve Şubeler (Spot)): 64 eksik dönem
+- **evds:TP.PY.P08.GIL** ((GIL) TCMB İşlemleri SATIŞ Tutarı (Bin TL) (Gün İçi Likidite İmkanı)): 63 eksik dönem
+- **evds:TP.PY.P06.GIL** ((GIL) Gerçekleşen Basit Faiz Oranı AĞIRLIKLI ORTALAMA (%) (Gün İçi Likidite İmkanı)): 63 eksik dönem
+- **evds:TP.PY.P05.GIL** ((GIL) Gerçekleşen En YUKSEK Basit Faiz Oranı (%) (Gün İçi Likidite İmkanı)): 63 eksik dönem
+- **evds:TP.PY.P04.GIL** ((GIL) Gerçekleşen En DÜŞÜK Basit Faiz Oranı (%) (Gün İçi Likidite İmkanı)): 63 eksik dönem
+- **evds:TP.PY.P03.GIL** ((GIL) Çift Taraflı İşlem Hacmi (Bin TL) (Gün İçi Likidite İmkanı)): 63 eksik dönem
+- **evds:TP.TLDOV04.SPT** (11. Yurt Dışı Banka, Kuruluş ve Müşteriler (Spot)): 62 eksik dönem
+- **evds:TP.TLDOV06.EFK** (16. Efektif): 62 eksik dönem
+- **evds:TP.TLDOV05.SPT** (14. Toplam (Spot)): 62 eksik dönem
+- **evds:TP.TLDOV05.FWD** (13. Toplam (Vadeli)): 62 eksik dönem
+- **evds:TP.TLDOV01.SPT** (2. Yurt İçi Interbank (Spot)): 62 eksik dönem
+- **evds:TP.TLDOV02.SPT** (5. Yurt İçi Müşteriler (Spot)): 62 eksik dönem
+- **evds:TP.TLDOV02.FWD** (4. Yurt İçi Müşteriler (Vadeli)): 62 eksik dönem
+- **evds:TP.TLDOV04.FWD** (10. Yurt Dışı Banka, Kuruluş ve Müşteriler (Vadeli)): 62 eksik dönem
+- **evds:TP.MK.G.TEKNOLOJI** ((GETİRİ) BİST Teknoloji Endeksi (XUTEK-CFNNTLTL), Kapanış Fiyatlarına Göre (30-06-2000=144,6612)): 61 eksik dönem
+- **evds:TP.MK.F.TEKNOLOJI** ((FİYAT) BİST Teknoloji Endeksi (XUTEK), Kapanış Fiyatlarına Göre (30-06-2000=144,6612)): 61 eksik dönem
+- **evds:TP.MK.G.SINAI** ((GETİRİ) BİST Sınai Endeks (XUSIN-CFNNTLTL), Kapanış Fiyatlarına Göre (27-12-1996=10,46)): 61 eksik dönem
+- **evds:TP.MK.G.MALI** ((GETİRİ) BİST Mali Endeks (XUMAL-CFNNTLTL), Kapanış Fiyatlarına Göre (27-12-1996=9,14)): 61 eksik dönem
+- **evds:TP.MK.G.HIZMET** ((GETİRİ) BİST Hizmet Endeksi (XUHIZ-CFNNTLTL), Kapanış Fiyatlarına Göre (27-12-1996=10,46)): 61 eksik dönem
+- **evds:TP.MK.G.BILESIK.TUM** ((GETİRİ) BİST Tüm-100 Endeksi (XTUMY-CFNNTLTL), Kapanış Fiyatlarına Göre): 61 eksik dönem
+- **evds:TP.MK.G.BILESIK** ((GETİRİ) BİST 100 Endeks (XU100-CFNNTLTL), Kapanış Fiyatlarına Göre (27-12-1996=9,76)): 61 eksik dönem
+- **evds:TP.MK.F.SINAI** ((FİYAT) BİST Sınai Endeks (XUSIN), Kapanış Fiyatlarına Göre (31-12-1990=0,33)): 61 eksik dönem
+- **evds:TP.MK.F.HIZMET** ((FİYAT) BİST Hizmet Endeksi (XUHIZ), Kapanış Fiyatlarına Göre (27-12-1996=10,46)): 61 eksik dönem
+- **evds:TP.MK.F.BILESIK.TUM** ((FİYAT) BİST Tüm-100 Endeksi (XTUMY), Kapanış Fiyatlarına Göre): 61 eksik dönem
+- **evds:TP.MK.F.BILESIK** ((FİYAT) BİST 100 Endeks (XU100), Kapanış Fiyatlarına Göre (Ocak 1986=0,01)): 61 eksik dönem
+- **evds:TP.MK.F.MALI** ((FİYAT) BİST Mali Endeks (XUMAL), Kapanış Fiyatlarına Göre (31-12-1990=0,33)): 61 eksik dönem
+- **evds:TP.TLDOV04.SWP** (12. Yurt Dışı Banka, Kuruluş ve Müşteriler (Swap)): 59 eksik dönem
+- **evds:TP.EFTEMKT2.TUTAR.K12** (2.1 Katılımcı Ödemeleri): 58 eksik dönem
+- **evds:TP.EFTEMKT2.TUTAR.TEC** (3. TCMB'den EFT_EMKT Çıkış Tutarı): 58 eksik dönem
+- **evds:TP.EFTEMKT2.TUTAR.OKT** (2.5 ÖKT İşlemleri): 58 eksik dönem
+- **evds:TP.EFTEMKT2.TUTAR.K99** (2.6 Diğer Ödemeler): 58 eksik dönem
+- **evds:TP.EFTEMKT2.TUTAR.K16** (2.4 TCMB'nin Piyasa Ödemeleri): 58 eksik dönem
+- **evds:TP.EFTEMKT2.TUTAR.K15** (2.3 TCMB'ye Piyasa Ödemeleri): 58 eksik dönem
+- **evds:TP.EFTEMKT2.TUTAR.K14** (2.2 Muhabirlik Ödemeleri): 58 eksik dönem
+- **evds:TP.EFTEMKT2.ADET.K99** (1.6 Diğer Ödemeler): 58 eksik dönem
+- **evds:TP.EFTEMKT2.TUTAR.A01** (2. Toplam Ödeme Tutarı): 58 eksik dönem
+- **evds:TP.EFTEMKT2.ADET.OKT** (1.5 ÖKT İşlemleri): 58 eksik dönem
+- **evds:TP.EFTEMKT2.ADET.K16** (1.4 TCMB'nin Piyasa Ödemeleri): 58 eksik dönem
+- **evds:TP.EFTEMKT2.ADET.K15** (1.3 TCMB'ye Piyasa Ödemeleri): 58 eksik dönem
+- **evds:TP.EFTEMKT2.ADET.K14** (1.2 Muhabirlik Ödemeleri): 58 eksik dönem
+- **evds:TP.EFTEMKT2.ADET.K12** (1.1 Katılımcı Ödemeleri): 58 eksik dönem
+- **evds:TP.EFTEMKT2.ADET.A01** (1. Ödeme Mesaj Adedi): 58 eksik dönem
+- **evds:TP.MK.ISL.HC** (Toplam İşlem Hacmi): 57 eksik dönem
+- **evds:TP.TLDOV01.SWP** (3. Yurt İçi Interbank (Swap)): 57 eksik dönem
+- **evds:TP.AOFOBAP** (Ağırlıklı Ortalama Faiz Oranı): 57 eksik dönem
+- **evds:TP.MK.ISL.MK** (Toplam İşlem Miktarı (Bin Adet)): 57 eksik dönem
+- **evds:TP.IHBAP** (İşlem Hacmi): 57 eksik dönem
+- **evds:TP.TLDOV05.SWP** (15. Toplam (Swap)): 57 eksik dönem
+- **evds:TP.TLDOV02.SWP** (6. Yurt İçi Müşteriler (Swap)): 57 eksik dönem
+- **evds:TP.DK.CNY.S.EF.YTL** ((CNY) Çin Yuanı (Efektif Satış)): 56 eksik dönem
+- **evds:TP.DK.SZL** ((SZL) Svaziland Lilangenisi): 56 eksik dönem
+- **evds:TP.DK.THB** ((THB) Tayland Bahtı): 56 eksik dönem
+- **evds:TP.DK.DKK.C.YTL** ((DKK)  Danimarka  Kronu  (Çapraz)  (USD/DKK)): 56 eksik dönem
+- **evds:TP.DK.DKK.C** ((DKK) Danimarka Kronu (Çapraz) (Arşiv)): 56 eksik dönem
+- **evds:TP.DK.DKK.A.YTL** ((DKK)  Danimarka  Kronu  (Döviz  Alış)): 56 eksik dönem
+- **evds:TP.DK.DKK.A.EF.YTL** ((DKK) Danimarka Kronu (Efektif Alış)): 56 eksik dönem
+- **evds:TP.DK.DKK.A.EF** ((DKK) Danimarka Kronu (Efektif Alış) (Arşiv)): 56 eksik dönem
+- **evds:TP.DK.DKK.A** ((DKK) Danimarka Kronu (Döviz Alış) (Arşiv)): 56 eksik dönem
+- **evds:TP.DK.CZK** ((CZK) Çek Korunası): 56 eksik dönem
+- **evds:TP.DK.CNY.S.YTL** ((CNY)  Çin  Yuanı  (Döviz  Satış)): 56 eksik dönem
+- **evds:TP.DK.CNY.S.EF** ((CNY)  Çin  Yuanı  (Efektif Satış) (Arşiv)): 56 eksik dönem
+- **evds:TP.DK.SGD** ((SGD) Singapur Doları): 56 eksik dönem
+- **evds:TP.DK.CNY.S** ((CNY) Çin Yuanı (Döviz Satış) (Arşiv)): 56 eksik dönem
+- **evds:TP.DK.CNY.C.YTL** ((CNY)  Çin  Yuanı  (Çapraz)  (USD/CNY)): 56 eksik dönem
+- **evds:TP.DK.CNY.C** ((CNY) Çin Yuanı (Çapraz) (Arşiv)): 56 eksik dönem
+- **evds:TP.DK.CNY.A.YTL** ((CNY)  Çin  Yuanı  (Döviz  Alış)): 56 eksik dönem
+- ... ve 2949 seri daha (tamamı `data/gold/quality_by_series.parquet`)
 
 ## Kaynak bazında özet
 
 | Kaynak | Seri sayısı | Toplam gözlem | Toplam eksik | Toplam aykırı |
 |---|---|---|---|---|
-| BDDK-Aylik | 3 | 198 | 0 | 2 |
-| EVDS | 6 | 658 | 0 | 7 |
+| BDDK-Aylik | 2045 | 133485 | 0 | 3531 |
+| BDDK-FinTurk | 6200 | 136039 | 126 | 5519 |
+| BDDK-Haftalik | 535 | 147154 | 0 | 3564 |
+| EVDS | 36642 | 6083764 | 110038 | 111369 |
 
 ## Seri detayları
 
-| series_id | ad | frekans | ilk | son | n | eksik | tekrar | aykırı |
-|---|---|---|---|---|---|---|---|---|
-| bddk:aylik:tuketici:konut:TL:sektor | Tüketici Kredileri - Konut | M | 2021-01-01 | 2026-06-01 | 66 | 0 | 0 | 0 |
-| bddk:aylik:tuketici:konut_takip:TL:sektor | Takipteki Konut Kredileri | M | 2021-01-01 | 2026-06-01 | 66 | 0 | 0 | 2 |
-| bddk:aylik:tuketici:toplam:TL:sektor | Tüketici Kredileri (2+3+4) | M | 2021-01-01 | 2026-06-01 | 66 | 0 | 0 | 0 |
-| evds:TP.AKONUTSAT1.KTRTOPLAM | Türkiye_Konut_Toplam Satışlar | M | 2021-01-01 | 2026-06-01 | 66 | 0 | 0 | 4 |
-| evds:TP.AKONUTSAT2.KTRTOPLAM | Türkiye_Konut_İpotekli Satışlar | M | 2021-01-01 | 2026-06-01 | 66 | 0 | 0 | 3 |
-| evds:TP.HPBITABLO6.3 | 1.1.1.Konut (TL + YP) | W | 2024-06-24 | 2026-06-29 | 106 | 0 | 0 | 0 |
-| evds:TP.KFE.TR | Konut Fiyat Endeksi (KFE) | M | 2021-01-01 | 2026-06-01 | 66 | 0 | 0 | 0 |
-| evds:TP.KTF12 | Konut Kredisi (TL, Akım, %) | W | 2020-12-28 | 2026-06-29 | 288 | 0 | 0 | 0 |
-| evds:TP.TUKFIY2025.GENEL | Genel Endeks | M | 2021-01-01 | 2026-06-01 | 66 | 0 | 0 | 0 |
+45422 seri; seri başına satırlar `data/gold/quality_by_series.parquet` dosyasında (aynı sütunlar).

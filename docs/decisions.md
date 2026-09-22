@@ -673,6 +673,237 @@ uğradı; başarılı tek örnek 15 Eylül'deki. Cevaplar gold'dan kontrol edild
 Gözlem çağrısı yine uzun bir cevap yazdı (734 token, 30 sn; planner 14. kurala
 rağmen).
 
+## DeepSeek-V4.1-Flash ölçümü (22 Eyl, karar bekliyor)
+Bağlam: Slack: Kloudeks MIA artık `deepseek-ai/DeepSeek-V4.1-Flash` de sunuyor ve
+        demoda kullanılabilir. Varsayılan sohbet modeli hâlâ Qwen3.8-27B.
+Ölçüm:  - `models.list` modeli döndürüyor. Hız 200–310 token/sn (Qwen 22 Eyl'de
+          7–25). `enable_thinking` anahtarı çalışıyor; açıkken yanıtta `reasoning`
+          alanı geliyor (Qwen'deki gibi, geri gönderilmiyor). Araç çağırma doğru.
+        - İlk `--real` koşusu: araç adımları doğru ve hızlı (1. tur 8,6 sn), ama
+          cevaplar bozuk (16 token anlamsız metin, bir turda ham JSON). Neden:
+          cevap isteği gözlem notuyla ("Veriler hazır.") yani bir asistan
+          mesajıyla bitiyordu; DeepSeek şablonu bunu yeni tur değil devam
+          edilecek mesaj sayıyor ve düşünmeden devam ediyor.
+        - Düzeltme modelden bağımsız: cevap isteği asistanın metin mesajıyla
+          bitmez (`loop._answer_messages`). Qwen'de davranış değişmedi (aynı
+          istekle ölçüldü).
+        - Düzeltmeden sonra üç tur 10 / 3 / 6,6 sn (Qwen: 137 / 62 / 26 sn). Dört
+          ay doğru; cevaptaki bütün sayılar gold'dan doğrulandı (0,35 / 0,28 /
+          2,03 puan düşüş, %18,3 → %37,1, 276.740 → 678.912 milyon TL, KFE
+          16,49 → 204,36). Nedensellik dili temkinli; doğrulayıcı bayrak yok.
+Karar:  Kullanıcıya bırakıldı; 22 Eyl akşamı karar verildi, aşağıya bakın.
+
+## Havuz genişletme (adım 2): EVDS'nin tamamı ve BDDK'nın üç bülteni
+Bağlam: Gold 9 seriydi; gereksinim (kkb-bilgiler.md) EVDS ve BDDK'nın geniş
+        kapsamını istiyor, demo soruları senaryonun dışına çıkabilir.
+Karar:  - EVDS: bronze kataloğundaki her seri, frekansı sözleşmedeki D/W/M/Q/A
+          ise. "AYDA İKİ KEZ" ve "ALTI AYLIK" dışarıda (`gold.EXCLUDED_FREQUENCY_STRS`):
+          sözleşmenin `freq` kümesinde karşılıkları yok, dönem kuralı tanımsız.
+        - Çekim veri grubu × takvim yılı. Zaman aşımına uğrayan yıl çeyreklere,
+          çeyrek aylara bölünür (`evds._Window.split`); boş yıl `.empty.json` ile
+          hatırlanır, ikinci koşu ona istek atmaz. Ay da zaman aşımına uğrarsa
+          başarısız sayılır, raporlanır.
+        - BDDK Aylık: 17 tablonun bütün satırları ve bütün değer sütunları,
+          sektör toplamı, TL raporu (`ingest/bddk_tables.yaml`). Senaryonun üç
+          kimliği `aliases` ile korunur.
+        - BDDK Haftalık: 9 tablo, her hafta. JSON uç noktası yok; sayfa oturumla
+          çalışan HTML. Hafta ve tablo form token'larıyla seçilir, tablo öğesi
+          olduğu gibi saklanır. Yazmadan önce başlıktaki tarih ve tablo adı
+          istenenle karşılaştırılır: başka haftayı döndüren oturum yanlış dosyaya
+          yazılmasın. Zaman serisi uç noktası (KiyaslamaJsonGetir) her çağrıda
+          13 hafta döndürdüğü için kullanılmadı (~23 çağrı/seri).
+        - BDDK FinTürk: 7 tablo, çeyreklik, 82 il ("YURT DIŞI" dahil), tek
+          çağrıda bütün iller.
+Sonuç:  Seri ve boyut sayıları "Havuz ölçümü" girişinde.
+
+## Frekans çevrimini agg_method belirler; kind yalnızca anlam
+Bağlam: `to_freq` yöntemi kind'dan türetiyordu (stok → son, akım → toplam,
+        oran/endeks → ortalama). Havuzda bu eşleme tutmayan seriler çok: dönem
+        sonu yayımlanan kurlar, ay sonu faizler, EVDS'nin "KÜMÜLATİF" önerdiği
+        akımlar. EVDS her seri için kendi önerisini veriyor (`DEFAULT_AGG_METHOD`).
+Karar:  Sözleşme v0.5: `agg_method` çevrimi belirler (EVDS'de kaynağın önerisi,
+        BDDK'da tablo tanımı). `kind` cevabın dilini belirler: fark yüzde puan mı,
+        enflasyondan arındırılabilir mi. `to_freq(df, kind, freq, *, agg_method)`:
+        agg_method verilmezse kind'ın varsayılanı.
+Sonuç:  Senaryonun dört serisinde yöntem değişmedi (KTF12 ort., HPBITABLO6.3 son,
+        AKONUTSAT toplam, TÜFE/KFE ort.); sonuç ayları aynı.
+
+## Belirsiz seride kind boş (onaylandı 22 Eyl)
+Bağlam: Kurallar (`lake/classify.py`: birim → EVDS toplama önerisi → ad) bazı
+        serileri hiçbir türe koyamıyor: birimi yazmayan, adı tür söylemeyen,
+        ortalama önerilen seriler. BDDK oran tablolarında da "Bin TL" ya da "Gün"
+        birimli değerler (çalışan başına aktif, ortalama vade) var.
+Karar:  Tahmin yok: `kind` boş, gerekçe `classification.parquet`'te
+        (`kind_reason`), liste `docs/kind_review.md`'de. Çevrim bundan
+        etkilenmez (agg_method dolu). Etkilenen: `deflate` boş türü reddeder,
+        cevap metni türe göre konuşmaz.
+Sonuç:  Sözleşmede "boş olabilir" notu var (contracts.md §1). Kullanıcı onayladı
+        (22 Eyl): tür uydurmak yerine boş kalır.
+
+## obs_date: haftalık değer gözlem gününe göre aya düşer
+Bağlam: Gold haftayı Pazartesi'sine yazıyordu. Pazartesi'si ayın son günlerine,
+        Cuma'sı sonraki aya düşen hafta önceki ayın "ay sonu" oluyordu: bir ayın
+        değeri o aydan sonra gözlenmiş bir değerdi (19 Eyl çapraz kaynak
+        kontrolünde 2025'in 12 ayının 6'sı).
+Karar:  Sözleşme v0.5: observations'a `obs_date` (kaynağın değere verdiği gün).
+        `period` sözleşmedeki anlamıyla kalıyor. `to_freq` ve pencere kesimi
+        `obs_date`'e göre. Aylık ve daha seyrek seride `obs_date = period`.
+Sonuç:  Senaryonun sonuç ayları değişmedi (2021-02, 2021-05, 2023-12, 2024-01).
+        Beklentinin tersine BDDK ay sonu değerine uyum biraz azaldı (ortalama
+        mutlak fark %0,14 → %0,20): ayın son Cuma'sı ay sonundan ortalama 2,8
+        gün önce, eski yöntemin seçtiği Cuma 1,9 gün uzakta ama bazen sonraki
+        ayda. Kazanç yakınlık değil doğruluk: ay değeri artık ay sonrasından
+        gelmiyor. Ayrıntı: data_dictionary.md, "Çapraz kaynak kontrolü".
+
+## BDDK kümülatif kalemler silver'da akıma çevriliyor
+Bağlam: BDDK kâr-zarar tablosunun (tablo 2) değerleri yıl başından kümülatif.
+        Veriyle doğrulandı: bütün kalemler her Ocak'ta sıfırdan başlıyor,
+        bilanço kalemleri başlamıyor.
+Karar:  Silver'da aylık akım: akım_t = küm_t − küm_t−1, Ocak'ta akım = küm
+        (`transforms.decumulate_ytd`). Önceki ay yoksa o ayın akımı boş kalır,
+        doldurulmaz. `cum_type = ytd` kaynağın yayımladığı biçimi kaydeder.
+        Yıl başından toplam gerekince `transform_table` `ytd` işlemi yeniden
+        biriktirir (`transforms.year_to_date`, yalnızca aylık akım).
+Sonuç:  Toplamalar (çeyrek, yıl) akım üzerinden doğru; ham kümülatif değerle
+        toplamak yıl içi değerleri defalarca saymak olurdu.
+
+## BDDK satır kimlikleri formülsüz etiketten
+Bağlam: BDDK satır etiketlerinde formül var ("Tüketici Kredileri (2+3+4)") ve
+        satırlar yeniden numaralandığında formül değişiyor
+        ("(10+27+28)" → "(10+30+31)"): aynı kalem iki seri olurdu. Mevduat
+        tablolarında "a) Gerçek Kişiler" altı farklı başlık altında tekrarlanıyor.
+Karar:  Kimlik = tablo anahtarı + formülü atılmış etiket + sütun
+        (`bddk.label_key`, `slug`). Liste maddeleri ("a) ...") ve tabloda tekrar
+        eden etiketler üstlerindeki formül satırıyla, yoksa en yakın kalın
+        satırla nitelenir, gerekirse yinelemeli. Aylık bültende buna rağmen aynı
+        kimliğe düşen iki satır sessizce silinmez, satır numarası eklenerek ikisi
+        de tutulur; haftalık ve FinTürk'te çakışan satır sayılır ve kurulum
+        çıktısında raporlanır.
+Sonuç:  Aylık 2045 seri, haftalık 535 seri, çakışmadan düşen satır 0.
+        BDDK'nın kendi tanım değişiklikleri ayrı seri kalıyor: haftalık menkul
+        değerler tablosunda Eylül 2022'de "a) Kamu borçlanma senetleri /
+        b) Diğer" kırılımı "Devlet tahvilleri / Kira sertifikaları (bilgi için)"
+        oldu. Eski kırılım 88 hafta, yenisi 198 hafta; ana toplamlar 286 haftanın
+        hepsinde dolu. Kur korumalı mevduat Şubat 2022'de, kredili mevduat
+        hesabı kırılımı Eylül 2022'de başlıyor.
+
+## Havuz araması: sıralama kuralları (22 Eyl)
+Bağlam: 9 serilik havuzda kosinüs benzerliği tek başına yetiyordu. 45 bin seride
+        yetmiyor: sorgu setinin (eval/search_queries.yaml) 21 sorgusunun yalnızca
+        10'unda doğru seri ilk 5 adayda çıkıyordu. Üç tekrarlayan hata:
+        81 ilin aynı kalemi ulusal serinin önüne geçiyor; EVDS'in "(Arşiv)" diye
+        işaretlediği, yerine yenisi gelmiş seri güncelin önüne geçiyor; bir
+        tablonun ana serisi kendi alt kalemlerine yeniliyor ("tüketici fiyat
+        endeksi" sorgusunda TÜFE Genel Endeks kosinüste 232. sırada).
+Karar:  Skor kosinüs benzerliği olarak KALIYOR (eşik ve onay kapısı onu okuyor);
+        değişen yalnızca sıra ve gruplama (`lake/pool_index.rank`). Kurallar
+        sorgunun konusuna değil, kaynağın seri hakkında söylediğine bakar:
+        - Arama metnine veri grubunun adı eklendi ("Genel Endeks" →
+          "Tüketici Fiyat Endeksi (2025=100) | Genel Endeks").
+        - Sorgu yer adı söylemiyorsa (ya da "illere göre" demiyorsa) il/bölge
+          serileri ulusal serilerden sonra gelir; sorgu bir il söylüyorsa o ilin
+          serisi öne gelir.
+        - Arşiv serisi, sorgu "arşiv" demedikçe güncellerden sonra gelir.
+        - Aynı kalemin il kırılımları tek adayda toplanır; aday, kaç seriyi
+          temsil ettiğini uyarı olarak söyler.
+        - Sorgu bir veri grubunun adının tamamını söylüyorsa o grubun ana serisi
+          (EVDS'in ilk listelediği seri: "Genel Endeks", "Toplam Sanayi",
+          "Türkiye") öne gelir, alt kalemleri tek adayda toplanır.
+        - Aday havuzu 500 en yakın seriye çıkarıldı (`SEARCH_DEPTH`); ana seri
+          kendi alt kalemlerinin yüzlercesinin altında kalabiliyor.
+        - Aynı kurallar kelime yedeğine de uygulanır; orada sıra artık tam metin
+          indeksinin (BM25) sırası, "eşleşen kelime oranı" değil (45 binde yüzlerce
+          seri aynı oranı alıyor ve sıra katalog sırasına kalıyordu).
+Sonuç:  İlk 5 isabet 10/21 → 25/27. Kurallar tasarlandıktan SONRA eklenen ve
+        tasarımda kullanılmayan 6 ayrık sorguda 6/6 (beklenenler arama sonucuna
+        bakılmadan katalogdan seçildi) — kurallar sorgu setine özel değil.
+        Kalan iki hata kural değil anlam sorunu, uydurulmadı: "enflasyon"
+        (TÜFE'nin metninde bu kelime geçmiyor; "TÜFE genel endeks" çalışıyor) ve
+        "dolar kuru" (13. sıra; "ABD doları kuru" 1. sıra). Arama 0,25 sn.
+
+## Eşik (MIN_SIMILARITY) 0,40'ta kalıyor
+Bağlam: 45 binlik havuzda yeniden ölçüldü. İlgili sorgularda doğru serinin
+        skoru 0,48–0,78. İlgisiz beş sorgunun en iyi adayı: futbol 0,359,
+        hava durumu 0,373, üniversite sınavı 0,382, otomobil yakıt tüketimi
+        0,486, sinema gişe hasılatı 0,579.
+Karar:  Eşik 0,40. Ayıran temiz bir değer yok: 0,50'ye çıkarmak "dolar kuru"nun
+        doğru serisini (0,484) elerdi ama sinemayı elemezdi.
+Sonuç:  Eşik bariz ilgisizi eler; kalanı adayların adına, türüne ve kapsamına
+        bakarak modelin ayırması gerekir (planner kural 12). `SEARCH_CANDIDATES`
+        5'te kaldı: ölçüm ilk 5 üzerinden yapıldı ve 25/27 onunla elde edildi.
+
+## Kapsam sorgusu modelin kapısından geçmiyor
+Bağlam: Aday listesindeki "kapsam" (serinin havuzdaki ilk–son dönemi) 45 binlik
+        havuzda boş geliyordu. Neden: adaptör kapsamı `gold.run_sql` ile
+        okuyordu ve oradaki zorunlu `LIMIT 1000` (güvenlik kuralı) sonucu
+        kesiyordu; ilk bin serinin dışındaki her aday kapsamsız görünüyordu.
+        Model o zaman serinin havuzda hangi dönemleri kapsadığını göremiyor
+        (planner kural 12 tam da buna bakmasını söylüyor).
+Karar:  `lake/gold.py`'ye `coverage()` eklendi: aynı salt-okunur bağlantı,
+        LIMIT yok. `run_sql`'in sınırı olduğu gibi duruyor — o sınır modelin
+        çekebileceği satır için, lake'in kendi okumaları için değil.
+Sonuç:  45.422 serinin hepsi kapsamıyla geliyor. Kapsam artık `obs_date`'e göre
+        (pencere ve `get_series` de öyle).
+
+## Büyük havuzda canlı koşu: planner v5 ve adım bütçesi (22 Eyl)
+Bağlam: Senaryonun üç sorusu 45 bin serilik havuzda `--real` koşuldu (Qwen).
+        1. tur cevapsız bitti: model "60 aylık"ı kredi VADESİ sanıp havuzda vade
+        kırılımı aradı, 8 arama hakkının 6'sını buna harcadı, doğru serileri
+        7. ve 8. aramada 1. sırada buldu ama veri çekecek adım kalmadı
+        (`kesinti step_limit`). Havuz 9 seriyken ilk arama zaten tek doğruyu
+        veriyordu; bu, genişlemenin getirdiği yeni bir hata biçimi.
+Karar:  planner.md v5, iki kural: (4) sorudaki süre ifadesi ("60 aylık") kaç
+        dönem istendiğini söyler, kredinin vadesi değildir; (12) aynı veri için
+        ikiden fazla arama yapma — her arama bir adımdır, arayıp durursan veri
+        çekecek adım kalmaz. Kural 12'ye ayrıca havuz ölçeği ve il/ulusal ayrımı
+        eklendi.
+Sonuç:  Aynı koşu: 1. tur 2 arama + get_series + 3 dönüşüm ile tabloyu kurdu
+        (işaretli aylar: 2021-02, 2021-05, 2023-12, 2024-01 — senaryonun bilinen
+        sonucu). `max_steps = 8` değiştirilmedi; bu bir döngü politikası kararı,
+        kullanıcıya soruluyor.
+
+## DeepSeek-V4.1-Flash: büyük havuzda ikinci ölçüm (22 Eyl, karar hâlâ kullanıcıda)
+Ölçüm:  Aynı üç soru, aynı havuz, tek fark model.
+        - Qwen3.8-27B (varsayılan): 1. turda araçlar doğru çalıştı ama cevap
+          adımı 47 sn sonra BOŞ içerik döndürdü (`kesinti llm_error`) — modelin
+          bilinen "düşünüyor, metin üretmiyor" hatası. Tur 78 sn. 2. turda
+          cevap birimi yanlış aktardı: seri milyon TL iken "1,7 milyon TL" dedi.
+        - DeepSeek-V4.1-Flash: üç tur da tamamlandı, 1. tur 15 sn, doğru dört ay
+          listelendi, birimler doğru ("276 bin milyon TL"). 2. ve 3. turda
+          cevapta kendi hesapladığı iki oran ("12,4 kat", "1 milyon 716 bin")
+          doğrulayıcı tarafından yakalandı (`number_not_found`) — koruma
+          çalışıyor ama model planner kural 1'i çiğniyor.
+Karar:  Varsayılan model **DeepSeek-V4.1-Flash** oldu (kullanıcı kararı, 22 Eyl).
+        Qwen bir ortam değişkeni uzakta: `MIA_CHAT_MODEL=kkbhackathon2026/Qwen3.8-27B`.
+        Embedding modeli değişmedi (Qwen3-Embedding-8B); havuz indeksi onunla kurulu.
+
+## Adım 1'den kalan iki soru, DeepSeek'le yeniden ölçüldü (22 Eyl)
+Bağlam: İkisi de Qwen'in yavaşlığı yüzünden açık kalmıştı: cevap adımında
+        düşünme açık mı kalsın, observe çıktısına token sınırı konsun mu?
+Ölçüm:  - Cevap adımı, düşünme AÇIK: DeepSeek'te üç tur 3,2 / 2,2 / 2,6 sn
+          (Qwen'de 47 / 62 / 6,5 sn ve bir turda boş cevap). Sorun modeldi,
+          ayar değil.
+        - Observe adımı: DeepSeek iki kez cevabın tamamını observe adımında
+          yazdı (696 ve 352 completion token) ve aynı metni cevapta tekrarladı.
+          Qwen'de bu adımlar 49 token ortalamaydı; yani sınır Qwen'le değil,
+          DeepSeek'le gerekli hale geldi.
+Karar:  - Cevapta düşünme AÇIK kalıyor (`thinking = {plan: True, observe: False,
+          answer: True}`), değişiklik yok.
+        - `AgentConfig.observe_max_tokens = 300`. Sınır yalnızca observe
+          çağrısına uygulanır. Çağrı sınıra takılır VE içinde araç çağrısı
+          varsa çağrı sınırsız tekrarlanır: yarım kalan bir araç çağrısı,
+          kazanılan metinden pahalıdır.
+Sonuç:  Plan ve cevap çağrıları sınırsız kalıyor; iki test bunu koruyor
+        (tests/test_loop.py).
+
+## Adım sınırı 8 → 12 (22 Eyl, kullanıcı onayı)
+Bağlam: 45 bin serilik havuzda arama adım harcıyor; bir tur 8 adımın 6'sını
+        aramaya harcayıp veri çekemeden bitti.
+Karar:  `AgentConfig.max_steps = 12`. Bu bir tavan, hedef değil: senaryonun
+        turları hâlâ 2–4 adımda bitiyor, dolayısıyla iyi giden tur uzamıyor.
+        Tur süresi zaten `total_budget_s` (180 sn) ile sınırlı; adım sayısı
+        onu aşamaz.
+
 ## 23 Eylül incelemesinin düzeltmeleri
 Bağlam: Adım 1 (`feat/real-tools`) dört ayrı incelemeden geçti. Bulguların
         üçü ölçülerek doğrulandı ve testle sabitlendi; kalanlar aşağıda
@@ -755,8 +986,8 @@ Bilerek değiştirilmedi (gerekçesiyle):
           kullanıcıya gidiyor, `state.messages`'a yazılan cevap bayraksız.
           Göstermek modelin kendi hatasını görmesini sağlar ama sonraki turun
           bağlamını da kirletir; tasarım kararı, hata değil.
-        - **`contracts.md` sürüm numarası.** Bu dalda artırılmadı: sonraki
-          dallar v0.5'e geçmiş durumda, burada artırmak rebase'te çakışır.
+        - **`contracts.md` sürüm numarası.** Düzeltmeler için artırılmadı;
+          dosya havuz genişletmesiyle zaten v0.5'e geçti.
         - **Kullanılmayan `VerificationFlag` türleri** (`unit_mix`,
           `model_contradiction`) ve `NullVerifier`. İleriye dönük; kaldırmak
           sonraki dallarla çakışma riski taşıyor.

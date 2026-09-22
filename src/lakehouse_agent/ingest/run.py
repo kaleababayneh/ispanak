@@ -13,6 +13,10 @@ Usage:
         --since 2021-01 --until 2026-06
     uv run python -m lakehouse_agent.ingest.run --source bddk \
         --since 2021-01 --until 2026-06
+    uv run python -m lakehouse_agent.ingest.run --source bddk_haftalik \
+        --since 2021-01 --until 2026-06
+    uv run python -m lakehouse_agent.ingest.run --source bddk_finturk \
+        --since 2021-01 --until 2026-06
 """
 
 import argparse
@@ -24,7 +28,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from lakehouse_agent.config import get_settings
-from lakehouse_agent.ingest import bddk_monthly, evds
+from lakehouse_agent.ingest import bddk_finturk, bddk_monthly, bddk_weekly, evds
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -52,7 +56,11 @@ def _year_range(since: str, until: str) -> list[int]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lakehouse_agent.ingest.run")
-    parser.add_argument("--source", required=True, choices=["evds", "bddk"])
+    parser.add_argument(
+        "--source",
+        required=True,
+        choices=["evds", "bddk", "bddk_haftalik", "bddk_finturk"],
+    )
     scope = parser.add_mutually_exclusive_group()  # only meaningful for --source evds
     scope.add_argument("--datagroups", help="virgüllü DATAGROUP_CODE listesi")
     scope.add_argument("--all", action="store_true", help="tam katalog + tam çekim")
@@ -108,16 +116,13 @@ def _run_evds(args: argparse.Namespace) -> int:
 
 
 def _run_bddk(args: argparse.Namespace) -> int:
-    row_defs = bddk_monthly.load_row_definitions()
     logger.info(
-        "BDDK aylık çekim başlıyor: %d satır tanımı, %s -> %s",
-        len(row_defs),
+        "BDDK aylık çekim başlıyor: %d tablo, %s -> %s",
+        len(bddk_monthly.ALL_TABLES),
         args.since,
         args.until,
     )
-    results = bddk_monthly.fetch_months(
-        args.since, args.until, row_defs, force=args.force
-    )
+    results = bddk_monthly.fetch_tables(args.since, args.until, force=args.force)
 
     ok = [r for r in results if r.outcome == "ok"]
     cached = [r for r in results if r.outcome == "cached"]
@@ -125,10 +130,38 @@ def _run_bddk(args: argparse.Namespace) -> int:
 
     logger.info("Bitti: ok=%d cached=%d failed=%d", len(ok), len(cached), len(failed))
     if failed:
-        logger.warning("Başarısız aylar:")
+        logger.warning("Başarısız tablo-aylar:")
         for r in failed:
-            logger.warning("  %d-%02d -> %s", r.year, r.month, r.outcome)
+            logger.warning(
+                "  t%02d %d-%02d -> %s", r.tablo_no, r.year, r.month, r.outcome
+            )
 
+    return 1 if failed else 0
+
+
+def _run_bddk_weekly(args: argparse.Namespace) -> int:
+    results = bddk_weekly.fetch_weeks(args.since, args.until, force=args.force)
+    counts = {
+        outcome: sum(r.outcome == outcome for r in results)
+        for outcome in ("ok", "cached", "failed")
+    }
+    logger.info("Bitti: %s", counts)
+    failed = [r for r in results if r.outcome == "failed"]
+    for r in failed:
+        logger.warning("  t%s %s -> failed", r.table_id, r.day)
+    return 1 if failed else 0
+
+
+def _run_bddk_finturk(args: argparse.Namespace) -> int:
+    results = bddk_finturk.fetch_finturk(args.since, args.until, force=args.force)
+    counts = {
+        outcome: sum(r.outcome == outcome for r in results)
+        for outcome in ("ok", "cached", "failed")
+    }
+    logger.info("Bitti: %s", counts)
+    failed = [r for r in results if r.outcome == "failed"]
+    for r in failed:
+        logger.warning("  t%02d %d-%d -> failed", r.tablo_no, r.year, r.month)
     return 1 if failed else 0
 
 
@@ -144,6 +177,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.source == "evds":
         return _run_evds(args)
+    if args.source == "bddk_haftalik":
+        return _run_bddk_weekly(args)
+    if args.source == "bddk_finturk":
+        return _run_bddk_finturk(args)
     return _run_bddk(args)
 
 

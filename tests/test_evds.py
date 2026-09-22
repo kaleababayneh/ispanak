@@ -40,6 +40,15 @@ def _no_real_sleep(monkeypatch):
     monkeypatch.setattr(evds.time, "sleep", lambda *_args, **_kwargs: None)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_bronze(monkeypatch, tmp_path):
+    """Every test runs in its own directory. The bronze paths are relative,
+    and the auth/retry tests used to append their fake calls to the real
+    `data/bronze/evds/fetch_log.jsonl` -- 574 lines of it by 22 Sep, mixed in
+    with the log of real fetches. Fixtures are read by absolute path."""
+    monkeypatch.chdir(tmp_path)
+
+
 # --- build_url / redact_url ------------------------------------------------
 
 
@@ -355,6 +364,108 @@ def test_fetch_datagroup_year_empty_response_writes_no_parquet(monkeypatch, tmp_
     assert not evds._datagroup_year_path("bie_hpbitablo6", 2021).exists()
 
 
+def test_an_empty_year_is_remembered_so_a_rerun_makes_no_call(monkeypatch, tmp_path):
+    """CLAUDE.md #6: the second run makes zero HTTP calls. An empty year wrote
+    nothing, so every rerun asked for it again."""
+    settings = _settings(monkeypatch)
+    calls = []
+
+    def empty(path, _settings):
+        calls.append(path)
+        return []
+
+    monkeypatch.setattr(evds, "_authenticated_get", empty)
+
+    evds.fetch_datagroup_year("bie_eski", 2021, settings)
+    second = evds.fetch_datagroup_year("bie_eski", 2021, settings)
+
+    assert len(calls) == 1
+    assert second.outcome == "cached"
+    assert not list(tmp_path.rglob("*.parquet"))  # silver reads parquet only
+
+
+def test_a_year_that_times_out_is_fetched_again_in_quarters(monkeypatch, tmp_path):
+    """The previous full run lost 34 datagroup-years (large daily groups) to
+    timeouts that an identical second round did not recover."""
+    settings = _settings(monkeypatch)
+    calls = []
+
+    def slow_for_a_year(path, _settings):
+        calls.append(path)
+        if "startDate=01-01-2024&endDate=31-12-2024" in path:
+            raise evds.EvdsTimeoutError("slow")
+        start = path.split("startDate=")[1].split("&")[0]
+        return [{"Tarih": start, "TP_X": "1.0"}]
+
+    monkeypatch.setattr(evds, "_authenticated_get", slow_for_a_year)
+
+    result = evds.fetch_datagroup_year("bie_buyuk", 2024, settings)
+
+    assert result.outcome == "ok"
+    assert result.row_count == 4
+    folder = evds.DATAGROUPS_DATA_ROOT / "bie_buyuk"
+    assert sorted(p.name for p in folder.glob("*.parquet")) == [
+        "2024-Q1.parquet",
+        "2024-Q2.parquet",
+        "2024-Q3.parquet",
+        "2024-Q4.parquet",
+    ]
+    assert "startDate=01-10-2024&endDate=31-12-2024" in calls[-1]
+
+    calls.clear()
+    assert evds.fetch_datagroup_year("bie_buyuk", 2024, settings).outcome == "cached"
+    assert calls == []
+
+
+def test_a_quarter_that_times_out_is_fetched_in_months(monkeypatch, tmp_path):
+    settings = _settings(monkeypatch)
+
+    def slow_unless_a_month(path, _settings):
+        start = path.split("startDate=")[1].split("&")[0]
+        end = path.split("endDate=")[1].split("&")[0]
+        if start[3:5] != end[3:5]:  # more than one month asked
+            raise evds.EvdsTimeoutError("slow")
+        return [{"Tarih": start, "TP_X": "1.0"}]
+
+    monkeypatch.setattr(evds, "_authenticated_get", slow_unless_a_month)
+
+    result = evds.fetch_datagroup_year("bie_cok_buyuk", 2024, settings)
+
+    assert result.outcome == "ok"
+    names = {p.stem for p in (evds.DATAGROUPS_DATA_ROOT / "bie_cok_buyuk").glob("*")}
+    assert names == {f"2024-{m:02d}" for m in range(1, 13)}
+
+
+def test_a_month_that_still_times_out_is_a_failed_year(monkeypatch, tmp_path):
+    settings = _settings(monkeypatch)
+
+    def always_slow(path, _settings):
+        raise evds.EvdsTimeoutError("slow")
+
+    monkeypatch.setattr(evds, "_authenticated_get", always_slow)
+
+    result = evds.fetch_datagroup_year("bie_olu", 2024, settings)
+
+    assert result.outcome == "failed"
+
+
+def test_a_timeout_is_logged_and_raised_as_its_own_error(monkeypatch, tmp_path):
+    settings = _settings(monkeypatch)
+
+    def timeout(*_args, **_kwargs):
+        raise evds.requests.exceptions.Timeout("read timeout")
+
+    monkeypatch.setattr(evds.requests, "get", timeout)
+
+    with pytest.raises(evds.EvdsTimeoutError):
+        evds._authenticated_get("datagroup=bie_x&type=json", settings)
+
+    logged = [
+        json.loads(line) for line in evds.FETCH_LOG_JSONL_PATH.read_text().splitlines()
+    ]
+    assert [entry["outcome"] for entry in logged] == ["timeout"]
+
+
 def test_fetch_datagroup_year_truncated_response_writes_no_parquet(
     monkeypatch, tmp_path
 ):
@@ -435,7 +546,7 @@ def test_fetch_datagroups_years_continues_past_failed_groups(monkeypatch, tmp_pa
 
     def fake_authenticated_get(path, _settings):
         if "bie_broken" in path:
-            raise evds.requests.exceptions.Timeout("slow")
+            raise evds.EvdsTimeoutError("slow")
         return [{"Tarih": "2024-1", "X": "1.0"}]
 
     monkeypatch.setattr(evds, "_authenticated_get", fake_authenticated_get)

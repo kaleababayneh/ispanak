@@ -1,8 +1,9 @@
-"""EVDS v3 (TCMB) ingest client: metadata catalog build.
+"""EVDS v3 (TCMB) ingest client: metadata catalog and bulk data fetch.
 
 Bronze layer only: no aggregation, no unit conversion, no NaN handling.
-Bulk per-datagroup-per-year data fetch (with truncation detection) is a
-separate follow-up piece and is not implemented here.
+Data is fetched one datagroup x one calendar year at a time (the 1000-row
+cap), with truncation detection; a year that times out is fetched again in
+quarters, and a quarter that times out in months (`fetch_datagroup_year`).
 """
 
 import json
@@ -66,6 +67,13 @@ class EvdsAuthError(RuntimeError):
 
 class EvdsRequestError(RuntimeError):
     """Raised when a request fails (non-2xx, non-3xx, non-403) or exhausts all retries."""
+
+
+class EvdsTimeoutError(EvdsRequestError):
+    """The server did not answer within REQUEST_TIMEOUT. Not retried as is:
+    the previous full run lost 34 datagroup-years to timeouts that a second
+    identical round did not recover (large daily groups), so the caller asks
+    for a smaller window instead."""
 
 
 @dataclass(frozen=True)
@@ -161,12 +169,38 @@ def _authenticated_get(path: str, settings: Settings) -> list | dict:
 
     for attempt in range(1, MAX_RETRIES + 1):
         time.sleep(random.uniform(*RATE_LIMIT_RANGE))
-        response = requests.get(
-            url,
-            headers=settings.evds_auth_header(),
-            allow_redirects=False,
-            timeout=REQUEST_TIMEOUT,
-        )
+        try:
+            response = requests.get(
+                url,
+                headers=settings.evds_auth_header(),
+                allow_redirects=False,
+                timeout=REQUEST_TIMEOUT,
+            )
+        except requests.exceptions.Timeout as exc:
+            # Logged too: a call that got no answer is still a call, and the
+            # log is what says which windows were lost and why. Status 0 =
+            # no HTTP response at all.
+            _log_call(
+                ApiCall(
+                    logged_url, path, 0, None, datetime.now(UTC).isoformat(), "timeout"
+                )
+            )
+            raise EvdsTimeoutError(f"EVDS zaman asimi: {logged_url}") from exc
+        except requests.exceptions.ConnectionError as exc:
+            _log_call(
+                ApiCall(
+                    logged_url,
+                    path,
+                    0,
+                    None,
+                    datetime.now(UTC).isoformat(),
+                    "connection_error",
+                )
+            )
+            if attempt < MAX_RETRIES:
+                time.sleep(2 ** (attempt - 1))
+                continue
+            raise EvdsRequestError(f"EVDS baglanti hatasi: {logged_url}") from exc
         last_status = response.status_code
         fetched_at = datetime.now(UTC).isoformat()
 
@@ -406,8 +440,74 @@ class YearFetchResult:
     path: Path | None
 
 
+@dataclass(frozen=True)
+class _Window:
+    """One request's date range and the bronze file its answer goes to."""
+
+    label: str  # "2024", "2024-Q1" or "2024-03": the file stem
+    start: date
+    end: date
+
+    def split(self) -> list["_Window"]:
+        """A year into quarters, a quarter into months; a month is final."""
+        if len(self.label) == 4:
+            return [
+                _Window(
+                    f"{self.label}-Q{q}",
+                    date(self.start.year, 3 * q - 2, 1),
+                    _month_end(self.start.year, 3 * q),
+                )
+                for q in range(1, 5)
+            ]
+        if "-Q" in self.label:
+            return [
+                _Window(
+                    f"{self.start.year}-{m:02d}",
+                    date(self.start.year, m, 1),
+                    _month_end(self.start.year, m),
+                )
+                for m in range(self.start.month, self.start.month + 3)
+            ]
+        return []
+
+
+def _month_end(year: int, month: int) -> date:
+    following = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    return date.fromordinal(following.toordinal() - 1)
+
+
 def _datagroup_year_path(datagroup_code: str, year: int) -> Path:
     return DATAGROUPS_DATA_ROOT / datagroup_code / f"{year}.parquet"
+
+
+def _window_path(datagroup_code: str, label: str) -> Path:
+    return DATAGROUPS_DATA_ROOT / datagroup_code / f"{label}.parquet"
+
+
+def _empty_marker(datagroup_code: str, label: str) -> Path:
+    """Records that a window came back empty, so a second run makes no call
+    for it (CLAUDE.md #6). Not a parquet: silver reads `*.parquet` only."""
+    return DATAGROUPS_DATA_ROOT / datagroup_code / f"{label}.empty.json"
+
+
+def _window_done(datagroup_code: str, window: _Window) -> bool:
+    if _window_path(datagroup_code, window.label).exists():
+        return True
+    if _empty_marker(datagroup_code, window.label).exists():
+        return True
+    parts = window.split()
+    return bool(parts) and all(_window_done(datagroup_code, part) for part in parts)
+
+
+def _has_parts(datagroup_code: str, window: _Window) -> bool:
+    """A window already being fetched piece by piece stays that way, so a
+    rerun never mixes a whole-year file with some of its quarters."""
+    return any(
+        _window_path(datagroup_code, part.label).exists()
+        or _empty_marker(datagroup_code, part.label).exists()
+        or _has_parts(datagroup_code, part)
+        for part in window.split()
+    )
 
 
 def fetch_datagroup_year(
@@ -415,37 +515,112 @@ def fetch_datagroup_year(
 ) -> YearFetchResult:
     """Fetch one datagroup's raw (wide, bronze) data for one calendar year.
 
-    Idempotent: skips the HTTP call entirely if the year's parquet already
-    exists. A truncated or network-failed year never writes a parquet, so a
-    retry with force=False will fetch it again rather than silently
-    accepting partial data. A 403 (EvdsAuthError) is not caught here --
-    it propagates and is meant to stop the whole bulk run.
+    Idempotent: skips the HTTP call entirely if the year is already on disk
+    -- as one file, as an empty marker, or as complete quarter/month parts.
+    A year that times out is fetched again as quarters, a quarter as months;
+    each answer is stored as it came, in its own file. A truncated or
+    failed window never writes a parquet, so a rerun with force=False
+    fetches it again rather than silently accepting partial data. A 403
+    (EvdsAuthError) is not caught here -- it propagates and is meant to stop
+    the whole bulk run.
     """
+    year_window = _Window(str(year), date(year, 1, 1), date(year, 12, 31))
     out_path = _datagroup_year_path(datagroup_code, year)
-    if out_path.exists() and not force:
+    if not force and _window_done(datagroup_code, year_window):
         return YearFetchResult(datagroup_code, year, "cached", None, out_path)
 
-    expected_start = date(year, 1, 1)
+    outcomes = _fetch_window(
+        datagroup_code,
+        year_window,
+        settings,
+        force=force,
+        split_first=_has_parts(datagroup_code, year_window),
+    )
+    rows = sum(count for _, count in outcomes if count)
+    kinds = {outcome for outcome, _ in outcomes}
+    for outcome in ("truncated", "failed"):
+        if outcome in kinds:
+            return YearFetchResult(datagroup_code, year, outcome, rows or None, None)
+    if kinds <= {"empty", "cached"} and "empty" in kinds and not rows:
+        return YearFetchResult(datagroup_code, year, "empty", 0, None)
+    return YearFetchResult(datagroup_code, year, "ok", rows, out_path)
+
+
+def _fetch_window(
+    datagroup_code: str,
+    window: _Window,
+    settings: Settings,
+    *,
+    force: bool,
+    split_first: bool = False,
+) -> list[tuple[str, int | None]]:
+    """Fetch `window`, splitting it on a timeout. Returns (outcome, rows)
+    per request made or skipped."""
+    if not force and (
+        _window_path(datagroup_code, window.label).exists()
+        or _empty_marker(datagroup_code, window.label).exists()
+    ):
+        return [("cached", None)]
+    if split_first and window.split():
+        return [
+            outcome
+            for part in window.split()
+            for outcome in _fetch_window(
+                datagroup_code,
+                part,
+                settings,
+                force=force,
+                split_first=_has_parts(datagroup_code, part),
+            )
+        ]
+
     path = DATAGROUP_DATA_PATH_TMPL.format(
         code=datagroup_code,
-        start=expected_start.strftime("%d-%m-%Y"),
-        end=date(year, 12, 31).strftime("%d-%m-%Y"),
+        start=window.start.strftime("%d-%m-%Y"),
+        end=window.end.strftime("%d-%m-%Y"),
     )
-
     try:
         payload = _authenticated_get(path, settings)
+    except EvdsTimeoutError:
+        parts = window.split()
+        if not parts:
+            logger.warning(
+                "EVDS %s/%s: ay parcasi da zaman asimina ugradi",
+                datagroup_code,
+                window.label,
+            )
+            return [("failed", None)]
+        logger.info(
+            "EVDS %s/%s zaman asimi; %d parcaya bolunuyor",
+            datagroup_code,
+            window.label,
+            len(parts),
+        )
+        return [
+            outcome
+            for part in parts
+            for outcome in _fetch_window(datagroup_code, part, settings, force=force)
+        ]
     except (
         requests.exceptions.ConnectionError,
-        requests.exceptions.Timeout,
         EvdsRequestError,
         EvdsRedirectError,
     ) as exc:
-        logger.warning("EVDS fetch failed for %s/%s: %s", datagroup_code, year, exc)
-        return YearFetchResult(datagroup_code, year, "failed", None, None)
+        logger.warning(
+            "EVDS fetch failed for %s/%s: %s", datagroup_code, window.label, exc
+        )
+        return [("failed", None)]
 
     df = pd.DataFrame(_extract_rows(payload))
+    fetched_at = datetime.now(UTC).isoformat()
     if df.empty:
-        return YearFetchResult(datagroup_code, year, "empty", 0, None)
+        marker = _empty_marker(datagroup_code, window.label)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps({"params": path, "fetched_at": fetched_at, "rows": 0}),
+            encoding="utf-8",
+        )
+        return [("empty", 0)]
 
     row_count = len(df)
     total_count = payload.get("totalCount") if isinstance(payload, dict) else None
@@ -453,24 +628,25 @@ def fetch_datagroup_year(
         logger.warning(
             "%s/%s: %d satır döndü (1000 sınırına yakın/eşit) -- ilk tarih kontrol ediliyor",
             datagroup_code,
-            year,
+            window.label,
             row_count,
         )
 
-    if detect_truncation(df, expected_start, total_count=total_count):
+    if detect_truncation(df, window.start, total_count=total_count):
         logger.warning(
             "%s/%s: kesme tespit edildi (ilk satır %s, beklenen %s) -- parquet yazılmadı",
             datagroup_code,
-            year,
+            window.label,
             df["Tarih"].iloc[0],
-            expected_start,
+            window.start,
         )
-        return YearFetchResult(datagroup_code, year, "truncated", row_count, None)
+        return [("truncated", row_count)]
 
-    df["_fetched_at"] = datetime.now(UTC).isoformat()
+    df["_fetched_at"] = fetched_at
+    out_path = _window_path(datagroup_code, window.label)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out_path, index=False)
-    return YearFetchResult(datagroup_code, year, "ok", row_count, out_path)
+    return [("ok", row_count)]
 
 
 def fetch_datagroups_years(

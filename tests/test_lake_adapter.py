@@ -580,13 +580,91 @@ def test_a_failed_coverage_read_is_tried_again(adapter, monkeypatch):
         ),
     ]
 
-    def run_sql(_sql):
+    def coverage():
         answer = answers.pop(0)
         if isinstance(answer, Exception):
             raise answer
         return answer
 
-    monkeypatch.setattr(gold, "run_sql", run_sql)
+    monkeypatch.setattr(gold, "coverage", coverage)
 
     assert adapter._coverage() == {}
     assert adapter._coverage() == {KNOWN: ("2021-01", "2026-06")}
+
+
+# --- the pool index (large pools) -------------------------------------------
+
+
+def _documents_with_failures(texts):
+    return _fake_documents(texts), []
+
+
+def test_a_large_pool_searches_its_built_index(catalog_path, tmp_path):
+    """Past IN_MEMORY_LIMIT the catalog is not embedded inside the search:
+    the index built after gold answers, with the same cosine scores."""
+    from lakehouse_agent.lake import pool_index
+
+    index_dir = tmp_path / "index"
+    pool_index.build(
+        pd.read_parquet(catalog_path),
+        path=index_dir,
+        embed_documents=_documents_with_failures,
+    )
+
+    def no_catalog_embedding(_texts):
+        raise AssertionError("buyuk havuzda katalog aramada embed edilmemeli")
+
+    adapter = LakeAdapter(
+        catalog_path=catalog_path,
+        embed_documents=no_catalog_embedding,
+        embed_query=_fake_query,
+        index_path=index_dir,
+        in_memory_limit=0,
+    )
+    adapter._coverage = dict
+
+    hits, notes = adapter.search_detailed("faiz orani")
+
+    assert [hit.series_id for hit in hits] == [KNOWN, OTHER]
+    assert hits[0].score == pytest.approx(1 / np.hypot(1, 0.6), abs=1e-4)
+    assert hits[0].match == "semantic"
+    assert notes == []
+
+
+def test_a_large_pool_without_an_index_says_it_searched_by_keyword(
+    catalog_path, tmp_path
+):
+    adapter = LakeAdapter(
+        catalog_path=catalog_path,
+        embed_query=_fake_query,
+        index_path=tmp_path / "yok",
+        in_memory_limit=0,
+    )
+    adapter._coverage = dict
+
+    hits, notes = adapter.search_detailed("konut kredisi faiz")
+
+    assert hits and hits[0].match == "keyword"
+    assert notes and "indeksi kurulmamis" in notes[0]
+
+
+def test_an_index_built_from_another_catalog_says_what_it_misses(
+    catalog_path, tmp_path
+):
+    from lakehouse_agent.lake import pool_index
+
+    index_dir = tmp_path / "index"
+    old = pd.read_parquet(catalog_path).iloc[:1]  # KNOWN only
+    pool_index.build(old, path=index_dir, embed_documents=_documents_with_failures)
+
+    adapter = LakeAdapter(
+        catalog_path=catalog_path,
+        embed_query=_fake_query,
+        index_path=index_dir,
+        in_memory_limit=0,
+    )
+    adapter._coverage = dict
+
+    _hits, notes = adapter.search_detailed("faiz")
+
+    assert any("1 havuz serisi indekste yok" in note for note in notes)

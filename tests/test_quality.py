@@ -358,3 +358,59 @@ def test_write_quality_report_writes_file(tmp_path):
 
     assert out_path.exists()
     assert "evds:X" in out_path.read_text(encoding="utf-8")
+
+
+def test_a_business_day_series_does_not_miss_its_weekends():
+    """EVDS "İŞ GÜNÜ" series and market prices have no weekend values; two
+    weeks of them are complete, not four days short."""
+    days = [
+        d
+        for d in pd.date_range("2024-06-03", "2024-06-14", freq="D")
+        if d.weekday() < 5
+    ]
+    obs = pd.DataFrame(
+        {
+            "series_id": "evds:TP.GUN",
+            "period": [d.date() for d in days],
+            "value": 1.0,
+            "fetched_at": "2026-09-22T00:00:00+00:00",
+        }
+    )
+    catalog = pd.DataFrame(
+        [
+            {
+                "series_id": "evds:TP.GUN",
+                "name_tr": "Gunluk",
+                "source": "EVDS",
+                "freq": "D",
+            }
+        ]
+    )
+
+    report = quality.build_quality_report(obs, catalog)
+
+    assert (report.iloc[0]["n"], report.iloc[0]["missing"]) == (10, 0)
+
+
+def test_a_large_pool_report_points_at_the_detail_file():
+    rows = quality.DETAIL_ROWS_IN_REPORT + 1
+    report = pd.DataFrame(
+        {
+            "series_id": [f"evds:S{i}" for i in range(rows)],
+            "name_tr": "x",
+            "source": "EVDS",
+            "freq": "M",
+            "start": None,
+            "end": None,
+            "n": 1,
+            "missing": 0,
+            "duplicates": 0,
+            "outliers": 0,
+            "last_updated": None,
+        }
+    )
+
+    text = quality.render_quality_markdown(report)
+
+    assert "quality_by_series.parquet" in text
+    assert "| evds:S0 |" not in text

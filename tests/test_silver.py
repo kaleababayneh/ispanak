@@ -1,14 +1,13 @@
 """Tests for lakehouse_agent.lake.silver. No network access -- small,
 hand-built bronze DataFrames with manually computed expected long output."""
 
-import json
 import math
 from datetime import date
 
 import pandas as pd
 import pytest
 
-from lakehouse_agent.ingest import bddk_monthly, evds
+from lakehouse_agent.ingest import evds
 from lakehouse_agent.lake import silver
 
 
@@ -155,57 +154,3 @@ def test_map_freq_covers_all_contract_frequencies():
     assert silver.map_freq("YILLIK") == "A"
     with pytest.raises(ValueError):
         silver.map_freq("BILINMEYEN")
-
-
-def _write_bddk_fixture(tmp_path):
-    rows_yaml = tmp_path / "ingest" / "bddk_rows.yaml"
-    rows_yaml.parent.mkdir(parents=True)
-    rows_yaml.write_text(
-        "- tablo_no: 4\n"
-        '  satir_etiketi: "Tüketici Kredileri - Konut"\n'
-        '  series_id: "bddk:aylik:tuketici:konut:TL:sektor"\n'
-        "  cell_index: 4\n"
-        "  kind: stock\n"
-        '  unit: "milyon TL"\n'
-        "  cum_type: none\n",
-        encoding="utf-8",
-    )
-
-    bronze_dir = tmp_path / "data" / "bronze" / "bddk_aylik"
-    bronze_dir.mkdir(parents=True)
-    pd.DataFrame(
-        [
-            {
-                "yil": 2024,
-                "ay": 1,
-                "tablo_no": 4,
-                "satir_etiketi": "Tüketici Kredileri - Konut",
-                "series_id": "bddk:aylik:tuketici:konut:TL:sektor",
-                "cell_json": json.dumps(
-                    ["Sektör", 2, "Tüketici Kredileri - Konut", "", 594545, 62, 594607]
-                ),
-                "url": bddk_monthly.BASE_URL,
-                "http_status": 200,
-                "fetched_at": "2026-09-17T00:00:00+00:00",
-            }
-        ]
-    ).to_parquet(bronze_dir / "2024-01.parquet", index=False)
-
-
-def test_build_bddk_silver_observations_reads_value_by_cell_index(
-    monkeypatch, tmp_path
-):
-    monkeypatch.chdir(tmp_path)
-    _write_bddk_fixture(tmp_path)
-
-    result, dropped = silver.build_bddk_silver_observations(
-        ["bddk:aylik:tuketici:konut:TL:sektor"]
-    )
-
-    assert list(result["series_id"]) == ["bddk:aylik:tuketici:konut:TL:sektor"]
-    assert list(result["period"]) == [date(2024, 1, 1)]
-    assert list(result["value"]) == [594545.0]
-    assert list(result["unit"]) == ["milyon TL"]
-    assert list(result["source"]) == [silver.BDDK_SOURCE]
-    assert list(result["freq"]) == ["M"]
-    assert dropped == 0

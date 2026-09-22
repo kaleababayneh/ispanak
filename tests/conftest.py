@@ -11,6 +11,8 @@ level, so this file still collects cleanly in a tree where
 `lakehouse_agent.testing` is not present yet.
 """
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -80,3 +82,51 @@ def scenario_wide(fake_lake) -> pd.DataFrame:
     return fake_lake.wide(
         [CREDIT_SERIES, RATE_SERIES, CPI_SERIES, HPI_SERIES], "2021-01", "2025-12"
     )
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture
+def bddk_bronze(monkeypatch, tmp_path):
+    """A working directory with the real BDDK table definitions and a writer
+    for bronze table files in the shape `fetch_table_month` stores.
+
+    `write(tablo_no, year, month, caption, columns, rows)`: `columns` are the
+    value columns' names, `rows` are (label, style, values...) tuples.
+    """
+    import json
+    import shutil
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ingest").mkdir(exist_ok=True)
+    shutil.copy(REPO_ROOT / "ingest" / "bddk_tables.yaml", tmp_path / "ingest")
+
+    from lakehouse_agent.ingest import bddk_monthly
+
+    def write(tablo_no, year, month, caption, columns, rows, fetched_at=None):
+        payload = {
+            "Json": {
+                "colNames": ["", "", "", "BasitFont", *columns],
+                "caption": caption,
+                "uyari": "",
+                "data": {
+                    "rows": [
+                        {"cell": ["Sektör", number, label, style, *values]}
+                        for number, (label, style, *values) in enumerate(rows, start=1)
+                    ]
+                },
+            }
+        }
+        record = {
+            "url": bddk_monthly.BASE_URL,
+            "params": {"tabloNo": tablo_no, "yil": year, "ay": month},
+            "http_status": 200,
+            "fetched_at": fetched_at or f"2026-09-22T00:00:{month:02d}+00:00",
+            "payload": payload,
+        }
+        path = bddk_monthly.table_path(tablo_no, year, month)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+    return write

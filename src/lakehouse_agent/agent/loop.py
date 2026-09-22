@@ -87,10 +87,24 @@ class AgentConfig(BaseModel):
     """
 
     #: A question needing more than eight tool calls is a question we got wrong.
-    max_steps: int = 8
+    #: Tool steps in one turn. Raised from 8 to 12 on 22 Sep: over 45k series
+    #: the model spends steps on searching. Measured live -- a turn that
+    #: misread "60 aylık" as a loan maturity used six searches before finding
+    #: its series and had none left to fetch the data. A cap, not a target:
+    #: the scenario's turns still finish in 2-4 steps, so a good turn costs
+    #: nothing extra.
+    max_steps: int = 12
 
     #: One slow tool must not take the turn with it.
     step_timeout_s: float = 60.0
+
+    #: Output cap for an observing call. Observing decides the next move in a
+    #: sentence (planner rule 14); measured 22 Sep on the 45k pool, DeepSeek
+    #: twice wrote the whole answer there instead (696 and 352 tokens) and
+    #: then wrote it again in the answer. A call that hits the cap while
+    #: making a tool call is redone uncapped -- a cut-off tool call would
+    #: cost more than the prose saves.
+    observe_max_tokens: int = 300
 
     #: Total working time. Measured on `active_s`, which excludes time spent
     #: waiting for a human: a jury thinking about an approval is not the agent
@@ -375,16 +389,37 @@ async def _llm_step(
     )
 
     spent = _Spent(thinking=thinking)
+    # Observing decides the next move, it does not write the answer: capped so
+    # a model that starts drafting one there stops early (AgentConfig).
+    cap_tokens = deps.config.observe_max_tokens if node == "observe" else None
     try:
+        messages = [{"role": "system", "content": system}, *model_messages(state)]
         result = await _chat(
             state,
             deps,
-            [{"role": "system", "content": system}, *model_messages(state)],
+            messages,
             tools=deps.registry.openai_tools() or None,
             thinking=thinking,
             tag=f"{node}@{prompt.tag}",
             spent=spent,
+            max_tokens=cap_tokens,
         )
+        if (
+            cap_tokens is not None
+            and result.finish_reason == "length"
+            and result.tool_calls
+        ):
+            # The cap cut a tool call in half. Prose is worth trimming; an
+            # action is not -- ask again with no cap.
+            result = await _chat(
+                state,
+                deps,
+                messages,
+                tools=deps.registry.openai_tools() or None,
+                thinking=thinking,
+                tag=f"{node}@{prompt.tag}",
+                spent=spent,
+            )
     except BaseException as exc:
         # The card was opened above, so it is closed here whatever ended the
         # call -- a timeout, a server error, a stopped turn -- or an interface
@@ -715,7 +750,7 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
         result = await _chat(
             state,
             deps,
-            [{"role": "system", "content": system}, *model_messages(state)],
+            [{"role": "system", "content": system}, *_answer_messages(state)],
             tools=None,
             thinking=deps.config.thinking.get("answer", True),
             tag=f"answer@{prompt.tag}",
@@ -773,6 +808,27 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
     return answer
 
 
+def _answer_messages(state: SessionState) -> list[dict[str, Any]]:
+    """The conversation for the answer call, not ending on the model's own
+    words.
+
+    The loop's last message is usually the observe step's note ("Veriler
+    hazir."). A request ending with an assistant message asks some chat
+    templates to *continue* that message rather than answer: measured 22 Sep
+    on DeepSeek-V4.1-Flash, the answer came back as 16 tokens of nonsense
+    with no reasoning, while the same request ending on the tool result
+    answered properly. The note carries nothing the tool messages do not.
+    """
+    messages = model_messages(state)
+    while (
+        messages
+        and messages[-1].get("role") == "assistant"
+        and not messages[-1].get("tool_calls")
+    ):
+        messages = messages[:-1]
+    return messages
+
+
 @dataclass
 class _Spent:
     """What one model call used, however it ended. The step card reports it:
@@ -797,6 +853,7 @@ async def _chat(
     tag: str,
     spent: _Spent,
     last_chance: bool = False,
+    max_tokens: int | None = None,
 ) -> ChatResult:
     """One model call held to the turn's budget.
 
@@ -858,7 +915,7 @@ async def _chat(
         think_first = _fast_enough(state, config.answer_thinking_tokens, window)
     if think_first:
         try:
-            return await attempt(True, None, window)
+            return await attempt(True, max_tokens, window)
         except LlmTimeoutError:
             # What the fallback needs is what the client needs to start an
             # attempt at all, not a whole `min_call_s`. The thinking-on
@@ -871,9 +928,12 @@ async def _chat(
             # exactly the turn that needed it (22 Sep, third run).
             if left() < MIN_ATTEMPT_S:
                 raise
+    fallback = config.fallback_max_tokens if thinking else None
+    if max_tokens is not None:
+        fallback = max_tokens if fallback is None else min(fallback, max_tokens)
     return await attempt(
         False,
-        config.fallback_max_tokens if thinking else None,
+        fallback,
         left() if last_chance else min(cap, left()),
     )
 

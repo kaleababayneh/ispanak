@@ -16,12 +16,17 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_KIND_TO_AGG = {"stock": "last", "flow": "sum", "rate": "mean", "index": "mean"}
-_KIND_TO_FORMULA = {
-    "stock": "value[period] = last(value[alt_dönem])",
-    "flow": "value[period] = sum(value[alt_dönem])",
-    "rate": "value[period] = mean(value[alt_dönem])",
-    "index": "value[period] = mean(value[alt_dönem])",
+#: What each `kind` aggregates with when no `agg_method` is given.
+_KIND_TO_AGG_METHOD = {"stock": "last", "flow": "sum", "rate": "avg", "index": "avg"}
+
+#: The contract's AggMethod (contracts.py) -> the pandas aggregation it names.
+_AGG_TO_PANDAS = {
+    "last": "last",
+    "sum": "sum",
+    "avg": "mean",
+    "first": "first",
+    "min": "min",
+    "max": "max",
 }
 
 # The gold contract's Freq (D|W|M|Q|A, contracts.py) -> the pandas offset
@@ -30,10 +35,22 @@ _KIND_TO_FORMULA = {
 # letter straight to `.resample()` crashes on pandas 3.x --
 # `to_freq(df, "rate", "M")` -> ValueError: "'M' is no longer supported for
 # offsets. Please use 'ME' instead." -- and "ME"/"QE"/"YE" (period END) would
-# silently violate the contract even if they didn't crash. W maps to
-# W-MON specifically to match lake/silver.py's own Monday-anchored weekly
-# period convention.
+# silently violate the contract even if they didn't crash.
 _FREQ_CONTRACT_TO_PANDAS = {"D": "D", "W": "W-MON", "M": "MS", "Q": "QS", "A": "YS"}
+
+#: Target frequencies `to_freq` buckets itself, by contract letter or by the
+#: first-day pandas alias callers already pass.
+_BUCKET_OF = {
+    "D": "D",
+    "W": "W",
+    "W-MON": "W",
+    "M": "M",
+    "MS": "M",
+    "Q": "Q",
+    "QS": "Q",
+    "A": "A",
+    "YS": "A",
+}
 
 
 def _resolve_freq_alias(freq: str) -> str:
@@ -44,30 +61,81 @@ def _resolve_freq_alias(freq: str) -> str:
     return _FREQ_CONTRACT_TO_PANDAS.get(freq, freq)
 
 
-def to_freq(df: pd.DataFrame, kind: str, freq: str) -> tuple[pd.DataFrame, str]:
-    """Resample a "period"/"value" series to a lower frequency, aggregating
-    per `kind` (stock->last, flow->sum, rate->avg, index->avg).
+def _bucket_start(dates: pd.Series, bucket: str) -> pd.Series:
+    """The first day of the `bucket` period each date falls in. A week is
+    Monday to Sunday and is named by its Monday, as silver names weeks."""
+    dates = dates.dt.normalize()
+    if bucket == "D":
+        return dates
+    if bucket == "W":
+        return dates - pd.to_timedelta(dates.dt.weekday, unit="D")
+    return dates.dt.to_period({"M": "M", "Q": "Q", "A": "Y"}[bucket]).dt.start_time
 
-    `freq` is the gold contract's Freq value (D|W|M|Q|A, contracts.py) --
-    translated internally to the pandas offset alias for that period's
-    FIRST day (MS/QS/YS/W-MON/D), matching the gold contract's "period =
-    first day of period" convention. A raw pandas offset alias (e.g.
-    already "MS", or "ME" for period-end) is also accepted as-is.
+
+def to_freq(
+    df: pd.DataFrame,
+    kind: str | None,
+    freq: str,
+    *,
+    agg_method: str | None = None,
+) -> tuple[pd.DataFrame, str]:
+    """Aggregate a "period"/"value" series to a lower frequency.
+
+    The aggregation is `agg_method` (the source's own recommendation, the
+    catalog's `agg_method` column: last|sum|avg|first|min|max) when given,
+    else the one `kind` implies (stock->last, flow->sum, rate/index->avg).
+    `kind` alone can be wrong for a series: a rate EVDS publishes as an
+    end-of-period value has kind "rate" but must not be averaged.
+
+    Each value goes to the period its *observation date* falls in: the
+    `obs_date` column when the frame has one, else `period`. Silver stores a
+    week under its Monday; its value is observed on the Friday, and a week
+    whose Friday is 3 April belongs to April, not to the March its Monday is
+    in -- measured on TP.HPBITABLO6.3, 6 of 2025's 12 month-end values were
+    the next month's first Friday under the Monday rule.
+
+    `freq` is the gold contract's Freq value (D|W|M|Q|A) or the first-day
+    pandas alias for it (MS/QS/YS/W-MON). Periods with no observation in the
+    covered range come back as NaN rows, never as 0 (CLAUDE.md #2). Any
+    other pandas alias ("ME" for period end) falls back to `resample` on
+    `period`.
     """
-    if kind not in _KIND_TO_AGG:
-        raise ValueError(f"Bilinmeyen kind: {kind!r}")
+    method = agg_method or _KIND_TO_AGG_METHOD.get(kind or "")
+    if method is None:
+        raise ValueError(f"Bilinmeyen kind: {kind!r} (agg_method da verilmedi)")
+    if method not in _AGG_TO_PANDAS:
+        raise ValueError(f"Bilinmeyen agg_method: {method!r}")
+    how = _AGG_TO_PANDAS[method]
+    formula = f"value[period] = {how}(value[alt_dönem])"
 
     working = df.copy()
     working["period"] = pd.to_datetime(working["period"])
-    grouped = working.set_index("period")["value"].resample(_resolve_freq_alias(freq))
+    bucket = _BUCKET_OF.get(freq)
 
-    if _KIND_TO_AGG[kind] == "sum":
-        resampled = grouped.sum(min_count=1)  # all-NaN window -> NaN, not 0
-    else:
-        resampled = getattr(grouped, _KIND_TO_AGG[kind])()
+    if bucket is None:
+        grouped = working.set_index("period")["value"].resample(
+            _resolve_freq_alias(freq)
+        )
+        resampled = grouped.sum(min_count=1) if how == "sum" else grouped.agg(how)
+        return resampled.reset_index(), formula
 
-    result = resampled.reset_index()
-    return result, _KIND_TO_FORMULA[kind]
+    if working.empty:
+        return pd.DataFrame({"period": pd.to_datetime([]), "value": []}), formula
+
+    when = working["period"]
+    if "obs_date" in working.columns:
+        when = pd.to_datetime(working["obs_date"]).fillna(when)
+        formula += "; alt dönem gözlem tarihine göre"
+    working["_bucket"] = _bucket_start(when, bucket)
+
+    grouped = working.groupby("_bucket")["value"]
+    values = grouped.sum(min_count=1) if how == "sum" else grouped.agg(how)
+    full = pd.date_range(
+        values.index.min(), values.index.max(), freq=_FREQ_CONTRACT_TO_PANDAS[bucket]
+    )
+    values = values.reindex(full)
+    result = pd.DataFrame({"period": values.index, "value": values.to_numpy()})
+    return result.reset_index(drop=True), formula
 
 
 def _infer_freq_alias(idx: pd.DatetimeIndex) -> str:
@@ -348,3 +416,41 @@ def align_join(
     result = result.sort_values("period").reset_index(drop=True)
     formula = f"align_join(how={how}): dönemler birleştirilir, eksikler NaN kalır (doldurma yok)"
     return result, formula
+
+
+def decumulate_ytd(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    """Year-to-date cumulative monthly values -> the month's own flow.
+
+    flow[t] = cum[t] - cum[t-1] within a calendar year; in January the flow
+    is the cumulative value itself (the year starts again). A month whose
+    previous month is missing gets NaN: the difference cannot be known, and
+    it is not guessed (CLAUDE.md #2). BDDK's profit-and-loss lines are
+    published this way; organisers warned twice that reading them as monthly
+    figures makes every calculation wrong.
+    """
+    working = df.copy()
+    working["period"] = pd.to_datetime(working["period"])
+    working = working.sort_values("period").reset_index(drop=True)
+    month_no = working["period"].dt.year * 12 + working["period"].dt.month
+    follows = month_no.diff() == 1  # the previous row is the previous month
+    january = working["period"].dt.month == 1
+    flow = (working["value"] - working["value"].shift(1)).where(follows)
+    working["value"] = flow.where(~january, working["value"])
+    return working[
+        ["period", "value"]
+    ], "akim[t] = kum[t] - kum[t-1] (yil ici); Ocak = kum[Ocak]"
+
+
+def year_to_date(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    """Monthly flows -> the running total since January: the inverse of
+    `decumulate_ytd`, for "yilbasindan bu yana" questions. A missing month
+    makes the rest of its year NaN rather than a total that silently skips
+    it."""
+    working = df.copy()
+    working["period"] = pd.to_datetime(working["period"])
+    working = working.sort_values("period").reset_index(drop=True)
+    year = working["period"].dt.year
+    gap = working["value"].isna().astype(int).groupby(year).cumsum() > 0
+    running = working["value"].fillna(0.0).groupby(year).cumsum()
+    working["value"] = running.where(~gap)
+    return working[["period", "value"]], "ytd[t] = toplam(akim[Ocak..t])"

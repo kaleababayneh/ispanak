@@ -73,34 +73,53 @@ _FREQ_TR = {
 _FREQ_RANK = {"D": 0, "W": 1, "M": 2, "Q": 3, "A": 4}
 _PERIODS_PER_YEAR = {"M": 12, "W": 52, "Q": 4, "A": 1}
 
-#: How a finer series becomes monthly, per kind: the same rule
-#: `analysis.transforms.to_freq` applies inside `wide()`, in words.
-_TO_MONTHLY = {
-    "stock": "ayin son degeri",
-    "flow": "ayin degerlerinin toplami",
-    "rate": "ayin degerlerinin ortalamasi",
-    "index": "ayin degerlerinin ortalamasi",
+#: What a period is called, and whose value a conversion takes.
+_PERIOD_WORD = {"D": "gun", "W": "hafta", "M": "ay", "Q": "ceyrek", "A": "yil"}
+_PERIOD_OF = {"D": "gunun", "W": "haftanin", "M": "ayin", "Q": "ceyregin", "A": "yilin"}
+
+#: How a finer series becomes coarser, per the catalog's `agg_method`: the
+#: rule `analysis.transforms.to_freq` applies inside `wide()`, in words.
+_AGG_WORDS = {
+    "last": "son degeri",
+    "first": "ilk degeri",
+    "sum": "degerlerinin toplami",
+    "avg": "degerlerinin ortalamasi",
+    "min": "en dusuk degeri",
+    "max": "en yuksek degeri",
 }
+_KIND_TO_AGG = {"stock": "last", "flow": "sum", "rate": "avg", "index": "avg"}
 
-#: What a weekly series' month is. The pool stores a week under its Monday
-#: (the data contract), and `to_freq` groups by that date, so a week whose
-#: Monday is in March but whose Friday observation is dated 4 April counts
-#: in March. "Month-end balance" would therefore be a false claim: measured
-#: on TP.HPBITABLO6.3, 6 of 2025's 12 "March-end" style values are the next
-#: month's first Friday. Said plainly until the lane buckets by observation
-#: date.
-_WEEK_RULE = (
-    "hafta, Pazartesi gununun ayina sayilir; gozlemi ayin ilk gunlerine dusen "
-    "bir hafta onceki aya gecebilir"
-)
+#: A weekly value belongs to the period its observation day falls in: the
+#: week of Monday 31 March 2025, observed Friday 4 April, is April's. (Until
+#: 22 Sep it was the Monday's month, and 6 of 2025's 12 "March-end" style
+#: values of TP.HPBITABLO6.3 were the next month's first Friday.)
+_WEEK_RULE = "hafta, gozlendigi gunun (ornegin Cuma) donemine sayilir"
 
 
-def _monthly_rule(freq: str | None, kind: str | None) -> str | None:
-    """How this series became monthly, in words; None if it already was."""
-    if not freq or freq == "M" or kind not in _TO_MONTHLY:
+def _conversion_rule(
+    source: str | None, target: str, agg_method: str | None, kind: str | None
+) -> str | None:
+    """How a `source`-frequency series became `target`, in words; None when
+    it needed no conversion."""
+    if not source or _FREQ_RANK.get(source, 99) >= _FREQ_RANK[target]:
         return None
-    rule = _TO_MONTHLY[kind]
-    return f"{rule} ({_WEEK_RULE})" if freq == "W" else rule
+    method = agg_method or _KIND_TO_AGG.get(kind or "")
+    if method not in _AGG_WORDS:
+        return None
+    rule = f"{_PERIOD_OF[target]} {_AGG_WORDS[method]}"
+    return f"{rule} ({_WEEK_RULE})" if source == "W" else rule
+
+
+def _label(value: Any, freq: str) -> str:
+    """A period as a person reads it at the table's frequency."""
+    stamp = pd.Timestamp(value)
+    if freq in ("D", "W"):
+        return stamp.strftime("%Y-%m-%d")
+    if freq == "Q":
+        return f"{stamp.year}-Q{stamp.quarter}"
+    if freq == "A":
+        return str(stamp.year)
+    return stamp.strftime("%Y-%m")
 
 
 def column_name(series_id: str) -> str:
@@ -301,10 +320,19 @@ class GetSeriesArgs(BaseModel):
             "dokunmaz ('tabloyu bozmadan' istekleri)."
         ),
     )
+    freq: Literal["D", "W", "M", "Q", "A"] = Field(
+        "M",
+        description=(
+            "Tablonun frekansi: D gunluk, W haftalik, M aylik (varsayilan), Q uc "
+            "aylik, A yillik. Kullanici gunluk ya da haftalik istemediyse M birak. "
+            "Seri kendi frekansindan daha sik bir tabloya konamaz."
+        ),
+    )
 
 
 def make_get_series() -> ToolSpec:
-    """Fetch pool series as one monthly table, new or added to the active one."""
+    """Fetch pool series as one table at the asked frequency (monthly by
+    default), new or added to the active one."""
 
     def run(args: GetSeriesArgs, ctx: ToolContext) -> ToolResult:
         lake = ctx.lake
@@ -324,24 +352,43 @@ def make_get_series() -> ToolSpec:
             )
             return ToolResult(ok=False, summary=f"{exc}{hint}")
         info = {row["series_id"]: row for _, row in catalog.iterrows()}
+        target = args.freq
 
-        coarse = [
-            sid
+        coarse = {
+            sid: native
             for sid in ids
-            if _FREQ_RANK.get(_clean(info[sid].get("freq")), 0) > _FREQ_RANK["M"]
-        ]
+            if _FREQ_RANK.get(native := _clean(info[sid].get("freq")), 0)
+            > _FREQ_RANK[target]
+        }
         if coarse:
+            listing = ", ".join(
+                f"{sid} ({_FREQ_TR.get(native, native)})"
+                for sid, native in coarse.items()
+            )
             return ToolResult(
                 ok=False,
                 summary=(
-                    f"{', '.join(coarse)} aylik degil, daha seyrek yayimlaniyor. "
-                    "Aylik tabloya koymak her ayi ayri bir deger gibi gostermek, yani "
-                    "veri uydurmak olur; bu seriler bu aracla getirilemez."
+                    f"{listing} {_FREQ_TR[target]} tablodan daha seyrek yayimlaniyor. "
+                    f"{_FREQ_TR[target].capitalize()} tabloya koymak her donemi ayri "
+                    "bir deger gibi gostermek, yani veri uydurmak olur. freq ile "
+                    "serinin kendi frekansini ya da daha seyrek bir frekansi iste."
                 ),
             )
 
+        if args.into == "active" and ctx.has_table():
+            table_freq = _table_freq(ctx)
+            if table_freq and table_freq != target:
+                return ToolResult(
+                    ok=False,
+                    summary=(
+                        f"Aktif tablo {_FREQ_TR.get(table_freq, table_freq)}; yeni "
+                        f"sutunlar ayni frekansta olmali. freq='{table_freq}' ile "
+                        "iste ya da into='new' ile ayri tablo kur."
+                    ),
+                )
+
         names = {sid: column_name(sid) for sid in ids}
-        frame = lake.wide(ids, args.start, args.end, "M").rename(columns=names)
+        frame = lake.wide(ids, args.start, args.end, target).rename(columns=names)
         frame["period"] = pd.to_datetime(frame["period"])
         frame = frame.sort_values("period").reset_index(drop=True)
         new_columns = [names[sid] for sid in ids]
@@ -355,9 +402,11 @@ def make_get_series() -> ToolSpec:
             )
 
         long = lake.get(ids, args.start, args.end)
-        warnings = _conversion_warnings(ids, names, info)
-        warnings += _partial_month_warnings(long, ids, names, info)
-        columns = [_series_column(sid, names[sid], info[sid], ctx) for sid in ids]
+        warnings = _conversion_warnings(ids, names, info, target)
+        warnings += _partial_period_warnings(long, ids, names, info, target)
+        columns = [
+            _series_column(sid, names[sid], info[sid], ctx, target) for sid in ids
+        ]
 
         if args.into == "active" and ctx.has_table():
             existing = ctx.table()
@@ -374,8 +423,8 @@ def make_get_series() -> ToolSpec:
             outside = int((~frame["period"].isin(periods)).sum())
             if outside:
                 warnings.append(
-                    f"Yeni serilerin {outside} ayi aktif tablonun donemleri disinda "
-                    "kaldigi icin eklenmedi."
+                    f"Yeni serilerin {outside} {_PERIOD_WORD[target]}i aktif "
+                    "tablonun donemleri disinda kaldigi icin eklenmedi."
                 )
             added = frame.set_index("period")[new_columns]
             merged = existing.copy()
@@ -402,27 +451,29 @@ def make_get_series() -> ToolSpec:
             where = "Yeni tablo kuruldu ve aktif tablo yapildi"
 
         warnings += _money_scale_warning(shown, ref, ctx, columns)
-        first, last = _month(shown["period"].min()), _month(shown["period"].max())
+        first = _label(shown["period"].min(), target)
+        last = _label(shown["period"].max(), target)
         return ToolResult(
             ok=True,
             summary=(
-                f"{len(ids)} seri, {len(shown)} ay, {first} - {last}, aylik. {where}: "
-                f"{', '.join(new_columns)}."
+                f"{len(ids)} seri, {len(shown)} {_PERIOD_WORD[target]}, {first} - "
+                f"{last}, {_FREQ_TR[target]}. {where}: {', '.join(new_columns)}."
             ),
             table_ref=ref,
             preview=_preview(shown[["period", *new_columns]]),
             columns=columns,
-            sources=_sources(long, ids, info),
+            sources=_sources(long, ids, info, target),
             warnings=warnings,
         )
 
     return ToolSpec(
         name="get_series",
         description_tr=(
-            "Havuzdaki serileri verilen aralikta AYLIK bir tabloya getirir. "
-            "Haftalik seriler turune gore aya cevrilir (bakiye: ayin son haftasi, "
-            "oran: ortalama, akim: toplam) ve bu uyarida yazar. into='active' ile "
-            "aktif tabloya yeni sutun ekler."
+            "Havuzdaki serileri verilen aralikta tek tabloya getirir; varsayilan "
+            "AYLIK, freq ile gunluk/haftalik/uc aylik/yillik. Daha sik yayimlanan "
+            "seriler kaynagin onerdigi yontemle (son deger, ortalama ya da toplam) "
+            "cevrilir ve bu uyarida yazar. into='active' ile aktif tabloya yeni "
+            "sutun ekler."
         ),
         args_model=GetSeriesArgs,
         fn=run,
@@ -431,51 +482,79 @@ def make_get_series() -> ToolSpec:
 
 
 def _conversion_warnings(
-    ids: list[str], names: dict[str, str], info: dict[str, pd.Series]
+    ids: list[str], names: dict[str, str], info: dict[str, pd.Series], target: str
 ) -> list[str]:
     warnings = []
     for sid in ids:
         freq = _clean(info[sid].get("freq"))
-        rule = _monthly_rule(freq, _clean(info[sid].get("kind")))
+        rule = _conversion_rule(
+            freq,
+            target,
+            _clean(info[sid].get("agg_method")),
+            _clean(info[sid].get("kind")),
+        )
         if rule:
             warnings.append(
                 f"{names[sid]} ({sid}) {_FREQ_TR.get(freq, freq)} yayimlaniyor; "
-                f"aylik degere {rule} alinarak cevrildi."
+                f"{_FREQ_TR[target]} degere {rule} alinarak cevrildi."
             )
     return warnings
 
 
-def _partial_month_warnings(
+def _table_freq(ctx: ToolContext) -> str | None:
+    """The frequency of the active table, from its columns' lineage."""
+    ref = ctx.active_table or ""
+    freqs = {
+        entry.freq
+        for name in ctx.table().columns
+        if (entry := ctx.lineage.get(f"{ref}.{name}")) is not None and entry.freq
+    }
+    return freqs.pop() if len(freqs) == 1 else None
+
+
+_BUCKET_ALIAS = {"M": "M", "Q": "Q", "A": "Y"}
+
+
+def _partial_period_warnings(
     long: pd.DataFrame,
     ids: list[str],
     names: dict[str, str],
     info: dict[str, pd.Series],
+    target: str,
 ) -> list[str]:
-    """Months a weekly series fills with fewer weeks than the month has.
+    """Periods a weekly series fills with fewer weeks than the period has.
 
-    Every month has four or five Mondays, so fewer observed weeks means the
-    month's average or total is built from part of it -- the first month of
-    a window above all: asked from 2020-12, the pool's one December week
-    (Monday 28 Dec, observed 1 Jan) came back as a "monthly average" with
-    nothing saying so.
+    A week belongs to the period its observation day is in, so a month has
+    as many weeks as it has of that weekday -- four or five Fridays. Fewer
+    observed weeks means the month's average or total is built from part of
+    it, and the table cannot show that on its own.
     """
-    warnings = []
-    if long.empty:
+    warnings: list[str] = []
+    if long.empty or target not in _BUCKET_ALIAS:
         return warnings
     for sid in ids:
         if _clean(info[sid].get("freq")) != "W":
             continue
         rows = long[(long["series_id"] == sid) & long["value"].notna()]
-        weeks = pd.to_datetime(rows["period"]).dt.to_period("M").value_counts()
+        if rows.empty:
+            continue
+        observed = pd.to_datetime(rows["obs_date"])
+        weekday = int(observed.dt.weekday.mode().iloc[0])
+        periods = observed.dt.to_period(_BUCKET_ALIAS[target]).value_counts()
         short = []
-        for month, count in sorted(weeks.items()):
-            mondays = len(pd.date_range(month.start_time, month.end_time, freq="W-MON"))
-            if count < mondays:
-                short.append(f"{month.strftime('%Y-%m')} ({count}/{mondays} hafta)")
+        for period, count in sorted(periods.items()):
+            days = pd.date_range(
+                period.start_time, period.end_time.normalize(), freq="D"
+            )
+            expected = int((days.weekday == weekday).sum())
+            if count < expected:
+                short.append(
+                    f"{_label(period.start_time, target)} ({count}/{expected} hafta)"
+                )
         if short:
             warnings.append(
-                f"{names[sid]}: su aylar eksik haftayla hesaplandi, deger ayin "
-                f"tamamini yansitmiyor: {', '.join(short)}."
+                f"{names[sid]}: su donemler eksik haftayla hesaplandi, deger "
+                f"donemin tamamini yansitmiyor: {', '.join(short)}."
             )
     return warnings
 
@@ -555,26 +634,28 @@ def _money_scale_warning(
 
 
 def _series_column(
-    series_id: str, name: str, row: pd.Series, ctx: ToolContext
+    series_id: str, name: str, row: pd.Series, ctx: ToolContext, target: str = "M"
 ) -> ColumnInfo:
     kind = _clean(row.get("kind"))
-    rule = _monthly_rule(_clean(row.get("freq")), kind)
+    rule = _conversion_rule(
+        _clean(row.get("freq")), target, _clean(row.get("agg_method")), kind
+    )
     return ColumnInfo(
         name=name,
         label_tr=_clean(row.get("name_tr")),
         unit=_clean(row.get("unit")),
         kind=kind,
-        freq="M",
+        freq=target,
         source_series=[series_id],
         op="to_freq" if rule else None,
-        formula=f"aylik = {rule}" if rule else None,
+        formula=f"{_FREQ_TR[target]} = {rule}" if rule else None,
         tool="get_series",
         step_no=ctx.step_no,
     )
 
 
 def _sources(
-    long: pd.DataFrame, ids: list[str], info: dict[str, pd.Series]
+    long: pd.DataFrame, ids: list[str], info: dict[str, pd.Series], target: str = "M"
 ) -> list[Source]:
     """One source per series, stamped with when its data was actually fetched.
 
@@ -590,6 +671,7 @@ def _sources(
         row = info[sid]
         freq = _clean(row.get("freq"))
         kind = _clean(row.get("kind"))
+        agg = _clean(row.get("agg_method"))
         sources.append(
             Source(
                 series_id=sid,
@@ -597,8 +679,8 @@ def _sources(
                 fetched_at=stamps[sid].to_pydatetime(),
                 metadata_url=_clean(row.get("metadata_url")),
                 note=(
-                    f"{_FREQ_TR.get(freq, freq)} -> aylik: {rule}"
-                    if (rule := _monthly_rule(freq, kind))
+                    f"{_FREQ_TR.get(freq, freq)} -> {_FREQ_TR[target]}: {rule}"
+                    if (rule := _conversion_rule(freq, target, agg, kind))
                     else None
                 ),
             )
@@ -624,7 +706,15 @@ class Condition(BaseModel):
 
 
 Op = Literal[
-    "diff", "pct_change", "yoy", "change_since", "rebase", "ratio", "deflate", "mark"
+    "diff",
+    "pct_change",
+    "yoy",
+    "change_since",
+    "rebase",
+    "ratio",
+    "deflate",
+    "ytd",
+    "mark",
 ]
 
 
@@ -637,8 +727,10 @@ class TransformArgs(BaseModel):
             "degisim. rebase: base_period = 100 olacak sekilde endeks. ratio: "
             "column / denominator x 100 (yuzde pay). deflate: parasal tutari "
             "TUFE ile enflasyondan arindirir (yalniz bakiye/akim tutarlari; oran "
-            "ve endekslere uygulanmaz). mark: conditions'in hepsinin saglandigi "
-            "donemleri isaretler ve listeler."
+            "ve endekslere uygulanmaz). ytd: aylik akimin yil basindan bu yana "
+            "toplami (ornegin BDDK kar-zarar kalemleri; havuzda aylik akim olarak "
+            "durur). mark: conditions'in hepsinin saglandigi donemleri isaretler "
+            "ve listeler."
         ),
     )
     column: str | None = Field(
@@ -1212,6 +1304,36 @@ def _cpi(lake: Any, start: str, end: str) -> pd.DataFrame:
     return cpi
 
 
+def _op_ytd(
+    args: TransformArgs,
+    frame: pd.DataFrame,
+    lineage: dict[str, ColumnInfo | None],
+    ctx: ToolContext,
+) -> _Outcome | ToolResult:
+    """The running total since January of a monthly flow. The inverse of
+    what silver does to BDDK's year-to-date profit-and-loss lines, for the
+    "yilbasindan bu yana" question."""
+    entry = lineage[args.column]
+    if entry is None or entry.kind != "flow" or entry.freq != "M":
+        return ToolResult(
+            ok=False,
+            summary=(
+                f"'{args.column}' aylik bir akim degil; yil basindan toplam yalnizca "
+                "aylik akimlara (kar-zarar kalemleri, satislar) uygulanir. Bakiye "
+                "zaten donem sonu degeridir."
+            ),
+        )
+    result, formula = transforms.year_to_date(_single(frame, args.column))
+    return _Outcome(
+        name=f"{args.column}_yilbasi",
+        values=_by_period(result),
+        formula=formula,
+        unit=entry.unit,
+        kind="stock",
+        summary="Her ay, o yilin Ocak ayindan o aya kadarki toplam.",
+    )
+
+
 def _op_mark(
     args: TransformArgs,
     frame: pd.DataFrame,
@@ -1258,6 +1380,7 @@ _OPS: dict[str, OpFn] = {
     "rebase": _op_rebase,
     "ratio": _op_ratio,
     "deflate": _op_deflate,
+    "ytd": _op_ytd,
     "mark": _op_mark,
 }
 
