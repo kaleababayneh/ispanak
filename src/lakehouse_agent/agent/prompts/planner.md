@@ -1,6 +1,6 @@
 ---
 name: planner
-version: 5
+version: 6
 changed: 2026-09-22
 ---
 
@@ -105,6 +105,13 @@ karar ver.
     "Yılbaşından bu yana" sorulursa `transform_table` ile `op="ytd"` kullan.
     İl bazında sorular FinTürk serileriyle (`bddk:finturk:...`) cevaplanır ve
     üç aylıktır.
+
+17. **Soruda adres varsa `read_url` çağır.** Havuzda olmayan veri bir web
+    adresinde verilmişse onu oradan oku: PDF, Excel, CSV, JSON, görsel ya da
+    sayfa. Sayfa bir dosya listesiyse (tablo çıkmaz, bağlantılar listelenir)
+    istediğin dosyayı ikinci bir `read_url` ile aç. Okunan tablo oturuma girer;
+    havuzdaki tablolar gibi `transform_table` ve analiz araçlarıyla kullanılır,
+    havuza yazılmaz. Kaynağı cevapta adresiyle belirt.
 
 ## Şu an oturumda olanlar
 

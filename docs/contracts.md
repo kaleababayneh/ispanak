@@ -316,6 +316,36 @@ Kullanım logu `data/logs/llm_usage.jsonl`, her mantıksal çağrı için tek sa
 
 ---
 
+## 7.1 Adres okuma (`read_url`, 22 Eyl)
+
+Demo günü prompt'ta URL verilecek (gereksinim: PDF, Excel, resim, metin).
+`tools/web_url.py` bunu okur; `web/fetch.py` indirir, `web/extract.py` ayrıştırır
+(ağ yalnızca ilkinde, bu yüzden ayrıştırma tamamen ağsız test edilir).
+
+- **Sınırlar:** yalnız `http(s)`; alan adı çözülür ve localhost/özel/link-local
+  adresler reddedilir (her yönlendirmede yeniden); 10 MB ve 50 sn; en çok 5
+  yönlendirme. Kimlik bilgisi gönderilmez.
+- **Önbellek:** indirilen dosya `data/adhoc/url/<hash>` ve yanında istek kaydı
+  (`url, final_url, http_status, content_type, fetched_at, bytes`). İkinci okuma
+  çağrı yapmaz. Havuza (gold) hiçbir şey yazılmaz.
+- **Çıkan her veri tablosu** oturuma ayrı tablo olarak girer (`t..._read_url`),
+  en büyüğü aktif tablo olur ve kalite kartı onun içindir. En çok 10 tablo;
+  fazlası sayılır ve söylenir. Yerleşim tabloları ve boş kabuklar elenir
+  (en az 2 sütun; sayfada bulunmuşsa en az 2 satır).
+- **Tablo çıkmazsa** sayfanın bağlandığı veri dosyaları (PDF/Excel/CSV)
+  adlarıyla listelenir — gereksinimin ilk hedefi tam olarak böyle bir sayfa.
+- `prepare_table` (lake adaptörü) her tabloyu temizler: adı ne olursa olsun
+  tarih sütunu `period` olur, Türkçe biçimli sayılar sayıya çevrilir, ne
+  yapıldığı kalite kartına yazılır.
+
+`transform_table`'a `top` işlemi eklendi: bir sütuna göre en yüksek (ya da
+`ascending` ile en düşük) satırları sıralar ve değerleriyle listeler. Tabloya
+sütun eklemez ve `period` sütunu olmayan tablolarda da çalışır — basılı bir
+tablonun satırları tarihli değil adlıdır ("Ocak / January"). "Hangi ay en
+yüksek" sorusunun cevabı böylece araçtan gelir, modelin saymasından değil.
+
+---
+
 ## 8. Onay noktaları
 
 Üç tane, fazlası değil. Kararı döngü verir, araçlar değil.
@@ -323,7 +353,7 @@ Kullanım logu `data/logs/llm_usage.jsonl`, her mantıksal çağrı için tek sa
 | Tür | Ne zaman | Seçenekler |
 |---|---|---|
 | `series_choice` | ilk iki adayın skor oranı eşiği aşarsa (sorguda koduyla geçen seriler hariç) | aday `series_id`'leri |
-| `fetch` | havuzda olmayan veri çekilmeden önce | `approve`, `cancel` |
+| `fetch` | havuzda olmayan veri çekilmeden önce (bugün: `read_url`) | `approve`, `cancel` |
 | `quality` | eksik oranı eşiği aşarsa, tekrar varsa, birim bilinmiyorsa | `continue`, `change_assumption`, `cancel` |
 
 Kimlikler İngilizce çünkü kodda karşılaştırılıyor; etiketler Türkçe çünkü

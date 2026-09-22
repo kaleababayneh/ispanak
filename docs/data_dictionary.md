@@ -396,6 +396,25 @@ Saklanan Menkul Değerler - 1 ve - 2, Yabancı Para Pozisyonu.
   toplamlar 286 haftanın hepsinde dolu. Eski ve yeni kırılım ayrı seri:
   tanımları farklı.
 
+### Demo anında okunan adresler (`data/adhoc/url/`)
+
+`read_url` indirdiği her belgeyi `data/adhoc/url/<url hash>` olarak, yanına da
+isteğin kaydını (`url, final_url, http_status, content_type, fetched_at, bytes`)
+yazar. Bronze ile aynı disiplin: baytlar geldiği gibi durur, ikinci okuma çağrı
+yapmaz. Gitignore'da; gold'a hiçbir şey yazılmaz.
+
+Ölçülen iki hedef (22 Eyl, gereksinimde adı geçen adresler):
+
+| Adres | Ne çıkıyor |
+|---|---|
+| `borsaistanbul.com/veriler/.../piyasa-verileri` | Tablo yok; 15 veri dosyası bağlantısı adlarıyla listeleniyor ("Altın İşlemleri" → `kmp_au.pdf`) |
+| `dosyalar/kmtp/veriler/kmp_au.pdf` | 142 KB, metin katmanı var; 13 satır × 11 sütun tablo (12 ay + TOPLAM). Çizgi olmadığı için metin hizalı çıkarım kullanılıyor |
+| `borsaistanbul.com/endeks/xtumy` | Metaveri tablosu (17 satır): endeks adı **BIST TUM-100**. "Güncel Endeks Değerleri" tablosu HTML'de boş, JavaScript dolduruyor; endeksin serisi havuzda (`evds:TP.MK.F.BILESIK.TUM`) |
+
+Ay adları ("Ocak / January") tarihe çevrilmiyor: yıl tablonun içinde değil
+başlığında. Böyle bir tablo `top` ve `mark` ile kullanılır, zaman serisi
+araçlarına (anomali, kırılma) girmez.
+
 ### Havuz arama indeksi (`lake/pool_index.py`)
 
 `python -m lakehouse_agent.lake.pool_index` gold kataloğunun her serisi için bir

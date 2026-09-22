@@ -715,7 +715,12 @@ Op = Literal[
     "deflate",
     "ytd",
     "mark",
+    "top",
 ]
+
+#: Rows a `top` lists by default, and the most it will list.
+TOP_ROWS = 5
+TOP_MAX = 25
 
 
 class TransformArgs(BaseModel):
@@ -730,7 +735,9 @@ class TransformArgs(BaseModel):
             "ve endekslere uygulanmaz). ytd: aylik akimin yil basindan bu yana "
             "toplami (ornegin BDDK kar-zarar kalemleri; havuzda aylik akim olarak "
             "durur). mark: conditions'in hepsinin saglandigi donemleri isaretler "
-            "ve listeler."
+            "ve listeler. top: column'a gore en yuksek satirlari siralar ve "
+            "degerleriyle listeler ('hangi ay en yuksek' sorusu); tabloya sutun "
+            "eklemez ve donem sutunu olmayan tablolarda da calisir."
         ),
     )
     column: str | None = Field(
@@ -761,6 +768,15 @@ class TransformArgs(BaseModel):
             "ve kredinin artmadigi aylar icin [{'column': 'TP_KTF12_diff', 'op': "
             "'<', 'value': 0}, {'column': '..._diff', 'op': '<=', 'value': 0}]."
         ),
+    )
+    n: int = Field(
+        TOP_ROWS,
+        ge=1,
+        le=TOP_MAX,
+        description=f"top icin kac satir listelenecek (varsayilan {TOP_ROWS}).",
+    )
+    ascending: bool = Field(
+        False, description="top icin true verilirse en dusuk satirlar listelenir."
     )
     name: str | None = Field(
         None,
@@ -826,6 +842,12 @@ def make_transform_table() -> ToolSpec:
         except TableNotFound as exc:
             return ToolResult(ok=False, summary=str(exc).strip("'\""))
         ref = args.table_ref or ctx.active_table or ""
+        if args.op == "top":
+            # Answered here rather than in `_OPS`: it adds no column and it is
+            # the one operation that must work on a table with no period --
+            # a document read from a URL is often a printed table whose rows
+            # are named ("Ocak / January"), not dated.
+            return _top(args, frame, ref)
         # Computed on a copy with a datetime period; `frame` itself only ever
         # gains the new column, so no existing column can change underneath
         # the loop's "existing columns came back unchanged" check.
@@ -1030,6 +1052,86 @@ def _base_stamp(base_period: str) -> pd.Timestamp:
 
 def _unit_of(entry: ColumnInfo | None) -> str | None:
     return entry.unit if entry is not None else None
+
+
+def _top(args: TransformArgs, frame: pd.DataFrame, ref: str) -> ToolResult:
+    """The rows where a column is highest (or lowest), named and listed.
+
+    "Which month was the highest?" is a counting question, and the model may
+    not count (planner rule 1). Listing the rows here also puts their values
+    in a tool's output, which is what lets the answer quote them
+    (agent/verifier.py).
+    """
+    column = args.column
+    # `arithmetic=False`: `top` sorts and names rows, it never divides or
+    # subtracts, so a flag column is degenerate rather than fatal here -- the
+    # stricter reading belongs to the operations that compute with the values.
+    if not column or column not in frame.columns:
+        usable = [
+            str(c) for c in frame.columns if _is_numeric(frame, c, arithmetic=False)
+        ]
+        return ToolResult(
+            ok=False,
+            summary=(
+                f"top icin sayisal bir sutun adi gerekli; {column!r} tabloda yok. "
+                f"Kullanilabilir sutunlar: {', '.join(usable) or 'yok'}."
+            ),
+        )
+    if not _is_numeric(frame, column, arithmetic=False):
+        return ToolResult(
+            ok=False, summary=f"{column!r} sayisal bir sutun degil; top uygulanamaz."
+        )
+
+    values = pd.to_numeric(frame[column], errors="coerce")
+    labels = _row_labels(frame)
+    order = values.sort_values(ascending=args.ascending, na_position="last").dropna()
+    chosen = order.head(args.n)
+    listed = ", ".join(
+        f"{labels[index]}: {_plain(values[index])}" for index in chosen.index
+    )
+    direction = "en dusuk" if args.ascending else "en yuksek"
+    missing = int(values.isna().sum())
+    summary = f"'{column}' sutununda {direction} {len(chosen)} satir ({ref}): {listed}."
+    if missing:
+        summary += f" {missing} satir bos deger yuzunden siralamaya girmedi."
+    return ToolResult(
+        ok=True,
+        summary=summary,
+        table_ref=ref,
+        preview=[
+            {"satir": labels[index], column: _plain(values[index])}
+            for index in chosen.index
+        ],
+    )
+
+
+def _row_labels(frame: pd.DataFrame) -> dict[Any, str]:
+    """What to call each row: its period, else its first text column, else
+    its position."""
+    if "period" in frame.columns:
+        return {index: _month(value) for index, value in frame["period"].items()}
+    for name in frame.columns:
+        # `arithmetic=False`: the question here is "is this text?", and a flag
+        # column is a value, not a label for one.
+        if not _is_numeric(frame, name, arithmetic=False):
+            return {
+                index: " ".join(str(value).split())
+                for index, value in frame[name].items()
+            }
+    return {
+        index: f"satir {position + 1}" for position, index in enumerate(frame.index)
+    }
+
+
+def _plain(value: float) -> str:
+    """A number as the answer may repeat it: no grouping, no exponent, no
+    trailing zeros. `93824682381` and not `9.382468238e+10` -- the second is
+    not a number anyone writes in an answer, and the check that every figure
+    came from a tool compares what was written with what was returned."""
+    if pd.isna(value):
+        return "yok"
+    text = f"{float(value):.4f}".rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def _op_diff(

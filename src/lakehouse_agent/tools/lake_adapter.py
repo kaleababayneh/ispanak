@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -510,31 +511,52 @@ class LakeAdapter:
     def prepare_table(
         self, df: pd.DataFrame, hints: dict[str, Any] | None = None
     ) -> tuple[pd.DataFrame, QualityReport]:
-        """Minimal clean-up for a table that arrived from outside the pool.
+        """Clean-up for a table that arrived from outside the pool: a URL, a
+        file, anything the demo hands over.
 
-        Rows whose period cannot be parsed are dropped and the count goes on
-        the quality card: `profile_table` runs on the cleaned frame, so without
-        that line the card describes a table the caller never handed over, and
-        the human approving a quality gate never learns anything went missing.
+        Three things, each of which the analysis tools would otherwise trip
+        on. A date column whatever it is called becomes `period` -- the
+        column every transform reads -- and rows whose date will not parse are
+        dropped and counted on the quality card, because `profile_table` runs
+        on the cleaned frame and would otherwise describe a table the caller
+        never handed over. Numbers printed the Turkish way ("1.234.567,89",
+        which is how BDDK and Borsa İstanbul print them) become floats; a
+        column of those left as text turns every later sum into string
+        concatenation. What each step did goes on the card: a person
+        approving the table sees the column that was read as the date.
         """
         out = df.copy()
+        notes: list[str] = []
+
+        renamed = None
+        if "period" not in out.columns:
+            renamed = _date_column(out)
+            if renamed is not None:
+                out = out.rename(columns={renamed: "period"})
+                notes.append(f"'{renamed}' sutunu donem (period) olarak okundu.")
+
         dropped = 0
         if "period" in out.columns:
-            out["period"] = pd.to_datetime(out["period"], errors="coerce")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)  # see `_date_column`
+                out["period"] = pd.to_datetime(
+                    out["period"], errors="coerce", dayfirst=True
+                )
             dropped = int(out["period"].isna().sum())
             out = out.dropna(subset=["period"]).sort_values("period")
+
+        converted = _to_numbers(out)
+        if converted:
+            notes.append(
+                "Turkce sayi bicimi cevrildi: " + ", ".join(converted[:6]) + "."
+            )
         out = out.reset_index(drop=True)
 
         report = self.profile_table(out)
         if dropped:
-            report = report.model_copy(
-                update={
-                    "issues": [
-                        f"{dropped} satir tarihi okunamadigi icin dusuruldu.",
-                        *report.issues,
-                    ]
-                }
-            )
+            notes.insert(0, f"{dropped} satir tarihi okunamadigi icin dusuruldu.")
+        if notes:
+            report = report.model_copy(update={"issues": [*notes, *report.issues]})
         return out, report
 
     def profile_table(self, df: pd.DataFrame) -> QualityReport:
@@ -662,6 +684,50 @@ def _unit_rows(vectors: Any) -> np.ndarray:
     if not np.all(np.isfinite(norms)) or np.any(norms == 0):
         raise ValueError("gecersiz embedding vektoru (NaN veya sifir)")
     return matrix / norms
+
+
+#: A column is a date column when this share of its values parse as dates,
+#: and a number column when this share read as numbers. Not all of them: a
+#: printed table carries a total row, a footnote, a "-" for a month with no
+#: trade.
+_ENOUGH = 0.8
+#: Digits with Turkish grouping, the way BDDK and Borsa İstanbul print them.
+_TR_NUMBER = re.compile(r"^-?\(?\d{1,3}(?:\.\d{3})*(?:,\d+)?\)?$|^-?\d+(?:,\d+)?$")
+
+
+def _date_column(frame: pd.DataFrame) -> str | None:
+    """The column that holds the dates, whatever it is called. The first one
+    that parses -- a table has one date column, and taking the leftmost of
+    several is what a reader would do."""
+    for name in frame.columns:
+        column = frame[name]
+        if column.dtype.kind in "biufc" or column.isna().all():
+            continue
+        with warnings.catch_warnings():
+            # Probing a column that is not dates is the normal case here, and
+            # pandas warns about falling back to per-value parsing every time.
+            warnings.simplefilter("ignore", UserWarning)
+            parsed = pd.to_datetime(column, errors="coerce", dayfirst=True)
+        if parsed.notna().mean() >= _ENOUGH:
+            return name
+    return None
+
+
+def _to_numbers(frame: pd.DataFrame) -> list[str]:
+    """Turn text columns of Turkish-formatted numbers into floats, in place.
+    Returns the columns it converted."""
+    from lakehouse_agent.lake.silver import _to_float_bddk
+
+    converted: list[str] = []
+    for name in frame.columns:
+        if name == "period" or frame[name].dtype.kind in "biufcM":
+            continue
+        text = frame[name].dropna().astype(str).str.strip()
+        if text.empty or text.str.fullmatch(_TR_NUMBER).mean() < _ENOUGH:
+            continue
+        frame[name] = frame[name].map(_to_float_bddk)
+        converted.append(str(name))
+    return converted
 
 
 def _clean(value: Any) -> Any:
