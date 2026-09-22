@@ -445,3 +445,15 @@ ekle") tam olarak böyle bozuluyordu; artık reddediliyor. İkincisi: hiçbir sa
 araç `warnings` döndürmüyordu, yani CLAUDE.md #3 ile planner 7. kuralı
 arasındaki tek yolun çevrimdışı testi yoktu. `deflate` artık baz dönemi uyarısı
 döndürüyor.
+
+## Gold yeniden üretimi kod değişikliklerinden sonra zorunlu
+Bağlam: silver/gold'da freq (AYLIK->M) ve source (evds->EVDS) sözleşme
+        düzeltmesi yapıldıktan sonra data/gold/ eski değerlerle kaldı.
+        Birim testler kendi fixture'larını kurduğu için yeşil geçti;
+        B'nin test_lake_contract_parity.py testi gerçek gold'u okuduğu için
+        yakaladı (21 Eylül).
+Karar:  silver.py veya gold.py'de şema/dönüşüm değişikliği yapılan her
+        durumda gold yeniden üretilir:
+          uv run python -m lakehouse_agent.lake.silver
+          uv run python -m lakehouse_agent.lake.gold
+Sonuç:  Demo öncesi son veri çekiminden sonra da bu iki komut çalıştırılacak.
