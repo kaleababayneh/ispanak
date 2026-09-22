@@ -1022,6 +1022,45 @@ Sonuç:  `answer.md` kural 5 sıkılaştırıldı: aramadan gelen **sayı cevaba
         Kalan risk: bu bir prompt kuralı, kod kısıtı değil. Kod tarafında
         arama sonucu zaten tablo/sayı üretmiyor.
 
+## Cevapta kaynak: uydurmanın yanına sessizliği de koyduk (22 Eyl)
+Bağlam: Doğrulayıcı `source_not_listed` ile uydurma kaynağı yakalıyordu:
+        cevapta geçen her seri kimliği, kodu ve URL oturumun kaynak listesinde
+        olmalı. Ters yön açıktı — cevap hiç kaynak yazmasa bayrak kalkmıyordu.
+        Ölçüldü: kırılma + arama koşusunda model TCMB duyurusunu buldu ama
+        cevapta ne bulduğunu ne de adresi andı; cevap, bilgi havuzdan gelmiş
+        gibi okunuyordu.
+Karar:  `verifier._check_web_cited`: tur içinde `read_url` ya da `web_search`
+        başarıyla çalıştıysa, cevapta okunan adreslerden en az biri anılmalı.
+        Yeni bayrak türü `source_not_cited` (sözleşme §7.4).
+        Eşleşme cömert: adresin tamamı, şemasız hali, dosya adı ya da alan adı.
+        Gerekçe: bayrak sessizlik içindir, biçim için değil — modeller uzun
+        adresleri "tcmb.gov.tr/…/duy2023-25" diye kısaltıyor ve bu da okuyucunun
+        izleyebileceği bir kaynaktır. Yalnız bu turun çekimleri sayılır; bir
+        önceki turda yapılan arama bu turu bağlamaz.
+        `answer.md` kural 4 de sıkılaştırıldı: adres olduğu gibi yazılır,
+        yalnız dosya adı yetmez.
+Sonuç:  Altı test (anmama, şemasız adres, dosya adı, kısaltılmış adres, web
+        okumayan tur, başarısız çekim). Canlı koşuda cevap TCMB duyurusunu ve
+        PDF'i adlarıyla andı, bayrak yok.
+
+## Kaynaklar cevabın içinde değil, yanında (23 Eyl)
+Bağlam: Cevaptaki adres modelin yazdığıdır ve model uzun adresi kısaltıyor
+        ("tcmb.gov.tr/…/duy2023-25"): okunur ama tıklanamaz. Tam liste zaten
+        `sources` olayında var, ama ekrana basan bir yer yoktu.
+Karar:  Tur özetinde (`_summarise`, stderr) "KAYNAKLAR (bakilan)" bloğu:
+        oturumun bütün kaynakları, seri kimliği ya da tam URL ve adıyla.
+        Cevabın **metnine eklenmiyor**: cevap modelin yazdığı şeydir, ayrıca
+        kendi bastığımız adresleri doğrulayıcıya kaynak diye geri vermiş
+        olurduk (bayrak sırası: doğrula, sonra bas).
+        Başlık "bakilan": arama beş sonucun hepsini kaynak olarak kaydeder,
+        cevap ikisine dayanabilir; ikisini aynı adla anmak yanıltıcı olurdu.
+        Arayüz geldiğinde aynı olayı panelde tıklanabilir gösterecek; bu blok
+        o zamana kadar tek görünür yer ve atılacak bir şey değil (CLI demo
+        yüzeyi).
+Sonuç:  Cevapsız biten turda da basılıyor — nitekim ölçüm koşularından birinde
+        cevap boş döndü ve kaynaklar yine göründü. İki test (tam adres basılır,
+        kaynak yoksa başlık basılmaz).
+
 ## 23 Eylül incelemesinin düzeltmeleri
 Bağlam: Adım 1 (`feat/real-tools`) dört ayrı incelemeden geçti. Bulguların
         üçü ölçülerek doğrulandı ve testle sabitlendi; kalanlar aşağıda

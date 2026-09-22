@@ -1,7 +1,7 @@
 """Checks a finished answer against what the tools actually returned (plan 5.3).
 
 Rule-based and cheap: no model call, so it adds nothing to a turn's time
-budget. Three checks:
+budget. Four checks:
 
 * **Numbers.** Every number the answer states must be found -- within the
   rounding its own precision implies -- in the session's tables or in what the
@@ -10,7 +10,9 @@ budget. Three checks:
   within 0.005 of 27.85, so this check catches it. A bound ("200'ü aştı") is
   checked as a bound and a range ("165 ile 205 arasında") as a range.
 * **Sources.** Every series id, series code or URL the answer cites must be in
-  the session's source list.
+  the session's source list -- and, the other way round, a turn that read the
+  web must name what it read: an answer that quietly uses a page reads as if
+  the lake had known it.
 * **Dates.** Every month the answer names must lie inside the range the tables
   cover, unless the question, the user or a tool named it first -- a tool
   saying "havuzdaki veri 2026-06 ayinda bitiyor" and the answer repeating it
@@ -162,6 +164,7 @@ class AnswerVerifier:
         stated = _stated_text(state)
         flags: list[VerificationFlag] = []
         flags += _check_sources(answer, state, stated)
+        flags += _check_web_cited(answer, state)
         text, months = _without_dates_and_ids(answer)
         flags += _check_months(months, state, stated, self._today or date.today())
         flags += _check_numbers(text, state, stated)
@@ -230,6 +233,64 @@ def _check_sources(
         VerificationFlag(kind="source_not_listed", text=f"'{c}' kaynak listesinde yok.")
         for c in cited
     ]
+
+
+#: The tools that bring something in from outside the pool. What they read is
+#: the one kind of source a reader cannot check for themselves unless the
+#: answer says where it came from.
+_WEB_TOOLS = frozenset({"read_url", "web_search"})
+
+
+def _check_web_cited(answer: str, state: SessionState) -> list[VerificationFlag]:
+    """Did this turn read the web without saying so?
+
+    `_check_sources` catches the opposite mistake -- a citation nobody
+    fetched. This one catches the silent version: the run opened a PDF or
+    searched the web, the person watched it happen, and the answer mentions
+    neither. Measured 22 Sep: the first break-plus-search run cited nothing
+    at all, and the answer read as if the lake had known the reason.
+
+    Only this turn's fetches count, and any of them being named is enough: an
+    answer is not obliged to list five search hits.
+    """
+    used = any(
+        step.turn_no == state.turn_no and step.tool in _WEB_TOOLS and step.ok
+        for step in state.steps
+    )
+    if not used:
+        return []
+    urls = [source.url for source in state.sources if source.url]
+    if not urls:
+        return []
+    if any(_mentions(answer, url) for url in urls):
+        return []
+    return [
+        VerificationFlag(
+            kind="source_not_cited",
+            text=(
+                "Bu turda web'den okundu ama cevapta kaynak adresi anilmadi; "
+                "okunan adresi cevaba yaz."
+            ),
+        )
+    ]
+
+
+def _mentions(answer: str, url: str) -> bool:
+    """Is this address in the answer?
+
+    Counted generously, because the flag is for silence, not for style: the
+    full URL, the same without its scheme (models write
+    `borsaistanbul.com/...`), the file it ends in (`kmp_au.pdf`), or its
+    host. The host matters -- a long address is routinely quoted elided,
+    `tcmb.gov.tr/.../duy2023-25`, and that is a citation a reader can follow.
+    """
+    bare = url.split("://", 1)[-1]
+    host = bare.split("/", 1)[0].removeprefix("www.")
+    tail = bare.rstrip("/").rsplit("/", 1)[-1]
+    candidates = [url, bare, host]
+    if "." in tail and len(tail) > 4:
+        candidates.append(tail)
+    return any(candidate and candidate in answer for candidate in candidates)
 
 
 # --------------------------------------------------------------------------

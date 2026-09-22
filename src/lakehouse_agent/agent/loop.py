@@ -1689,6 +1689,7 @@ def _summarise(state: SessionState, result: TurnResult | None) -> None:
     for ref, frame in state.tables.items():
         marker = " (aktif)" if ref == state.active_table else ""
         print(f"\n  TABLO {describe_table(ref, frame)}{marker}", file=sys.stderr)
+    _print_sources(state)
     if result is None:
         print(
             f"\n  kesinti {state.truncated_reason or 'yok'} | CEVAP YOK\n",
@@ -1702,6 +1703,36 @@ def _summarise(state: SessionState, result: TurnResult | None) -> None:
         file=sys.stderr,
     )
     print(f"\n  CEVAP: {result.answer}\n", file=sys.stderr)
+
+
+#: Sources listed under a recap. Past this the list stops being read, and a
+#: search alone can add five.
+RECAP_SOURCES = 12
+
+
+def _print_sources(state: SessionState) -> None:
+    """Every source the session looked at, in full, on the screen.
+
+    The addresses in an answer are whatever the model wrote, and a model
+    shortens a long one ("tcmb.gov.tr/.../duy2023-25"): readable, not
+    clickable. The full list is already carried by the `sources` event -- the
+    traceability panel will draw it -- but until there is an interface the
+    only place a person sees it is here. Printed beside the answer rather
+    than inside it: the answer is the model's text, and appending to it would
+    also hand the verifier its own citations back.
+
+    "Bakilan", not "kullanilan": a search contributes every hit it returned,
+    and the answer may rest on two of them.
+    """
+    if not state.sources:
+        return
+    print("\n  KAYNAKLAR (bakilan)", file=sys.stderr)
+    for source in state.sources[:RECAP_SOURCES]:
+        name = f"  {source.name}" if getattr(source, "name", None) else ""
+        print(f"  - {source.series_id or source.url}{name}", file=sys.stderr)
+    more = len(state.sources) - RECAP_SOURCES
+    if more > 0:
+        print(f"  ... ve {more} kaynak daha", file=sys.stderr)
 
 
 DEFAULT_QUESTION = "Konut kredisi faizi nasil seyretti?"

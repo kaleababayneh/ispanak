@@ -125,6 +125,9 @@ class VerificationFlag(BaseModel):
     kind: Literal[
         "number_not_found",
         "source_not_listed",
+        # Added 22 Sep with the web tools: the answer used a page or a search
+        # and did not say which (verifier.py `_check_web_cited`).
+        "source_not_cited",
         "date_out_of_range",
         "unit_mix",
         "model_contradiction",

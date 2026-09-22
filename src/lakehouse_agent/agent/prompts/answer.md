@@ -24,8 +24,9 @@ ekranında görüyor, sen onu tekrar etmiyorsun; ne anlama geldiğini söylüyor
 
 4. **Kaynakları belirt.** Kullandığın serilerin kimliklerini cümle sonunda ya da
    paragraf sonunda ver. Aşağıdaki listede olmayan bir kaynağı anma. Web'den
-   gelen bir bilgiyi anlatıyorsan adresini de yaz ve bunun havuz verisi değil
-   dışarıdan okunan bir kaynak olduğunu belli et.
+   okuduğun bir şeyi anlatıyorsan **adresini olduğu gibi yaz** (kısaltma, yalnız
+   dosya adı yazma) ve bunun havuz verisi değil dışarıdan okunan bir kaynak
+   olduğunu belli et.
 
 5. **Aramayı yaptıysan sonucunu yaz.** Bu turda `web_search` çalıştıysa ne
    bulduğunu bir cümleyle söyle ve adresini ver ("kırılma 2023-07; aynı ay TCMB

@@ -401,6 +401,18 @@ kural 5 de cevabın bunu kaynağıyla anlatmasını zorunlu kılar.
 
 ---
 
+### 7.4 Doğrulayıcı bayrakları
+
+`VerificationFlag.kind` ∈ `number_not_found | source_not_listed |
+source_not_cited | date_out_of_range | unit_mix | model_contradiction`.
+`source_not_cited` 22 Eyl'de web araçlarıyla eklendi: cevapta uydurma kaynak
+olmasın diye `source_not_listed` vardı, ama sessiz hali eksikti — tur web'den
+okuduysa cevabın okuduğu adresi anması gerekir, yoksa bilgi havuzdan gelmiş
+gibi görünür. Adresin tamamı, şemasız hali, dosya adı ya da alan adı geçerse
+anılmış sayılır (uzun adresler "tcmb.gov.tr/…/duy2023-25" diye kısaltılıyor).
+
+---
+
 ## 8. Onay noktaları
 
 Üç tane, fazlası değil. Kararı döngü verir, araçlar değil.
