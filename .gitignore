@@ -1,11 +1,13 @@
 .env
 .venv/
 
-# Uretilen verinin tamami git disi: bronze/silver/gold, katalog indeksi,
-# demo aninda cekilen adhoc tablolar ve kullanim loglari.
-# (data/gold commit edilsin mi sorusu A'ya soruldu; cevap "evet" olursa
-#  buraya bir "!data/gold/" istisnasi eklenir.)
-data/
+# Uretilen veri git disi: bronze/silver, katalog indeksi, demo aninda
+# cekilen adhoc tablolar ve kullanim loglari. Tek istisna gold (A onayladi,
+# 22 Eyl). "data/" degil "data/*": git, dislanmis bir klasorun altini geri
+# alamaz. catalog.duckdb parquet'lerden turetilir, ilk sorguda yeniden kurulur.
+data/*
+!data/gold/
+data/gold/catalog.duckdb
 *.lance/
 
 __pycache__/
@@ -13,7 +15,6 @@ smoke_out/
 
 # Kisiye ozel Claude Code talimatlari; ortak CLAUDE.md commit edilir.
 CLAUDE.local.md
-data/gold/
 *.log
 
 # test araclarinin urettikleri
