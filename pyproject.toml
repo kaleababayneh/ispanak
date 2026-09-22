@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "openai>=3,<4",
+    "ddgs>=9.7.1",
     "duckdb>=1.5.5",
     "lancedb>=0.38.0",
     "numpy>=2.5.3",

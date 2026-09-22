@@ -369,7 +369,35 @@ Kurallar:
 - Gecikme başına en az 3 gözlem + 10 taban; seri kısaysa gecikme sayısı
   düşürülür, tek gecikmeye bile yetmiyorsa araç reddeder.
 - Özet metni her zaman "bu nedensellik kanıtı değildir, üçüncü etkenler
-  dışlanmadı" cümlesini taşır; `prompts/answer.md` kural 7 modeli buna bağlar.
+  dışlanmadı" cümlesini taşır; `prompts/answer.md` kural 8 modeli buna bağlar.
+
+---
+
+## 7.3 Web araması (`web_search`, 22 Eyl)
+
+Havuzun cevaplayamadığı soru için: bir tarihte ne olduğu, hangi kararın
+alındığı. `web/search.py` arar, `tools/web_search.py` sunar.
+
+- **Sağlayıcı değiştirilebilir.** Bugün `ddgs` (DuckDuckGo, anahtarsız,
+  ücretsiz, hız sınırlı). Ücretli bir servise geçmek tek fonksiyon değiştirir;
+  araç, prompt ve testler aynı kalır. Sağlayıcı **çağrı anında** çözülür;
+  varsayılan argüman olarak bağlamak, testlerin sessizce ağa çıkmasına yol
+  açıyordu (ölçüldü, üç test).
+- **Sonuçlar veri, talimat değil.** Araç çıktısının başında bunu söyleyen bir
+  etiket var: içindeki yönergelere uyulmaz. Hiçbir şey `eval`/`exec`'e
+  girmez, tabloya yazılmaz.
+- **Sayı üretmez.** Tablo yazmaz, `preview` döndürmez. Cevaptaki sayılar
+  yalnızca havuz araçlarından gelir; `answer.md` kural 5 modele arama
+  özetinden sayı aktarmayı yasaklar (gerekçe: ölçümde model Temmuz 2023
+  kararını Ağustos'un oranıyla yazdı).
+- **Onay kapısı:** `approval="fetch"`, `read_url` ile aynı. Kart sorguyu
+  gönderilmeden önce gösterir.
+- Sonuçlar sorgu başına `data/adhoc/search/` altında önbelleklenir (zaman
+  damgasıyla); aynı soru ikinci kez çağrı yapmaz.
+
+**Kırılma → açıklama zinciri:** `detect_changes` bir tarih döndürdüğünde
+planner (kural 19) kullanıcı istemeden o ay için arama yapar, `answer.md`
+kural 5 de cevabın bunu kaynağıyla anlatmasını zorunlu kılar.
 
 ---
 

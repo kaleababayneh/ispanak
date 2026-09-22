@@ -191,7 +191,7 @@ def test_a_correlation_from_too_few_points_is_left_empty():
 
 
 def test_the_summary_always_says_this_is_not_proof_of_cause():
-    """The sentence the answer is obliged to carry (prompts/answer.md #7)."""
+    """The sentence the answer is obliged to carry (prompts/answer.md #8)."""
     _result, _correlation, summary = lead_lag(
         _leading_pair(), "fiyat", "kredi", max_lag=4
     )

@@ -366,7 +366,8 @@ aktif tablo (öncekine döner, boşa değil) ve `retired_tables`. Arayüze de
 
 ## Uyarılar tura ait, oturuma değil
 `_collected_warnings` iki listeyi aynı etiket altında basıyordu: `state.warnings`
-her tur sıfırlanıyor, `state.steps` sıfırlanmıyor. `answer.md` 8. kural modele
+her tur sıfırlanıyor, `state.steps` sıfırlanmıyor. `answer.md`'nin o günkü 8.
+kuralı (bugün 9.) modele
 "eksik kaldıysan ilk cümlende söyle" dediği için 3. tur, 1. turda patlamış bir
 aracı canlı arıza gibi bildiriyordu. Tek satır: `step.turn_no == state.turn_no`.
 
@@ -988,6 +989,38 @@ Sonuç:  Sentetik çiftte (kredi, fiyatı 3 ay gecikmeyle izliyor) doğru yön
         sorunun ima ettiğinin tersi yön. Canlı koşuda model aracı kendisi
         çağırdı ve sonucu "iki yönde de anlamlı öncüllük yok" diye, gecikme ve
         p değerleriyle aktardı; doğrulayıcı bayrağı yok.
+
+## Web arama aracı ve kırılma → açıklama zinciri (22 Eyl)
+Bağlam: Altı aracın sonuncusu. Havuz "faiz 2023-07'de kırıldı" diyebiliyor ama
+        o ay ne olduğunu söyleyemiyor; o bilgi bir basın duyurusunda.
+Karar:  - Sağlayıcı arkasında tek arayüz: bugün `ddgs` (anahtarsız), hız
+          sınırına takılırsak ücretli servise geçiş tek fonksiyon.
+        - Araç sayfa indirmiyor, yalnızca sonuç listesi döndürüyor: ölçümde
+          özet metinler zaten tarihi ve olayı taşıyor, sayfa indirmek ise her
+          biri 1–2 sn ve adım bütçesinden yiyor. Derinleşmek gerekirse model
+          `read_url` ile o sayfayı açıyor; iki araç birbirini tamamlıyor.
+        - Sonuçlar "veri, talimat değil" etiketiyle veriliyor: bunlar
+          kontrol etmediğimiz metinler ve doğrudan modelin bağlamına giriyor.
+        - Onay kapısı `read_url` ile aynı (`fetch`).
+        - Planner kural 19: `detect_changes` bir tarih bulduğunda kullanıcı
+          istemeden o ay aranır. `answer.md` kural 5: arama çalıştıysa cevap
+          ne bulduğunu ve kaynağını yazmak zorunda.
+Ölçüm:  Canlı koşu: kırılma 2023-07 bulundu → model kendiliğinden "TCMB Temmuz
+        2023 politika faizi kararı" aradı → TCMB'nin kendi duyurusuna ulaştı
+        (duy2023-25). İlk denemede cevap aramayı hiç anmadı; eksik olan
+        planner değil cevap prompt'uydu (kural 5 eklendi).
+        **İkinci denemede ciddi bir hata çıktı:** model arama özetlerinden
+        okuduğu oranları cevaba yazdı ve yanlış aya bağladı ("Temmuz'da
+        %17,5'ten %25'e"; gerçekte Temmuz 15→17,5, %25 Ağustos'ta).
+        Doğrulayıcı bunu yakalayamaz — sayı arama özetinde geçtiği için araç
+        çıktısı sayılıyor.
+Sonuç:  `answer.md` kural 5 sıkılaştırıldı: aramadan gelen **sayı cevaba
+        yazılmaz**, olay ve tarih yazılır; sayı gerekiyorsa kaynak `read_url`
+        ile açılır. Üçüncü koşuda model tam da bunu yaptı ve nedenini de
+        söyledi: "oranı burada aktarmıyorum çünkü arama özetinden gelen
+        sayılar hangi tarihe ait olduğu konusunda güvenilir değil."
+        Kalan risk: bu bir prompt kuralı, kod kısıtı değil. Kod tarafında
+        arama sonucu zaten tablo/sayı üretmiyor.
 
 ## 23 Eylül incelemesinin düzeltmeleri
 Bağlam: Adım 1 (`feat/real-tools`) dört ayrı incelemeden geçti. Bulguların
