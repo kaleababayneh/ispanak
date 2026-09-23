@@ -634,3 +634,58 @@ def test_digits_inside_a_cited_address_are_not_claims():
     answer = "Seviye %230,3 artti, sicrama %8,0 (ekonomim.com/…-906699)."
 
     assert VERIFY(answer, state).passed, _flagged(VERIFY(answer, state))
+
+
+# --- which fence keeps a number out of evidence ----------------------------
+
+
+def _answer_with(tool_text: str, answer: str):
+    """One turn whose only tool output is `tool_text`."""
+    from lakehouse_agent.agent.state import initial_state
+    from lakehouse_agent.agent.verifier import AnswerVerifier
+
+    state = initial_state("cit")
+    state.turn_no = 1
+    state.messages = [{"role": "tool", "tool_call_id": "c1", "content": tool_text}]
+    return AnswerVerifier().verify(answer, state)
+
+
+def test_a_number_from_a_search_snippet_is_not_evidence():
+    """A search result is a stranger's compilation and its figures may belong
+    to another month, so `answer.md` rule 5 forbids them outright."""
+    from lakehouse_agent.agent.formatting import fence
+
+    result = _answer_with(
+        "'faiz' icin 1 sonuc.\n" + fence("Haber: oran yuzde 98,76 oldu."),
+        "Oran yuzde 98,76 oldu (ornek.com).",
+    )
+
+    assert not result.passed
+    assert "98,76" in result.flags[0].text
+
+
+def test_a_number_from_a_page_the_question_named_is_evidence():
+    """The other half of the same decision. `read_url` fences the page with
+    its own markers, which the stripper does not match, so a figure quoted
+    from the document the person asked about is grounded. Rule 5 sends the
+    model there for the number; flagging it would make the rule impossible to
+    obey on a page whose answer is prose rather than a table."""
+    from lakehouse_agent.tools.web_url import SOURCE_CLOSE, SOURCE_OPEN
+
+    result = _answer_with(
+        f"adres okundu (html).\n{SOURCE_OPEN}\nOran yuzde 98,76 oldu.\n{SOURCE_CLOSE}",
+        "Oran yuzde 98,76 oldu (ornek.com).",
+    )
+
+    assert result.passed, [flag.text for flag in result.flags]
+
+
+def test_the_two_fences_must_not_be_unified():
+    """Written as a test because the whole distinction rests on the markers
+    differing. Making them equal would silently turn every figure quoted from
+    a named PDF into a flag."""
+    from lakehouse_agent.agent import formatting
+    from lakehouse_agent.tools import web_url
+
+    assert web_url.SOURCE_OPEN != formatting.UNTRUSTED_OPEN
+    assert web_url.SOURCE_CLOSE != formatting.UNTRUSTED_CLOSE

@@ -311,3 +311,373 @@ def test_a_query_that_names_no_table_keeps_the_similarity_order():
     ordered, _standing = pool_index.rank("mevduat faizi", scored, _grouped_meta())
 
     assert [sid for sid, _ in ordered] == [s for s, _ in scored]
+
+
+# --- rank: another country's copy, and an older base year -----------------
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Almanya (DEU) Tüketici Fiyat Endeksi (2010=100)", ("almanya", "DEU")),
+        ("Güney Kore (KOR) GSYH, Nominal", ("guney kore", "KOR")),
+        # Ours is not abroad, though it sits in the same table.
+        ("Türkiye (TUR) Tüketici Fiyat Endeksi (2010=100)", None),
+        # A digit or a dot in the name is still not a country.
+        ("F.1.2.Özel Çekme Hakları (SDR)", None),
+        # Deliberately a match: the pattern is generous and the datagroup
+        # threshold is the guard. On its own this row would be read as a
+        # country; `_countries_of_tables` drops it because BDDK rows carry
+        # no datagroup. See the two tests below.
+        ("ADANA - Diğer Mevduat (TRY)", ("adana - diger mevduat", "TRY")),
+    ],
+)
+def test_a_country_is_read_from_the_name_only_where_there_is_one(name, expected):
+    assert pool_index.country_match(name) == expected
+
+
+def test_a_table_with_one_code_is_not_a_country_breakdown():
+    """The pattern alone would mark the house price index as a country:
+    "Konut Fiyat Endeksi (KFE)" is three words and three capitals too. What
+    separates them is that a real country table carries dozens of codes."""
+    rows = [
+        {
+            "series_id": "evds:kfe",
+            "name": "Konut Fiyat Endeksi (KFE)",
+            "group": "bie_kfe",
+        },
+        *(
+            {
+                "series_id": f"evds:imf_{code}",
+                "name": f"{label} ({code}) Tuketici Fiyat Endeksi",
+                "group": "bie_imfcpind",
+            }
+            for label, code in [
+                ("Arnavutluk", "ALB"),
+                ("Ermenistan", "ARM"),
+                ("Avusturya", "AUT"),
+                ("Azerbaycan", "AZE"),
+                ("Belcika", "BEL"),
+                ("Brezilya", "BRA"),
+                ("Isvicre", "CHE"),
+                ("Sili", "CHL"),
+                ("Kolombiya", "COL"),
+                ("Cekya", "CZE"),
+            ]
+        ),
+    ]
+    frame = pd.DataFrame(
+        [
+            {
+                "series_id": r["series_id"],
+                "group": r["group"],
+                "country": pool_index.country_match(r["name"]),
+            }
+            for r in rows
+        ]
+    )
+
+    marked = pool_index._countries_of_tables(frame)
+
+    assert marked[0] == ""  # the house price index is not a country
+    assert marked[1] == "arnavutluk"
+    assert sum(1 for m in marked if m) == 10
+
+
+def test_the_older_edition_of_a_rebased_table_is_the_one_marked():
+    """Both TÜFE editions are live and neither is marked "(Arşiv)", so the
+    base year in the name is all there is to go on. The names do not agree
+    on the rest, which is why every parenthetical is dropped before they are
+    compared."""
+    meta = pd.DataFrame(
+        [
+            {"group": "bie_tukfiy2025", "table": "Tüketici Fiyat Endeksi (2025=100)"},
+            {
+                "group": "bie_tukfiy2003",
+                "table": "Tüketici Fiyat Endeksi (Genel) (2003=100)",
+            },
+            {"group": "bie_kfe", "table": "Konut Fiyat Endeksi"},
+            {
+                "group": "bie_gecinme",
+                "table": "Geçinme Endeksi (Ücretliler) (1968=100)",
+            },
+        ]
+    )
+
+    superseded = pool_index._superseded(meta)
+
+    assert superseded == {"bie_tukfiy2003": "2003"}
+
+
+_CPI_META = pd.DataFrame(
+    [
+        {
+            "series_id": "evds:imf_deu",
+            "table": "IMF - Tüketici Fiyat Endeksi (2010=100)",
+            "places": "",
+            "country": "almanya",
+            "archive": False,
+            "family": None,
+            "group": "bie_imfcpind",
+            "head": True,
+        },
+        {
+            "series_id": "evds:tufe_2003",
+            "table": "Tüketici Fiyat Endeksi (Genel) (2003=100)",
+            "places": "",
+            "country": "",
+            "archive": False,
+            "family": None,
+            "group": "bie_tukfiy2003",
+            "head": True,
+        },
+        {
+            "series_id": "evds:tufe_2025",
+            "table": "Tüketici Fiyat Endeksi (2025=100)",
+            "places": "",
+            "country": "",
+            "archive": False,
+            "family": None,
+            "group": "bie_tukfiy2025",
+            "head": True,
+        },
+    ]
+)
+#: The order cosine alone produced, measured 23 Sep on the real pool.
+_CPI_SCORED = [
+    ("evds:imf_deu", 0.6680),
+    ("evds:tufe_2003", 0.6665),
+    ("evds:tufe_2025", 0.6484),
+]
+
+
+def test_the_contract_index_wins_a_query_that_names_no_country_or_base():
+    """The eval's A6 in one assertion: on cosine alone "tüketici fiyat
+    endeksi" answered with Germany's CPI, and the series the contract fixes
+    came third."""
+    ranked, _ = pool_index.rank("tüketici fiyat endeksi", _CPI_SCORED, _CPI_META)
+
+    assert [sid for sid, _ in ranked][0] == "evds:tufe_2025"
+    assert dict(ranked)["evds:tufe_2025"] == 0.6484  # scores are not touched
+
+
+def test_naming_the_country_asks_for_that_country():
+    ranked, _ = pool_index.rank(
+        "Almanya tüketici fiyat endeksi", _CPI_SCORED, _CPI_META
+    )
+
+    assert [sid for sid, _ in ranked][0] == "evds:imf_deu"
+
+
+def test_naming_the_base_year_asks_for_that_edition():
+    ranked, _ = pool_index.rank("2003=100 tüfe endeksi", _CPI_SCORED, _CPI_META)
+
+    assert [sid for sid, _ in ranked][0] == "evds:tufe_2003"
+
+
+def test_an_index_built_before_these_rules_still_ranks():
+    """`data/pool_index` is derived and gitignored, so a stale copy without
+    the `country` column has to rank worse, not raise."""
+    stale = _CPI_META.drop(columns=["country"])
+
+    ranked, _ = pool_index.rank("tüketici fiyat endeksi", _CPI_SCORED, stale)
+
+    # The country rule cannot fire without its column, so Germany keeps the
+    # cosine lead it had; what must not happen is a crash, and the base-year
+    # rule still separates the two Turkish editions.
+    ids = [sid for sid, _ in ranked]
+    assert len(ids) == 3
+    assert ids.index("evds:tufe_2025") < ids.index("evds:tufe_2003")
+
+
+# --- what the 23 Sep review found ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        # Two letters, and the policy-rate table's other survivor. Missing it
+        # meant "politika faiz oranı" could answer with the euro area rate:
+        # the family collapses to one candidate, so whichever of Türkiye and
+        # the euro area is not demoted wins on cosine alone.
+        (
+            "Euro Bölgesi (XM) Merkez Bankası Politika Faiz Oranı",
+            ("euro bolgesi", "XM"),
+        ),
+        ("Gürcistan(Geo) Tüketici Fiyat Endeksi", ("gurcistan", "GEO")),
+        ("Bosna-Hersek (BIH) Cari İşlemler Dengesi Net", ("bosna-hersek", "BIH")),
+        (
+            "Güney Kıbrıs Rum Yönetimi (CYP) Tüketici Fiyat Endeksi",
+            ("guney kibris rum yonetimi", "CYP"),
+        ),
+        ("Türkiye (TUR) Tüketici Fiyat Endeksi", None),
+    ],
+)
+def test_the_pattern_reaches_the_countries_it_used_to_miss(name, expected):
+    assert pool_index.country_match(name) == expected
+
+
+def test_a_series_outside_any_datagroup_is_never_a_country():
+    """Group-less rows used to share the bucket "None". With `evds=None` --
+    the documented degraded build, and what a fresh clone gets, since bronze
+    is gitignored -- that bucket cleared the threshold and marked "Konut
+    Fiyat Endeksi (KFE)" as a country."""
+    codes = [
+        "ALB",
+        "ARM",
+        "AUT",
+        "AZE",
+        "BEL",
+        "BRA",
+        "CHE",
+        "CHL",
+        "COL",
+        "CZE",
+        "DNK",
+    ]
+    names = [f"Ulke{code.lower()} ({code}) Tuketici Fiyat Endeksi" for code in codes]
+    names.append("Konut Fiyat Endeksi (KFE)")
+    frame = pd.DataFrame(
+        {
+            "group": [None] * len(names),
+            "country": [pool_index.country_match(name) for name in names],
+        }
+    )
+    # Every row matches the pattern and there are more than MIN_COUNTRY_CODES
+    # distinct codes, so only the missing datagroup can keep them unmarked.
+    assert sum(1 for m in frame["country"] if m) == len(names)
+
+    assert set(pool_index._countries_of_tables(frame)) == {""}
+
+
+@pytest.mark.parametrize(
+    ("query", "country", "named"),
+    [
+        # The eval's own A3 turned the rule off for every Chinese series.
+        ("toplam konut satışları içindeki payı nedir", "cin", False),
+        ("ABD doları cinsinden GSYH", "cin", False),
+        ("karşılık ayrılan krediler", "sili", False),
+        ("Çin'in enflasyonu", "cin", True),
+        ("Almanya tüketici fiyat endeksi", "almanya", True),
+    ],
+)
+def test_a_country_is_named_as_a_word_not_as_a_fragment(query, country, named):
+    assert pool_index._country_named(country, pool_index._fold(query)) is named
+
+
+def test_running_the_country_pass_twice_does_not_raise():
+    frame = pd.DataFrame({"group": ["g"], "country": [("almanya", "DEU")]})
+
+    once = pool_index._countries_of_tables(frame)
+
+    assert pool_index._countries_of_tables(frame.assign(country=once)) == [""]
+
+
+def test_an_index_missing_a_ranking_column_says_so():
+    """The manifest digest hashes ids and search texts, so a rule that adds a
+    meta column changes neither. Without this note a stale index silently
+    ranks the way it used to."""
+    meta = pd.DataFrame(
+        {
+            "series_id": ["evds:X"],
+            "table": [None],
+            "places": [""],
+            "country": [""],
+            "archive": [False],
+            "family": [None],
+        }
+    )
+
+    assert pool_index.meta_notes(meta) == []
+    notes = pool_index.meta_notes(meta.drop(columns=["country"]))
+    assert len(notes) == 1
+    assert "country" in notes[0] and "yeniden kur" in notes[0]
+
+
+# --- a table is asked for in both directions, by a query naming no place ----
+
+
+_TWO_SUE = pd.DataFrame(
+    [
+        {"group": "bie_tsanay2021", "table": "Sanayi Üretim Endeksi (TÜİK)"},
+        {
+            "group": "bie_tsanaymt2021",
+            "table": "Mevsim ve Takvim Etkilerinden Arındırılmış Sanayi Üretim Endeksi",
+        },
+        {"group": "bie_tukfiy2025", "table": "Tüketici Fiyat Endeksi (2025=100)"},
+    ]
+)
+
+
+def test_a_query_asks_for_a_table_whose_name_says_more_than_it():
+    """The strict reading: every query word is in the table's name. The
+    seasonally adjusted table says more than "sanayi üretim endeksi" and is
+    still asked for -- its head is what the search expects first."""
+    asked = pool_index.tables_asked("sanayi üretim endeksi", _TWO_SUE)
+
+    assert asked == {"bie_tsanay2021", "bie_tsanaymt2021"}
+
+
+def test_a_query_asks_for_a_table_it_says_more_than():
+    """The loose reading: the table's name, parentheticals dropped, is inside
+    the query. The agent's own phrasing adds a synonym no table name holds;
+    under the strict reading alone nothing was asked for and the CPI's
+    sub-items crowded out its total (A6, three runs out of three)."""
+    asked = pool_index.tables_asked(
+        "tüketici fiyat endeksi TÜFE genel endeks", _TWO_SUE
+    )
+
+    assert asked == {"bie_tukfiy2025"}
+
+
+def test_naming_a_province_or_a_country_asks_for_that_row_not_the_total():
+    """ "Ankara konut fiyat endeksi" spells out the KFE table, but wants the
+    Ankara row -- a sub-item. Promoting the national total over it dropped
+    the row out of the five candidates. A named country is the same shape."""
+    meta = pd.DataFrame(
+        [
+            {
+                "series_id": "evds:kfe",
+                "table": "Konut Fiyat Endeksi",
+                "places": "",
+                "country": "",
+                "archive": False,
+                "family": None,
+                "group": "bie_kfe",
+                "head": True,
+            },
+            {
+                "series_id": "evds:kfe_ankara",
+                "table": "Konut Fiyat Endeksi",
+                "places": "ankara",
+                "country": "",
+                "archive": False,
+                "family": None,
+                "group": "bie_kfe",
+                "head": False,
+            },
+            # A national series from another table, scoring just below the
+            # Ankara row. It is what the Ankara row would fall behind if it
+            # were demoted as a sub-item of an asked-for table.
+            {
+                "series_id": "evds:kira",
+                "table": "Kira Endeksi",
+                "places": "",
+                "country": "",
+                "archive": False,
+                "family": None,
+                "group": "bie_kira",
+                "head": True,
+            },
+        ]
+    )
+    scored = [("evds:kfe", 0.70), ("evds:kfe_ankara", 0.60), ("evds:kira", 0.55)]
+
+    plain, _ = pool_index.rank("konut fiyat endeksi", scored, meta)
+    named, _ = pool_index.rank("Ankara konut fiyat endeksi", scored, meta)
+
+    assert plain[0][0] == "evds:kfe"  # the total, asked for by name
+    # Nothing is asked for when a place is named, so the Ankara row is not a
+    # demoted sub-item and stays ahead of the lower-scoring national series.
+    # With the gate gone it drops behind it.
+    assert [sid for sid, _ in named] == ["evds:kfe", "evds:kfe_ankara", "evds:kira"]

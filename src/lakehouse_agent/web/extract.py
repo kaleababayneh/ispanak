@@ -364,14 +364,22 @@ def _data_links(html: str, url: str) -> list[tuple[str, str]]:
     The link's own text comes from the page, so it is truncated and stripped
     of markup; it is still someone else's words, and `web_url` labels it as
     such.
+
+    An `href` is HTML, so its entities are unescaped before it is used as an
+    address. TCMB writes its PDF links as
+    `...?MOD=AJPERES&amp;CACHEID=...`, and handing that to the model verbatim
+    makes the second parameter `amp;CACHEID`. Harmless on that server, which
+    ignores what it does not recognise; on one that reads the parameter, the
+    address the model is invited to open is not the address the page meant.
     """
+    from html import unescape
     from urllib.parse import urljoin, urlparse
 
     found: dict[str, str] = {}
     for href, label in _HREF.findall(html):
         if not _DATA_LINK.search(href):
             continue
-        absolute = urljoin(url, href.strip())
+        absolute = urljoin(url, unescape(href.strip()))
         if urlparse(absolute).scheme not in ("http", "https"):
             continue
         text = " ".join(_TAGS.sub(" ", label).split())[:80]

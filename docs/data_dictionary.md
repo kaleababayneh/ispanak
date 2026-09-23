@@ -434,11 +434,46 @@ metin ikinci kez embed edilmiyor. Arama yalnızca sorguyu embed eder: uçtan uca
 
 Arama metni: ad + (EVDS'te) veri grubu adı + konu + etiketler + birim + frekans +
 tür + kaynak. `ids.parquet` sıralama için seri başına şunları saklar: veri
-grubu, EVDS'in ilk listelediği seri mi (ana seri), hangi ili anlatıyor, arşiv mi,
-hangi kırılım ailesinden. Sıralama kuralları ve ölçüm: `docs/decisions.md`,
+grubu, EVDS'in ilk listelediği seri mi (ana seri), hangi ili anlatıyor, **hangi
+ülkeyi anlatıyor** (23 Eyl: 1.316 seri, 13 ülke kırılımı tablosu; Türkiye'nin
+kendi satırları yabancı sayılmaz, grubu olmayan seri hiç aday olmaz), arşiv mi, hangi kırılım ailesinden. Sıralama kuralları ve ölçüm: `docs/decisions.md`,
 "Havuz araması: sıralama kuralları". Ölçüm dosyası:
 `eval/results/search_eval_2026-09-22.json` (ilk 5 isabet 25/27, ayrık sorgularda
 6/6).
+
+### Agent ölçümü (`agent/answer_eval.py`)
+
+`python -m lakehouse_agent.agent.answer_eval` `eval/questions.yaml`'daki her
+soruyu kendi temiz oturumunda koşturur ve `eval/results/answer_eval_<tarih>.json`
+yazar. Arama ölçümünün bir katman üstü: o serinin bulunup bulunmadığını sorar,
+bu döngünün tamamının savunulabilir bir cevap üretip üretmediğini.
+
+Soru dosyası 12 soru taşıyor (A1–A7 seri bulma, dönüşüm ve reddetme; B1–B5 yeni
+araçlar) ve sekiz kayıtlı aracın hepsini kapsar; bunu bir test bekçilik eder.
+Kontrol tipleri ve sütun adı kuralları dosyanın kendi başlığında yazılı.
+
+Bir soru dört şeyden geçmek zorunda: beklenen serileri kullanmak, beklenen
+araçları çağırmak, `checks`'in hepsini geçmek, turu kesintisiz bitirmek. Üst
+küme serbest. Doğrulayıcı bayrakları raporlanır ama satırı düşürmez.
+
+Beklenen değerler 23 Eylül'de gerçek gold verisinden ölçüldü: TÜFE 2021-01 →
+2026-06 artışı %706,1; KTF12'nin 2026-06 aylık ortalaması 40,335 (toplamı
+161,34, aradaki fark A5'in tamamı); ipotekli satış payı 2026-06'da %19,998;
+KTF12'de tek kırılma 2023-07; KTF12 ile KFE arasında iki yönde de anlamlı
+öncüllük yok.
+
+Ölçüm dosyası: `eval/results/answer_eval_2026-09-23.json` (11/12, 65 sn,
+479 bin token, `deepseek-ai/DeepSeek-V4.1-Flash`). Düşen tek satır A6 ve
+**bilerek kırmızı**: agent artışı doğru buluyor (%706,1) ama seriyi
+`CLAUDE.md`'nin şart koştuğu `TP.TUKFIY2025.GENEL` yerine
+`TP.GENENDEKS.T1` (2003=100) üzerinden hesaplıyor. Nedeni `tables_asked`
+kuralının hep-ya-hiç olması; gerekçe ve geri alınan deneme
+`docs/decisions.md`'de. Satır, soru gevşetilerek değil o kural düzelerek
+kapanmalı.
+
+A1'in `cevapta_gecmeli: "ağırlıklı ortalama"` kontrolü üç koşumun ikisinde
+geçti: cevap doğru olduğu halde modelin birimi her seferinde anmadığı
+görüldü. Kırmızı bir satırı okurken bu ayrımı yapmak gerekiyor.
 
 ### BDDK FinTürk (illere göre)
 

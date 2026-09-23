@@ -256,6 +256,12 @@ class CatalogHit(BaseModel):
     series_id: str = Field(..., description="Katalog kimligi.")
     name_tr: str = Field(..., description="Serinin Turkce adi.")
     name_en: str | None = Field(None, description="Serinin Ingilizce adi.")
+    #: The source table the series sits in (an EVDS datagroup's name). Often
+    #: the only field that tells two candidates apart: "Konut Kredisi (TL,
+    #: Akım, %)" exists in both "Kredi Faiz Oranları" and "Kredi Kâr
+    #: Oranları", one an interest rate and the other a participation bank's
+    #: profit share, and name, unit, frequency and kind are identical.
+    table: str | None = Field(None, description="Kaynak tablo (EVDS veri grubu adi).")
     source: str | None = Field(None, description="Kaynak: 'EVDS', 'BDDK-Aylik' gibi.")
     freq: Freq | None = Field(None, description="Yayim frekansi.")
     unit: str | None = Field(None, description="Birim.")

@@ -1,0 +1,195 @@
+# Agent eval soruları — uçtan uca ölçüm
+#
+#   uv run python -m lakehouse_agent.agent.answer_eval
+#
+# Her soru kendi temiz oturumunda koşar. Bir soru dört şeyden geçmek zorunda:
+# beklenen serileri kullanmış olmak, beklenen araçları çağırmış olmak,
+# checks'in hepsini geçmek, ve turu kesintisiz bitirmek. Üst küme serbesttir:
+# listede olmayan bir araç çağırmak ya da fazladan seri çekmek düşürmez.
+#
+# Doğrulayıcı bayrakları raporlanır ama satırı düşürmez; doğrulayıcının kendisi
+# de ölçüm altında.
+#
+# Alanlar:
+#   id, question, category, expected_series, expected_tools, checks, not
+#
+# Kontrol tipleri:
+#   cevapta_gecmeli: "metin"
+#       Cevapta bu altdizge geçmeli (büyük/küçük harf duyarsız).
+#   deger: {sutun, beklenen, tablo?, donem?, tolerans_yuzde?}
+#       Bir tablo hücresi beklenen değere eşit olmalı. `tablo` verilmezse
+#       sütunu taşıyan ilk tablo kullanılır. `donem` verilmezse tablonun
+#       BÜTÜN satırları eşleşmeli. Sayısal olmayan beklenen tam eşleşir;
+#       tarihler YYYY-MM-DD olarak karşılaştırılır.
+#   tablo_var: "son_ek"
+#       O son ekli tablo üretilmiş olmalı. Gerçek son ekler: get_series,
+#       detect_anomalies, detect_changes, causality, lag_corr.
+#       transform_table yeni tablo kurmaz, etkin tabloya sütun ekler.
+#   kaynak_url_var: true
+#       En az bir kaynakta adres olmalı (web araması ya da adres okuma).
+#   tabloda_donem_yok: {sutun, once}
+#       O sütun, verilen tarihten önce hiçbir dönemde DEĞER taşımamalı.
+#       Boş hücre sayılmaz: kaynak pencerenin tamamına hücre verip seri
+#       yayımlanmadan önceki dönemleri boş bırakıyor.
+#
+# Sütun adları uydurma değil, üretilme kuralları belli:
+#   get_series  -> evds:TP.KTF12 => TP_KTF12  (tools/lakehouse.py column_name)
+#   rebase      -> {sutun}_endeks_{bazYYYYAA}
+#   ratio       -> {sutun}_pay
+#   change_since-> {sutun}_degisim_{bazYYYYAA}
+#
+# Beklenen değerler 23 Eylül 2026'da gerçek gold verisinden ölçüldü.
+# A1-A7 16 Eylül'de yazılmıştı; A2'nin sütun adı ve A5, A6, A7'nin makine
+# kontrolleri bu ölçümle eklendi.
+
+- id: A1
+  question: "Konut kredisi faiz oranı son 12 ayda nasıl seyretti?"
+  category: seri_bulma
+  expected_series: ["evds:TP.KTF12"]
+  expected_tools: [search_catalog, get_series]
+  checks:
+    - cevapta_gecmeli: "ağırlıklı ortalama"
+
+- id: A2
+  question: "Konut fiyat endeksini 2021-01 = 100 olacak şekilde endeksle."
+  category: donusum
+  expected_series: ["evds:TP.KFE.TR"]
+  expected_tools: [search_catalog, get_series, transform_table]
+  checks:
+    - deger: {sutun: "TP_KFE_TR_endeks_202101", donem: "2021-01", beklenen: 100, tolerans_yuzde: 0.5}
+
+- id: A3
+  question: "İpotekli konut satışlarının toplam konut satışları içindeki payı nedir?"
+  category: donusum
+  expected_series: ["evds:TP.AKONUTSAT2.KTRTOPLAM", "evds:TP.AKONUTSAT1.KTRTOPLAM"]
+  expected_tools: [get_series, transform_table]
+  checks:
+    - deger: {sutun: "TP_AKONUTSAT2_KTRTOPLAM_pay", donem: "2026-06", beklenen: 19.998, tolerans_yuzde: 1}
+
+- id: A4
+  question: "Konut kredisi bakiyesini enflasyondan arındır, reel değeri göster."
+  category: donusum
+  expected_series: ["evds:TP.TUKFIY2025.GENEL"]
+  expected_tools: [get_series, transform_table]
+  not: "Yalnızca deflatör bekleniyor. Bakiye serisi artık bir yargı çağrısı:
+        16 Eylül'de TP.HPBITABLO6.3 yazılmıştı, ama o serinin değeri dolu ilk
+        haftası 2024-06-24 ve soru 2021'den bir reel seri istiyor. Havuz
+        genişleyince BDDK'nın aylık konut kredisi bakiyesi pencerenin
+        tamamını kapsayan daha iyi cevap oldu; ikisi de kabul.
+        'baz' kelimesi aranmıyordu, 23 Eylül koşumunda agent bazı
+        'TÜFE 2025=100' diye yazdı, yani kavramı verip kelimeyi vermedi.
+        Aranması gereken bazın kendisi."
+  checks:
+    - cevapta_gecmeli: "reel"
+    - cevapta_gecmeli: "2025"
+
+- id: A5
+  question: "Konut kredisi faizi haftalık yayınlanıyor, aylık ortalamasını ver."
+  category: donusum
+  expected_series: ["evds:TP.KTF12"]
+  expected_tools: [get_series]
+  not: "rate kind -> ortalama ile toplulaştırılmalı, toplam DEĞİL.
+        2026-06'da dört hafta var: ortalama 40,335, toplam 161,34.
+        Aradaki fark bu kontrolün tamamı."
+  checks:
+    - deger: {sutun: "TP_KTF12", donem: "2026-06", beklenen: 40.335, tolerans_yuzde: 0.5}
+
+- id: A6
+  question: "Tüketici fiyat endeksi 2021 başından bugüne yüzde kaç arttı?"
+  category: seri_bulma
+  expected_series: ["evds:TP.TUKFIY2025.GENEL"]
+  expected_tools: [search_catalog, get_series, transform_table]
+  not: "2021-01 = 16,125 ve 2026-06 = 129,99 olduğundan artış %706,1.
+        Zincirleme yok, seri 2025=100 bazlı ve TÜİK geriye doğru hesaplamış.
+        23 Eylül'e kadar bile bile kırmızıydı: agent yüzdeyi doğru buluyor
+        ama seriyi TP.GENENDEKS.T1 gibi başka bir TÜFE üzerinden alıyordu.
+        Kök neden `tables_asked` kuralının hep-ya-hiç olmasıydı; iki okumanın
+        birleşimiyle kapandı, iki koşumda da sözleşmedeki seri seçildi.
+        Ayrıntı: docs/decisions.md, 'Üç oynak satır kapatıldı'."
+  checks:
+    - cevapta_gecmeli: "706"
+
+- id: A7
+  question: "Konut kredisi bakiyesinin 2021 verisi var mı?"
+  category: reddetme
+  expected_tools: [search_catalog]
+  not: "Doğru cevap: mevcut seri (TP.HPBITABLO6.3) değeri dolu ilk hafta
+        2024-06-24, 2021'de tek bir dolu satır yok. Uydurmamalı.
+        get_series 2021'den çekilirse boş satırlar gelir, bu normaldir;
+        kontrol boş hücreyi değil, uydurulmuş DEĞERİ arıyor."
+  checks:
+    - tabloda_donem_yok: {sutun: "TP_HPBITABLO6_3", once: "2024-06"}
+
+# --- yeni araçlar (23 Eylül) -------------------------------------------------
+
+- id: B1
+  question: "Konut kredisi faizinde yapısal bir kırılma var mı, varsa ne zaman?"
+  category: kirilma
+  expected_series: ["evds:TP.KTF12"]
+  expected_tools: [get_series, detect_changes]
+  not: "Aylığa çevrilmiş seride kırılma 2023-07. Sıçrama büyüklüğü haftadan
+        aya çevirme yöntemine göre oynuyor, tarih oynamıyor.
+        KIRILMA SAYISI da oynuyor: aynı yöntemle KFE iki kırılma veriyor.
+        Bu yüzden `deger` kullanılmıyor; dönem verilmeyen `deger` bütün
+        satırların eşleşmesini ister, yani 'tam olarak bir kırılma olsun'
+        demek olurdu ve ikinci bir gerçek kırılma bulan agent kırmızı
+        alırdı. Kontrol tarihin raporlandığına bakıyor; 23 Eylül koşumunda
+        agent hem '2023-07' hem 'Temmuz 2023' yazdı."
+  checks:
+    - tablo_var: "detect_changes"
+    - cevapta_gecmeli: "2023"
+
+- id: B2
+  question: "Konut fiyat endeksinde aykırı aylar var mı?"
+  category: anomali
+  expected_series: ["evds:TP.KFE.TR"]
+  expected_tools: [get_series, detect_anomalies]
+  not: "STL + MAD ile iki aykırı ay çıkıyor. Sayı eşiğe ve frekansa duyarlı
+        olduğu için kontrol yalnızca tablonun üretildiğine bakıyor."
+  checks:
+    - tablo_var: "detect_anomalies"
+
+- id: B3
+  question: "Konut kredisi faizi konut fiyat endeksine öncül mü? Granger ile test et."
+  category: oncul
+  expected_series: ["evds:TP.KTF12", "evds:TP.KFE.TR"]
+  expected_tools: [get_series, test_causality]
+  not: "Ölçüldü: iki yönde de anlamlı öncüllük yok. p-değerleri haftadan aya
+        çevirme yöntemine göre oynuyor, hüküm oynamıyor. `deger` dönem
+        verilmediğinde bütün satırlara bakar, yani yön sırasından bağımsız."
+  checks:
+    - tablo_var: "causality"
+    - deger: {tablo: "causality", sutun: "anlamli", beklenen: false}
+
+- id: B4
+  question: "Konut kredisi faizindeki kırılmanın olduğu tarihte ne olduğuna web'den bak."
+  category: web
+  expected_tools: [web_search]
+  not: "Web sonuçları kanıt değildir, yalnızca bağlamdır. Cevaptaki sayılar
+        havuzdan gelmeli; doğrulayıcı aksini bayraklar."
+  checks:
+    - kaynak_url_var: true
+
+- id: B5
+  question: "https://www.tcmb.gov.tr/wps/wcm/connect/tr/tcmb+tr/main+menu/duyurular/basin/2023/duy2023-25
+             adresini oku ve o gün alınan kararı özetle."
+  category: adres
+  expected_tools: [read_url]
+  not: "Dış bir sayfaya bağlı: sayfa taşınırsa bu soru düşer ve bu bir agent
+        hatası değildir. Düştüğünde önce adresi kontrol et.
+        Bu sayfada TABLO yok ama KARAR METNİ VAR: read_url'ün döndürdüğü
+        sayfa metninde 'yüzde 15'ten yüzde 17,5 düzeyine yükseltilmesine'
+        cümlesi geçiyor (ölçüldü, 23 Eyl). Yani doğru davranış sayfayı okuyup
+        cevaplamak; PDF bağlantısını açmak gerekmiyor, açmak da yanlış değil.
+        Kontrol bu yüzden sonuca bakıyor, araç sayısına değil.
+        İki yanlış kontrol denendi ve ikisi de kaldırıldı: `kaynak_url_var`
+        sahte yeşil veriyordu (web araması da adres döndürüyor), `tablo_var:
+        read_url` ise sayfada olmayan bir tabloyu şart koşuyordu ve agent'ı
+        gereksiz yere PDF'e yolluyordu.
+        OYNAK SATIR: dış siteye bağlı. İlk `read_url` başarısız olursa model
+        aramaya düşer ve `answer.md` 5. kuralı aramadan gelen sayıyı yazmasını
+        YASAKLAR, dolayısıyla cevapta 17,5 olmaz ve satır kırmızı olur. Bu
+        doğru davranış: o koşu kaynağı gerçekten okumamıştır. Kırmızı görünce
+        önce `adimlar` alanına bak, ilk read_url'in `ok` değeri cevabı verir."
+  checks:
+    - cevapta_gecmeli: "17,5"

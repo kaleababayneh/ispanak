@@ -1,0 +1,939 @@
+{
+ "zaman": "2026-09-23T11:25:53.550150+00:00",
+ "havuz": 45422,
+ "esik": 0.4,
+ "ilk5_isabet": "25/27",
+ "ilk5_ayrik": "6/6",
+ "sorgular": [
+  {
+   "soru": "konut kredisi faiz oranı",
+   "ayrik": false,
+   "sira": 3,
+   "skor": 0.665,
+   "ilk": [
+    [
+     "evds:TP.KBK.TRY.18",
+     0.7128
+    ],
+    [
+     "evds:TP.KKP.TRY.18",
+     0.6792
+    ],
+    [
+     "evds:TP.KTF12",
+     0.665
+    ],
+    [
+     "evds:TP.KM.B11",
+     0.6454
+    ],
+    [
+     "evds:TP.BKR.TRY.18",
+     0.6424
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "ihtiyaç kredisi faizi",
+   "ayrik": false,
+   "sira": 2,
+   "skor": 0.6472,
+   "ilk": [
+    [
+     "evds:TP.KBK.TRY.KBTF10",
+     0.6686
+    ],
+    [
+     "evds:TP.KTF10",
+     0.6472
+    ],
+    [
+     "evds:TP.KBK.TRY.KBTF101",
+     0.6439
+    ],
+    [
+     "evds:TP.KTF101",
+     0.6391
+    ],
+    [
+     "evds:TP.KKP.TRY.KTF10",
+     0.639
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "konut fiyat endeksi",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.639,
+   "ilk": [
+    [
+     "evds:TP.KFE.TR",
+     0.639
+    ],
+    [
+     "evds:TP.TUKFIY2025.1213",
+     0.684
+    ],
+    [
+     "evds:TP.TUKFIY2025.12130",
+     0.6786
+    ],
+    [
+     "evds:TP.TUKFIY2025.043",
+     0.6604
+    ],
+    [
+     "evds:TP.FG.IST5.23",
+     0.645
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "tüketici fiyat endeksi",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.6484,
+   "ilk": [
+    [
+     "evds:TP.TUKFIY2025.GENEL",
+     0.6484
+    ],
+    [
+     "evds:TP.FG.IST1.23",
+     0.6161
+    ],
+    [
+     "evds:TP.TG2.Y14",
+     0.6935
+    ],
+    [
+     "evds:TP.TG2.Y15",
+     0.6504
+    ],
+    [
+     "evds:TP.TUFE1YI.T90",
+     0.6422
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "enflasyon",
+   "ayrik": false,
+   "sira": null,
+   "skor": null,
+   "ilk": [
+    [
+     "evds:TP.ENFBEK.HBA3ENF",
+     0.574
+    ],
+    [
+     "evds:TP.HANEBEK.HAN13B",
+     0.5587
+    ],
+    [
+     "evds:TP.ENFBEK.HBA1ENF",
+     0.5583
+    ],
+    [
+     "evds:TP.HANEBEK.HAN13C",
+     0.5544
+    ],
+    [
+     "evds:TP.HANEBEK.HAN13A",
+     0.5531
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "konut kredisi bakiyesi",
+   "ayrik": false,
+   "sira": 4,
+   "skor": 0.5989,
+   "ilk": [
+    [
+     "bddk:aylik:tuketici:tuketici_kredileri_konut:toplam:sektor",
+     0.6141
+    ],
+    [
+     "bddk:aylik:tuketici:takipteki_konut_kredileri:toplam:sektor",
+     0.6117
+    ],
+    [
+     "evds:TP.KM.B11",
+     0.6021
+    ],
+    [
+     "bddk:aylik:tuketici:konut:TL:sektor",
+     0.5989
+    ],
+    [
+     "evds:TP.KM.A11",
+     0.5962
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "toplam konut satışları",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.5766,
+   "ilk": [
+    [
+     "evds:TP.AKONUTSAT1.KTRTOPLAM",
+     0.5766
+    ],
+    [
+     "evds:TP.AKONUTSAT1.KMA",
+     0.5739
+    ],
+    [
+     "evds:TP.AKONUTSAT2.KMA",
+     0.5638
+    ],
+    [
+     "evds:TP.AKONUTSAT1.TRTOPLAM",
+     0.5579
+    ],
+    [
+     "evds:TP.AKONUTSAT3.KMA",
+     0.5573
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": [
+    "Uşak_Konut_Toplam Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Batman_İş Yeri_Toplam Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Osmaniye_Konut_İpotekli Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Van_Konut_İlk El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Van_Konut_İkinci El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle."
+   ]
+  },
+  {
+   "soru": "ipotekli konut satışları",
+   "ayrik": false,
+   "sira": 2,
+   "skor": 0.5758,
+   "ilk": [
+    [
+     "evds:TP.AKONUTSAT2.KMA",
+     0.5852
+    ],
+    [
+     "evds:TP.AKONUTSAT2.KTRTOPLAM",
+     0.5758
+    ],
+    [
+     "evds:TP.AKONUTSAT2.MA",
+     0.5726
+    ],
+    [
+     "evds:TP.AKONUTSAT2.TRTOPLAM",
+     0.5569
+    ],
+    [
+     "evds:TP.AKONUTSAT3.KMA",
+     0.5112
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": [
+    "Gümüşhane_Konut_İpotekli Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Kastamonu_İş Yeri_İpotekli Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Batman_Konut_Toplam Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Van_Konut_İkinci El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Van_Konut_İlk El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Batman_İş Yeri_Toplam Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle."
+   ]
+  },
+  {
+   "soru": "dolar kuru",
+   "ayrik": false,
+   "sira": 13,
+   "skor": 0.4841,
+   "ilk": [
+    [
+     "evds:TP.DK.KWD.C.YTL",
+     0.5341
+    ],
+    [
+     "evds:TP.DK.KWD.S.YTL",
+     0.5216
+    ],
+    [
+     "evds:TP.DK.KWD.A.YTL",
+     0.5216
+    ],
+    [
+     "evds:TP.DK.DKK.C.YTL",
+     0.5149
+    ],
+    [
+     "evds:TP.DK.DKK.S.YTL",
+     0.5134
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "BIST 100 endeksi",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.7282,
+   "ilk": [
+    [
+     "evds:TP.MK.F.BILESIK",
+     0.7282
+    ],
+    [
+     "evds:TP.MK.G.BILESIK",
+     0.7081
+    ],
+    [
+     "evds:TP.MK.G.BILESIK.TUM",
+     0.6982
+    ],
+    [
+     "evds:TP.MK.F.BILESIK.TUM",
+     0.686
+    ],
+    [
+     "evds:TP.MK.G.TEKNOLOJI",
+     0.6586
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "BIST Tüm endeksi XTUMY",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.7299,
+   "ilk": [
+    [
+     "evds:TP.MK.F.BILESIK.TUM",
+     0.7299
+    ],
+    [
+     "evds:TP.MK.G.BILESIK.TUM",
+     0.7077
+    ],
+    [
+     "evds:TP.MK.F.MALI",
+     0.6489
+    ],
+    [
+     "evds:TP.MK.G.TEKNOLOJI",
+     0.6374
+    ],
+    [
+     "evds:TP.MK.F.TEKNOLOJI",
+     0.6359
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "işsizlik oranı",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.6557,
+   "ilk": [
+    [
+     "evds:TP.TIG08",
+     0.6557
+    ],
+    [
+     "evds:TP.YISGUCU2.G8",
+     0.6451
+    ],
+    [
+     "evds:TP.YISGUCU2.G7",
+     0.6376
+    ],
+    [
+     "evds:TP.TIG07",
+     0.6357
+    ],
+    [
+     "evds:TP.TIG06",
+     0.5762
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "sanayi üretim endeksi",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.7307,
+   "ilk": [
+    [
+     "evds:TP.TSANAYMT2021.BCD",
+     0.7307
+    ],
+    [
+     "evds:TP.TSANAYTKVM2021.BCD",
+     0.7209
+    ],
+    [
+     "evds:TP.TSANAY2021.BCD",
+     0.7173
+    ],
+    [
+     "evds:TP.UREN.K01.2021",
+     0.7112
+    ],
+    [
+     "evds:TP.SANAYREV11.Y1",
+     0.7759
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": [
+    "Ölçme, test ve seyrüsefer amaçlı alet ve cihazların imalatı (Sanayi Üretim Endeksi): ayni kalemin 314 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İmalat (Sanayi Üretim Endeksi - Mevsim ve Takvim Etkisinden Arındırılmış): ayni kalemin 314 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İmalat (Sanayi Üretim Endeksi - Takvim Etkisinden Arındırılmış): ayni kalemin 314 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "ENJ-Enerji (Arşiv): ayni kalemin 39 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "ENJ-Enerji (Arşiv): ayni kalemin 39 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle."
+   ]
+  },
+  {
+   "soru": "cari işlemler dengesi",
+   "ayrik": false,
+   "sira": 4,
+   "skor": 0.5227,
+   "ilk": [
+    [
+     "evds:TP.ODEAYRSUNUM6.Q1",
+     0.5535
+    ],
+    [
+     "evds:TP.ODEAYRSUNUM6.Q59",
+     0.5281
+    ],
+    [
+     "evds:TP.ODEAYRSUNUM6.Q26",
+     0.5279
+    ],
+    [
+     "evds:TP.HARICCARIACIK.K1",
+     0.5227
+    ],
+    [
+     "evds:TP.HARICCARIACIK.K8",
+     0.5131
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "mevduat faiz oranı",
+   "ayrik": false,
+   "sira": 5,
+   "skor": 0.6611,
+   "ilk": [
+    [
+     "evds:TP.EUR.MT02.S",
+     0.667
+    ],
+    [
+     "evds:TP.EUR.MT03.S",
+     0.6657
+    ],
+    [
+     "evds:TP.EUR.MT01.S",
+     0.6638
+    ],
+    [
+     "evds:TP.EUR.MT02.K",
+     0.6627
+    ],
+    [
+     "evds:TP.TRY.MT02.S",
+     0.6611
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "bankacılık sektörü dönem net kârı",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.6106,
+   "ilk": [
+    [
+     "bddk:aylik:kar_zarar:donem_net_kari_zarari:toplam:sektor",
+     0.6106
+    ],
+    [
+     "bddk:aylik:kar_zarar:bankacilik_hizmetleri_gelirleri:toplam:sektor",
+     0.5987
+    ],
+    [
+     "bddk:aylik:kar_zarar:donem_net_kari_zarari:tp:sektor",
+     0.5895
+    ],
+    [
+     "bddk:aylik:rasyo:donem_net_kari_zarari_ortalama_ozkaynaklar:rasyo:sektor",
+     0.5879
+    ],
+    [
+     "evds:TP.TOP.V42",
+     0.584
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "takipteki alacakların toplam kredilere oranı",
+   "ayrik": false,
+   "sira": 2,
+   "skor": 0.6959,
+   "ilk": [
+    [
+     "bddk:aylik:rasyo:takipteki_alacaklar_karsiligi_brut_takipteki_alacaklar:rasyo:sektor",
+     0.7273
+    ],
+    [
+     "bddk:aylik:rasyo:takipteki_alacaklar_brut_toplam_nakdi_krediler:rasyo:sektor",
+     0.6959
+    ],
+    [
+     "bddk:haftalik:takipteki_alacaklar:takipteki_alacaklar:toplam:sektor",
+     0.6456
+    ],
+    [
+     "bddk:aylik:bilanco:takipteki_alacaklar:toplam:sektor",
+     0.6405
+    ],
+    [
+     "bddk:haftalik:takipteki_alacaklar:takipteki_alacaklar_ozel_karsiligi:toplam:sektor",
+     0.6402
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "sermaye yeterliliği rasyosu",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.6637,
+   "ilk": [
+    [
+     "bddk:aylik:sermaye:sermaye_yeterliligi_standart_rasyosu_yuzde:toplam:sektor",
+     0.6637
+    ],
+    [
+     "bddk:aylik:sermaye:cekirdek_sermaye_yeterliligi_rasyosu_yuzde:toplam:sektor",
+     0.6614
+    ],
+    [
+     "bddk:aylik:sermaye:cekirdek_sermaye:toplam:sektor",
+     0.5672
+    ],
+    [
+     "bddk:aylik:sermaye:yasal_ozkaynak:toplam:sektor",
+     0.5636
+    ],
+    [
+     "bddk:aylik:sermaye:ana_sermaye_toplami:toplam:sektor",
+     0.5503
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "İstanbul konut kredisi",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.7307,
+   "ilk": [
+    [
+     "bddk:finturk:bireysel:istanbul:konut_kredisi:sektor",
+     0.7307
+    ],
+    [
+     "bddk:finturk:bireysel:istanbul:takipteki_konut_kredisi:sektor",
+     0.7216
+    ],
+    [
+     "bddk:finturk:oranlar:istanbul:konut_kredisi_performans_orani:sektor",
+     0.6511
+    ],
+    [
+     "evds:TP.AKONUTSAT2.KTR100",
+     0.6438
+    ],
+    [
+     "bddk:finturk:sektorel:istanbul:insaat:sektor",
+     0.6419
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": [
+    "İSTANBUL - Konut Kredisi: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - Takipteki Konut Kredisi: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - Konut Kredisi Performans Oranı: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İstanbul_Konut_İpotekli Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - İnşaat: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - Turizm: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - Takipteki İnşaat: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İstanbul Konut Birim Fiyatları: ayni kalemin 75 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İstanbul_İş Yeri_İpotekli Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - Takipteki Turizm: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İstanbul_Konut_İlk El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - Gayrinakdi İnşaat: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - Gayrinakdi Krediler: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - İnşaat Kredi Performans Oranı: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İstanbul_Konut_Toplam Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - Taşıt Kredisi: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - Diğer Tüketici Kredileri: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - Takipteki Diğer Tüketici Kredileri: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İSTANBUL - Nakdi Krediler: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İstanbul_Konut_İkinci El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle."
+   ]
+  },
+  {
+   "soru": "haftalık konut kredisi",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.6414,
+   "ilk": [
+    [
+     "bddk:haftalik:krediler:tuketici_kredileri_a_konut:toplam:sektor",
+     0.6414
+    ],
+    [
+     "evds:TP.HPBITABLO7.2",
+     0.6244
+    ],
+    [
+     "evds:TP.HPBITABLO6.51",
+     0.6112
+    ],
+    [
+     "bddk:haftalik:krediler:tuketici_kredileri_a_konut:tp:sektor",
+     0.6081
+    ],
+    [
+     "bddk:haftalik:takipteki_alacaklar:tuketici_kredileri_a_konut:toplam:sektor",
+     0.5947
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "banka şube sayısı",
+   "ayrik": false,
+   "sira": 1,
+   "skor": 0.5724,
+   "ilk": [
+    [
+     "bddk:aylik:diger:yurt_ici_sube_sayisi:adet:sektor",
+     0.5724
+    ],
+    [
+     "bddk:aylik:diger:yurt_disi_sube_sayisi:adet:sektor",
+     0.5581
+    ],
+    [
+     "evds:TP.HPBITABLO8.9",
+     0.5473
+    ],
+    [
+     "bddk:aylik:diger:on_line_sistemine_dahil_sube_sayisi:adet:sektor",
+     0.5437
+    ],
+    [
+     "evds:TP.HPBITABLO8.15",
+     0.5401
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "euro kuru",
+   "ayrik": true,
+   "sira": 1,
+   "skor": 0.5156,
+   "ilk": [
+    [
+     "evds:TP.DK.EUR.A.YTL",
+     0.5156
+    ],
+    [
+     "evds:TP.DK.EUR.S.YTL",
+     0.5086
+    ],
+    [
+     "evds:TP.DK.EUR.C.YTL",
+     0.5075
+    ],
+    [
+     "evds:TP.DK.EUR.A.EF.YTL",
+     0.4578
+    ],
+    [
+     "evds:TP.DK.EUR.S.EF.YTL",
+     0.4536
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "Ankara konut fiyat endeksi",
+   "ayrik": true,
+   "sira": 3,
+   "skor": 0.708,
+   "ilk": [
+    [
+     "evds:TP.BIRIMFIYAT.ANK",
+     0.7401
+    ],
+    [
+     "evds:TP.YKKE.TR51",
+     0.7222
+    ],
+    [
+     "evds:TP.KFE.TR51",
+     0.708
+    ],
+    [
+     "evds:TP.BK.ANKARA",
+     0.6823
+    ],
+    [
+     "evds:TP.DFE.ANK",
+     0.6768
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": [
+    "Ankara Konut Birim Fiyatları: ayni kalemin 75 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "TR51 (Ankara): ayni kalemin 18 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "TR51 (Ankara): ayni kalemin 18 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara Konut Birim Kiraları: ayni kalemin 73 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "TR 51 (Ankara): ayni kalemin 2 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "TR 51 (Ankara): ayni kalemin 2 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "TR 51 (Ankara): ayni kalemin 2 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara Dükkan Birim Fiyatları: ayni kalemin 77 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara Ofis Birim Fiyatları: ayni kalemin 29 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara_Konut_İkinci El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara_Konut_İlk El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "ANKARA - Konut Kredisi Performans Oranı: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara_İş Yeri_İlk El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara_Konut_İpotekli Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara_İş Yeri_İpotekli Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle."
+   ]
+  },
+  {
+   "soru": "Ankara kira endeksi",
+   "ayrik": true,
+   "sira": 1,
+   "skor": 0.7551,
+   "ilk": [
+    [
+     "evds:TP.YKKE.TR51",
+     0.7551
+    ],
+    [
+     "evds:TP.BK.ANKARA",
+     0.7288
+    ],
+    [
+     "evds:TP.BIRIMFIYAT.ANK",
+     0.6722
+    ],
+    [
+     "evds:TP.DFE.ANK",
+     0.6414
+    ],
+    [
+     "evds:TP.KFE.TR51",
+     0.6405
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": [
+    "TR51 (Ankara): ayni kalemin 18 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara Konut Birim Kiraları: ayni kalemin 73 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara Konut Birim Fiyatları: ayni kalemin 75 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "TR 51 (Ankara): ayni kalemin 2 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "TR51 (Ankara): ayni kalemin 18 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara Dükkan Birim Fiyatları: ayni kalemin 77 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "TR 51 (Ankara): ayni kalemin 2 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "TR 51 (Ankara): ayni kalemin 2 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara Ofis Birim Fiyatları: ayni kalemin 29 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara_Konut_İkinci El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "ANKARA - Konut Kredisi Performans Oranı: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara_İş Yeri_İlk El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara_Konut_İlk El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara_İş Yeri_İpotekli Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "Ankara_İş Yeri_İkinci El Satışlar: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle."
+   ]
+  },
+  {
+   "soru": "bireysel kredi kartı borçları",
+   "ayrik": true,
+   "sira": 1,
+   "skor": 0.6274,
+   "ilk": [
+    [
+     "bddk:aylik:tuketici:bireysel_kredi_kartlari:toplam:sektor",
+     0.6274
+    ],
+    [
+     "bddk:haftalik:krediler:bireysel_kredi_kartlari:toplam:sektor",
+     0.62
+    ],
+    [
+     "bddk:haftalik:takipteki_alacaklar:bireysel_kredi_kartlari:toplam:sektor",
+     0.6195
+    ],
+    [
+     "bddk:aylik:tuketici:takipteki_bireysel_kredi_kartlari:toplam:sektor",
+     0.6118
+    ],
+    [
+     "evds:TP.HPBITABLO6.54",
+     0.5997
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  },
+  {
+   "soru": "İzmir toplam mevduat",
+   "ayrik": true,
+   "sira": 1,
+   "skor": 0.7814,
+   "ilk": [
+    [
+     "bddk:finturk:mevduat:izmir:toplam_mevduat:sektor",
+     0.7814
+    ],
+    [
+     "bddk:finturk:altin:izmir:toplam_altin_mevduati:sektor",
+     0.7407
+    ],
+    [
+     "bddk:finturk:mevduat:izmir:tasarruf_mevduati_tl:sektor",
+     0.7309
+    ],
+    [
+     "bddk:finturk:mevduat:izmir:diger_mevduat_tl:sektor",
+     0.7216
+    ],
+    [
+     "bddk:finturk:subeler:izmir:kisi_basi_toplam_mevduat:sektor",
+     0.7188
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": [
+    "İZMİR - Toplam Mevduat: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Toplam Altın Mevduatı: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Tasarruf Mevduatı (TL): ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Diğer Mevduat (TL): ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Kişi Başı Toplam Mevduat: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Tasarruf Mevduatı: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Toplam Nakdi Kredi Tasarruf Mevduatı Oranı: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Toplam Nakdi Kredi Toplam Mevduat Oranı: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Diğer Mevduat: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Kişi Başı Tasarruf Mevduatı: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Kredili Mevduat Hesabı: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Diğer Mevduat (DTH): ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Tasarruf Mevduatı (DTH): ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Toplam Nakdi Krediler: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Takipteki Alacaklar Toplam Nakdi Kredi Oranı: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Altın Mevduatı-Gerçek Kişi: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Altın Mevduatı-Tüzel Kişi: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Turizm: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Kişi Başı Takipteki Alacak: ayni kalemin 80 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle.",
+    "İZMİR - Takipteki Turizm: ayni kalemin 81 baska il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle."
+   ]
+  },
+  {
+   "soru": "haftalık toplam krediler",
+   "ayrik": true,
+   "sira": 1,
+   "skor": 0.7384,
+   "ilk": [
+    [
+     "bddk:haftalik:krediler:toplam_krediler:toplam:sektor",
+     0.7384
+    ],
+    [
+     "bddk:haftalik:krediler:toplam_krediler:tp:sektor",
+     0.7007
+    ],
+    [
+     "bddk:haftalik:krediler:toplam_krediler:yp:sektor",
+     0.6898
+    ],
+    [
+     "bddk:haftalik:krediler:ticari_ve_diger_krediler:toplam:sektor",
+     0.6624
+    ],
+    [
+     "bddk:haftalik:krediler:tuketici_kredileri:toplam:sektor",
+     0.6591
+    ]
+   ],
+   "havuzda_olmayan_beklenen": [],
+   "notlar": []
+  }
+ ],
+ "ilgisiz": [
+  {
+   "soru": "futbol maç sonuçları",
+   "en_yuksek": 0.3589,
+   "ilk": "evds:TP.SEKBILAB14A.92"
+  },
+  {
+   "soru": "hava durumu tahmini",
+   "en_yuksek": 0.3729,
+   "ilk": "evds:TP.SEKBILA5050.51"
+  },
+  {
+   "soru": "sinema gişe hasılatı",
+   "en_yuksek": 0.5791,
+   "ilk": "evds:TP.SEKBILA5001.59"
+  },
+  {
+   "soru": "üniversite giriş sınavı puanları",
+   "en_yuksek": 0.3822,
+   "ilk": "evds:TP.TUKFIY2025.1040"
+  },
+  {
+   "soru": "otomobil yakıt tüketimi",
+   "en_yuksek": 0.4858,
+   "ilk": "evds:TP.TUKFIY2025.0722"
+  }
+ ]
+}

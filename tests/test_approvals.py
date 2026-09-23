@@ -481,3 +481,42 @@ def test_a_gap_is_caught_however_the_profiler_scales_its_percentage(state):
         request = approvals.needs_quality_gate(result, state, 1)
         assert request is not None
         assert "eksik veri %25.0" in request.question
+
+
+def test_the_series_card_shows_the_table_before_anything_else():
+    """Measured 23 Sep: two candidates both read "Ağırlıklı ortalama, W,
+    rate" and a person could not tell the loan rate from the profit share."""
+    from lakehouse_agent.agent import approvals
+    from lakehouse_agent.agent.state import initial_state
+    from lakehouse_agent.contracts import ToolResult
+
+    result = ToolResult(
+        ok=True,
+        summary="2 aday",
+        preview=[
+            {
+                "series_id": "evds:TP.KBK.TRY.18",
+                "name_tr": "Konut Kredisi, (TL, Akım, %)",
+                "tablo": "Kredi Kâr Oranları (Akım)",
+                "unit": "Ağırlıklı ortalama",
+                "freq": "W",
+                "kind": "rate",
+                "score": 0.7153,
+            },
+            {
+                "series_id": "evds:TP.KTF12",
+                "name_tr": "Konut Kredisi (TL, Akım, %)",
+                "tablo": "Kredi Faiz Oranları (Akım)",
+                "unit": "Ağırlıklı ortalama",
+                "freq": "W",
+                "kind": "rate",
+                "score": 0.6684,
+            },
+        ],
+    )
+
+    request = approvals.needs_series_choice(result, initial_state("s"), 1)
+
+    assert request is not None
+    assert request.options[0].detail.startswith("Kredi Kâr Oranları (Akım), ")
+    assert request.options[1].detail.startswith("Kredi Faiz Oranları (Akım), ")

@@ -174,7 +174,9 @@ def test_the_keyword_search_offers_candidates_and_warns_they_are_coarse(session)
     for message in (credit, rate):
         assert "aday seri bulundu" in message
         assert "kelime eslesmesiyle bulundu" in message
-        assert '"eslesme": "kelime"' in message
+        # The preview writes its column names once and the rows as lists, so
+        # the match kind is a value under the `eslesme` column, not a key.
+        assert "eslesme" in message and '"kelime"' in message
         assert "eslesen seri yok" not in message
 
 

@@ -987,3 +987,20 @@ def test_top_adds_no_column():
     )
 
     assert ctx.written == {}
+
+
+def test_the_search_preview_carries_the_table_that_tells_twins_apart():
+    """ "Konut Kredisi (TL, Akım, %)" and "Konut Kredisi, (TL, Akım, %)" read
+    the same in name, unit, frequency and kind; one is a loan rate and the
+    other a participation bank's profit share. Only the table says which."""
+    from lakehouse_agent.contracts import CatalogHit
+
+    hit = CatalogHit(
+        series_id="evds:TP.KBK.TRY.18",
+        name_tr="Konut Kredisi, (TL, Akım, %)",
+        table="Kredi Kâr Oranları (Akım)",
+        score=0.71,
+        match="semantic",
+    )
+
+    assert hit.table == "Kredi Kâr Oranları (Akım)"

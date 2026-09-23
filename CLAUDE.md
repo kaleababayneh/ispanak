@@ -56,6 +56,7 @@ uv run python -m lakehouse_agent.lake.gold         # bütün havuz -> data/gold 
 uv run python -m lakehouse_agent.lake.quality      # docs/data_quality.md
 uv run python -m lakehouse_agent.lake.pool_index   # arama indeksi (MIA embedding, uzun sürer)
 uv run python -m lakehouse_agent.lake.search_eval  # arama ölçümü -> eval/results/
+uv run python -m lakehouse_agent.agent.answer_eval # agent ölçümü (uçtan uca, MIA çağırır)
 uv run python build_index.py                       # havuz DIŞI EVDS keşif indeksi (ayrı)
 # Agent: üç mod. --real demoda koşan moddur.
 uv run python -m lakehouse_agent.agent.loop --fake --question "..."

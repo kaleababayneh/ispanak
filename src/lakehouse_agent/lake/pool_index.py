@@ -195,6 +195,102 @@ def places(text: str) -> frozenset[str]:
     return frozenset(_PLACE.findall(_fold(cleaned)))
 
 
+#: A series about another country opens with its name and code:
+#: "Almanya (DEU) Tüketici Fiyat Endeksi (2010=100)". Measured 23 Sep on the
+#: real pool: 1316 series across thirteen cross-country datagroups.
+#:
+#: Deliberately loose, because `MIN_COUNTRY_CODES` below is the real guard.
+#: A tight pattern misses more than it saves: two-letter codes ("Euro Bölgesi
+#: (XM)"), a lower-case one ("Gürcistan(Geo)"), hyphenated names
+#: ("Bosna-Hersek"), and long ones ("Güney Kıbrıs Rum Yönetimi", "Hong Kong
+#: Çin Özel İdari Bölgesi") were all missed, 48 series in all -- and a missed
+#: row is worse than an unmarked one, because the family collapse leaves it
+#: standing as the single candidate for its table.
+_COUNTRY = re.compile(r"^([^\W\d_][^\d.()]{1,48})\(([A-Za-z]{2,3})\)")
+_HOME = "TUR"
+#: Words a country name may run to. Six covers "Hong Kong Çin Özel İdari
+#: Bölgesi"; past that it is a sentence, not a name.
+_COUNTRY_WORDS = 6
+#: Distinct codes a datagroup needs before its rows are read as countries.
+#: This, not the pattern, is what keeps "Konut Fiyat Endeksi (KFE)" and
+#: "DÖVİZ/EFEKTİF Hacim (USD)" out. Measured 23 Sep with the loose pattern
+#: above: thirteen genuine cross-country tables carry 39 to 193 codes, every
+#: false positive sits in a table with one, and nothing lies in between.
+MIN_COUNTRY_CODES = 10
+
+
+def country_match(name: str) -> tuple[str, str] | None:
+    """(folded country name, code) for a series about one country.
+
+    Ours is not abroad: Turkey's own rows sit in the same cross-country
+    tables and must not be demoted, so the home code reads as no match.
+
+    A match here is a candidate, not a verdict. `_countries_of_tables` keeps
+    only the ones whose whole datagroup is a country breakdown, which is why
+    this pattern can afford to be generous.
+    """
+    match = _COUNTRY.match(str(name or ""))
+    if match is None or match.group(2).upper() == _HOME:
+        return None
+    label = match.group(1).strip()
+    if not label or len(label.split()) > _COUNTRY_WORDS:
+        return None
+    return (_fold(label), match.group(2).upper())
+
+
+def _country_named(country: str, folded_query: str) -> bool:
+    """Does the query name this country, as a word rather than a fragment?
+
+    The province rule a hundred lines up already learned this: a bare
+    substring test reads "Çin" out of "içindeki" and "cinsinden", and "Şili"
+    out of "karşılık". Measured 23 Sep, the eval's own A3 ("...toplam konut
+    satışları içindeki payı nedir?") exempted every Chinese series from the
+    rule that way, which quietly switched it off.
+    """
+    if not country:
+        return False
+    return (
+        re.search(rf"(?<![a-z0-9]){re.escape(country)}(?![a-z0-9])", folded_query)
+        is not None
+    )
+
+
+#: "Tüketici Fiyat Endeksi (2025=100)" -> stem and base year. Price indices
+#: are the only tables the pool holds in two vintages at once (measured 23
+#: Sep: exactly two families, TÜFE and Özel Kapsamlı TÜFE, each 2003 and
+#: 2025), and both vintages are live -- EVDS marks neither "(Arşiv)".
+_BASE_YEAR = re.compile(r"\((\d{4})=100\)")
+_PARENTHETICAL = re.compile(r"\([^)]*\)")
+
+
+def _superseded(meta: pd.DataFrame) -> dict[str, str]:
+    """Datagroups a newer base year has replaced, with their own base year.
+
+    Read off the table names, not from a list of series: "this table has a
+    newer edition" is something the source says about itself, so the rule
+    stays on the same footing as the archive and province ones.
+
+    Every parenthetical goes before the names are compared, not just the
+    base year, because the editions do not agree on the rest of the name:
+    "Tüketici Fiyat Endeksi (Genel) (2003=100)" and "Tüketici Fiyat Endeksi
+    (2025=100)" are the same table twice. Measured 23 Sep over the 25
+    datagroups carrying a base year: exactly two families have rivals, TÜFE
+    (three editions) and Özel Kapsamlı TÜFE (two); the other 20 are
+    untouched.
+    """
+    tables = meta[["group", "table"]].dropna().drop_duplicates("group")
+    rows = []
+    for group, table in zip(tables["group"], tables["table"], strict=True):
+        found = _BASE_YEAR.search(str(table))
+        if found:
+            stem = _fold(_PARENTHETICAL.sub(" ", str(table)))
+            rows.append((group, stem, found.group(1)))
+    newest: dict[str, str] = {}
+    for _group, stem, base in rows:
+        newest[stem] = max(base, newest.get(stem, ""))
+    return {group: base for group, stem, base in rows if base != newest[stem]}
+
+
 def query_places(query: str) -> frozenset[str] | None:
     """The provinces a query asks about; None when it asks for the breakdown
     itself ("illere göre konut kredisi"), so that no place is put back."""
@@ -270,16 +366,92 @@ def series_meta(
                 "series_id": series_id,
                 "table": table,
                 "places": "|".join(sorted(found)),
+                "country": country_match(name),
                 "archive": archive,
                 "family": family,
                 "group": group,
                 "head": head,
             }
         )
-    return pd.DataFrame(
+    frame = pd.DataFrame(
         rows,
-        columns=["series_id", "table", "places", "archive", "family", "group", "head"],
+        columns=[
+            "series_id",
+            "table",
+            "places",
+            "country",
+            "archive",
+            "family",
+            "group",
+            "head",
+        ],
     )
+    return frame.assign(country=_countries_of_tables(frame))
+
+
+def _missing(value: Any) -> bool:
+    """`None`, NaN or empty -- a datagroup that is not there."""
+    return value is None or value == "" or (isinstance(value, float) and pd.isna(value))
+
+
+def _countries_of_tables(frame: pd.DataFrame) -> list[str]:
+    """Keep the country name only where its whole datagroup is a country
+    breakdown, and drop the code once it has done its counting.
+
+    A series with no datagroup is skipped rather than counted. It used to be
+    filed under the string "None", which put every group-less row in the pool
+    into one bucket: with `evds=None` -- the documented degraded build, and
+    what a fresh clone gets, since bronze is gitignored -- that bucket held
+    over two hundred codes, cleared the threshold, and marked "Konut Fiyat
+    Endeksi (KFE)" as a country. A row outside any datagroup cannot be part
+    of a datagroup's country breakdown by definition.
+
+    `isinstance(..., tuple)` rather than `is not None`, so running this over
+    its own output leaves everything unmarked instead of raising `IndexError`
+    on the empty strings it wrote. It is meant to run once, from
+    `series_meta`; this only decides how it fails if it ever runs twice.
+    """
+    codes: dict[str, set[str]] = {}
+    for group, match in zip(frame["group"], frame["country"], strict=True):
+        if isinstance(match, tuple) and not _missing(group):
+            codes.setdefault(str(group), set()).add(match[1])
+    return [
+        match[0]
+        if isinstance(match, tuple)
+        and not _missing(group)
+        and len(codes.get(str(group), ())) >= MIN_COUNTRY_CODES
+        else ""
+        for group, match in zip(frame["group"], frame["country"], strict=True)
+    ]
+
+
+#: The ranking columns `series_meta` writes. A stored index predating a rule
+#: simply lacks its column, and every read is guarded, so the search still
+#: works -- it just silently ranks the way it used to.
+META_COLUMNS = ("series_id", "table", "places", "country", "archive", "family")
+
+
+def meta_notes(meta: pd.DataFrame | None) -> list[str]:
+    """What is missing from a stored index, in words a person can act on.
+
+    The manifest's digest cannot answer this: it hashes ids and search texts,
+    and a ranking rule that adds a column changes neither. Measured 23 Sep
+    with the `country` column dropped, "tüketici fiyat endeksi" went back to
+    answering with Germany's CPI and nothing anywhere said so. An index is
+    derived and gitignored, so after pulling a rule the only honest signal is
+    this one.
+    """
+    if meta is None or meta.empty:
+        return []
+    absent = [name for name in META_COLUMNS if name not in meta.columns]
+    if not absent:
+        return []
+    return [
+        "Havuz arama indeksi bu surumden eski ("
+        + ", ".join(absent)
+        + " sutunu yok); siralama kurallarinin bir kismi calismiyor. "
+        "`python -m lakehouse_agent.lake.pool_index` ile yeniden kur."
+    ]
 
 
 def evds_hierarchy() -> pd.DataFrame | None:
@@ -315,9 +487,33 @@ def rank(
         return scored, {}
     wanted = query_places(query)
     wants_archive = "arsiv" in _fold(query)
-    asked = tables_asked(query, meta)
     info = meta.set_index("series_id")
     has_groups = "group" in info.columns
+    folded_query = _fold(query)
+    # Both read off columns an older index may not carry, so both are guarded:
+    # the index is derived and gitignored, and a stale copy must rank worse
+    # rather than raise.
+    known_countries = (
+        {name for name in meta["country"].dropna() if name}
+        if "country" in meta.columns
+        else set()
+    )
+    named_countries = {
+        name for name in known_countries if _country_named(name, folded_query)
+    }
+    # A table is "asked for" only by a query that names no place at all --
+    # no province, no country, and not the breakdown itself. "Ankara konut
+    # fiyat endeksi" spells out the KFE table, but what it wants is the
+    # Ankara row, a sub-item, and promoting the national total over it
+    # dropped that row out of the five candidates (measured 23 Sep). "Almanya
+    # tüketici fiyat endeksi" is the same shape one level up: it spells out
+    # the TÜFE table, and promoting TÜİK's total would bury Germany's row.
+    asked = (
+        tables_asked(query, meta)
+        if wanted == frozenset() and not named_countries
+        else set()
+    )
+    superseded = _superseded(meta) if has_groups and "table" in meta.columns else {}
 
     def _row(series_id: str) -> pd.Series | None:
         return info.loc[series_id] if series_id in info.index else None
@@ -355,6 +551,20 @@ def rank(
         named = frozenset(filter(None, str(row["places"] or "").split("|")))
         if wanted is not None and named and not named & wanted:
             late += 1
+        # Another country's copy of a figure, when the query named no
+        # country. Measured 23 Sep: "tüketici fiyat endeksi" returned
+        # Germany's CPI first, ahead of both Turkish ones, because the IMF's
+        # cross-country table spells out the query as well as TÜİK's does.
+        abroad = str(row.get("country") or "")
+        if abroad and abroad not in named_countries:
+            late += 1
+        # An older base year of a table that also exists rebased, unless the
+        # query asks for that base. Both editions are live and neither is
+        # marked "(Arşiv)", so nothing else separates them -- and the 2003
+        # one outscored the 2025 one on cosine.
+        own_base = superseded.get(str(row.get("group") or ""))
+        if own_base and own_base not in folded_query:
+            late += 1
         if _sub_item(row):
             late += 1
         return (0 if late == 0 and _asked_total(row) else 1, late)
@@ -383,20 +593,39 @@ def rank(
 
 def tables_asked(query: str, meta: pd.DataFrame) -> set[str]:
     """The EVDS datagroups whose name the query spells out ("tüketici fiyat
-    endeksi" -> "Tüketici Fiyat Endeksi (2025=100)"): every word of the query
-    is in the table's name. Such a query asks for the table's own total, not
-    for one of its rows."""
+    endeksi" -> "Tüketici Fiyat Endeksi (2025=100)"). Such a query asks for
+    the table's own total, not for one of its rows.
+
+    Two readings, and both are needed. The strict one -- every word of the
+    query is in the table's name -- catches a table whose name says more
+    than the query: "sanayi üretim endeksi" is asked of "Mevsim ve Takvim
+    Etkilerinden Arındırılmış Sanayi Üretim Endeksi" too, whose head the
+    search expects first. The loose one -- the table's name, parentheticals
+    dropped, is inside the query -- catches a query that says more than the
+    name: the agent asked "tüketici fiyat endeksi TÜFE genel endeks", "tufe"
+    is in no table name, and under the strict reading alone nothing was
+    asked for, no sub-item was demoted, and the five candidates were "08.
+    Bilgi Ve İletişim", "133. Sosyal Koruma" and three more rows of the very
+    table wanted. Measured 23 Sep: either reading alone loses a query the
+    other keeps; the union keeps both.
+
+    What a named place does to this is decided in `rank`, not here: a query
+    that names Ankara wants Ankara's row, which is a sub-item, and promoting
+    the table's total over it is exactly backwards.
+    """
     if "group" not in meta.columns:
         return set()
     words = set(re.findall(r"[a-z]+", _fold(query)))
     if len(words) < 2:
         return set()
     names = meta[["group", "table"]].dropna().drop_duplicates("group")
-    return {
-        group
-        for group, table in zip(names["group"], names["table"], strict=True)
-        if words <= set(re.findall(r"[a-z]+", _fold(table)))
-    }
+    asked: set[str] = set()
+    for group, table in zip(names["group"], names["table"], strict=True):
+        full = set(re.findall(r"[a-z]+", _fold(table)))
+        stem = set(re.findall(r"[a-z]+", _fold(_PARENTHETICAL.sub(" ", str(table)))))
+        if words <= full or (len(stem) >= 2 and stem <= words):
+            asked.add(group)
+    return asked
 
 
 def digest(series_ids: list[str], texts: list[str]) -> str:

@@ -131,9 +131,13 @@ def needs_series_choice(
         ApprovalOption(
             id=str(candidate.get("series_id")),
             label=str(candidate.get("name_tr") or candidate.get("series_id")),
+            # The table first. Measured 23 Sep: "Konut Kredisi (TL, Akım, %)"
+            # and "Konut Kredisi, (TL, Akım, %)" both read "Ağırlıklı
+            # ortalama, W, rate", and the second is a participation bank's
+            # profit share, not a loan rate. Only the table says so.
             detail=", ".join(
                 str(candidate.get(key))
-                for key in ("unit", "freq", "kind")
+                for key in ("tablo", "unit", "freq", "kind")
                 if candidate.get(key)
             )
             or None,

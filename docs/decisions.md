@@ -1430,3 +1430,302 @@ Sonuç:  `nearest` doğrudan test edildi (`test_nearest_scores_the_hits_it_
         returns`): sıra benzerliğe göre ve en yakın kayıt 1,0 veriyor. Skoru
         sabitleyince test kırmızıya düşüyor, yani sıralamanın sessizce ekleme
         sırasına dönmesini de yakalıyor.
+
+## Agent katmanı ölçülüyor (23 Eyl)
+Bağlam: Doğrulama katmanı vardı (onay noktaları, kural tabanlı doğrulayıcı,
+        kaynak gösterimi) ama uçtan uca hiçbir ölçüm yoktu.
+        `eval/questions_A.yaml` 16 Eylül'de yazılmış, beklenen seri ve elle
+        hesaplanmış değerlerle 7 soru taşıyordu, fakat repoda bu dosyayı
+        okuyan tek satır kod yoktu. Arama katmanının ölçümü vardı
+        (`lake/search_eval.py`), agent katmanının yoktu.
+Neden:  Demo günü bilinmeyen girdiler gelecek. Neyin kırıldığını jüriden önce
+        görmenin tek yolu bir soru takımı; ayrıca bundan sonraki her değişiklik
+        için gerileme ağı oluyor.
+Karar:  `agent/answer_eval.py`, `search_eval` deseninin aynısı: enjekte
+        edilebilir `deps`, `run()` içinde yazma yok, Türkçe anahtarlı düz
+        rapor, `eval/results/answer_eval_<tarih>.json`. Her soru **temiz bir
+        oturumda** koşuyor; CLI takip sorusu için oturumu paylaşıyor, eval
+        maddeleri bağımsız, paylaşılsa bir sorunun tablosu diğerinin
+        kontrolünü sahte geçirirdi. Onay noktaları demo ile aynı davranıyor
+        (otomatik varsayılan, seri sabitlenmiyor), yani ölçülen şey gerçek
+        uçtan uca davranış. Kapsama kuralı üst küme serbest: listede olmayan
+        bir araç çağırmak düşürmüyor, eksik bırakmak düşürüyor.
+        Doğrulayıcı bayrağı satırı DÜŞÜRMÜYOR, ayrı raporlanıyor; doğrulayıcı
+        da ölçüm altında ve bayrağı geçme koşulu yapmak onu sessizce
+        gevşetmeye teşvik ederdi.
+        `questions_A.yaml` → `questions.yaml`: "A şeridi" tarihsel.
+Sonuç:  12 soru, sekiz kayıtlı aracın hepsi kapsanıyor ve bunu bir test
+        bekçilik ediyor. Taşırken üç hata çıktı, üçü de ölçümle bulundu:
+        A2'nin beklediği `kfe_endeks` sütunu hiç üretilmiyor (`rebase`
+        çıktısı `{sutun}_endeks_{bazYYYYAA}`), A5 ve A6'nın makine kontrolü
+        yoktu, A7 hiçbir şey ölçmüyordu. A5 artık asıl tuzağı ölçüyor:
+        2026-06'da ortalama 40,335, toplam 161,34; oran serisini toplamla
+        toplulaştırmak buradan yakalanıyor.
+        Reddetme kontrolü (`tabloda_donem_yok`) sütun bazlı ve yalnızca DOLU
+        değere bakıyor. İlk yazdığım hali "tabloda o dönem olmasın" diyordu ve
+        yanlıştı: EVDS pencerenin tamamına hücre verip seri yayımlanmadan
+        önceki dönemleri boş bırakıyor, yani 2021'den çekmek doğru davranışken
+        kontrolü düşürüyordu.
+        `deger` dönem verilmediğinde bütün satırlara bakıyor; öncüllük tablosu
+        iki satırlı ve hangi yönün önce geldiği modelin hangi sütunu `column`
+        diye geçtiğine bağlı, satır indeksine bakmak kırılgan olurdu.
+        27 test, hepsi ağsız. Dört kural tek tek bozulup testin kırmızıya
+        düştüğü görüldü. Bu sırada kendi testimin bir tanesi yakalanmadı:
+        `_same`'in bool dalını kaldırdığımda test yeşil kalıyordu, çünkü
+        seçtiğim durum ayırt edici değildi. Gerçek risk tolerans verildiğinde:
+        `beklenen: false` + `tolerans_yuzde: 1` sayısal okunursa "sıfıra 1
+        yakın" olur ve `True` bunu sağlar, yani soru ters hükümle geçerdi.
+        Test o duruma çevrildi ve artık ısırıyor.
+
+## Eval'in ilk bulgusu: TÜFE serisi sözleşmeye aykırı seçiliyor (23 Eyl)
+Bağlam: `answer_eval` ilk gerçek koşusunda 11/12 verdi. Düşen satır A6:
+        "TÜFE 2021 başından bugüne yüzde kaç arttı?"
+Neden:  Agent yüzdeyi DOĞRU buluyor (%706,1) ama seriyi `TP.GENENDEKS.T1`
+        (2003=100) üzerinden hesaplıyor. `CLAUDE.md` TÜFE'yi
+        `evds:TP.TUKFIY2025.GENEL` olarak şart koşuyor. Sonuç aynı çıkıyor,
+        çünkü ikisi de aynı enflasyonu ölçüyor; seri seçimi yine de
+        sözleşmeye aykırı ve tutarlılığı bozuyor. `deflate` işlemi kendi
+        deflatörünü içeriden doğru seçtiği için A4'te sorun yok; açık uçlu
+        soruda arama ne bulursa o geliyor.
+Karar:  Soru KIRMIZI BIRAKILDI. Beklentiyi gevşetmek bulguyu gizlemek olurdu
+        ve eval'in varlık sebebi tam olarak bu. İki koşumda da aynı şekilde
+        düştü, yani tesadüf değil.
+Sonuç:  Açık kalan iş: agent'ın havuzdaki onlarca TÜFE serisinden sözleşmenin
+        şart koştuğunu seçmesi gerekiyor. Muhtemel yollar, ölçülmeden karar
+        verilmemeli: katalog arama metnine sözleşme işareti koymak, ya da
+        planlayıcı promptunda seriyi adıyla anmak. İkincisi tek seriyi
+        ayrıcalıklı kılar ve başka sorularda yan etki yapabilir.
+        Aynı koşuda iki eskimiş beklenti de düzeldi: A4'ün beklediği
+        `TP.HPBITABLO6.3`'ün değeri dolu ilk haftası 2024-06-24, yani soru
+        2021'den reel seri isterken o seriyle cevaplanamaz; havuz
+        genişleyince BDDK'nın aylık konut kredisi bakiyesi doğru cevap oldu.
+        A4'ün `cevapta_gecmeli: "baz"` kontrolü de kelime arıyordu: agent
+        bazı "TÜFE 2025=100" diye yazdı, kavramı verip kelimeyi vermedi;
+        kontrol bazın kendisini arar hale getirildi.
+
+## Havuz sıralaması: başka ülkenin kopyası ve eskimiş baz yılı (23 Eyl)
+Bağlam: `answer_eval`'in A6 bulgusunu kovalarken sıralamayı ölçtüm.
+        "tüketici fiyat endeksi" sorgusunda ilk sıra **Almanya'nın TÜFE'si**
+        (0,6680), ikinci 2003=100 Türk endeksi (0,6665), sözleşmenin şart
+        koştuğu seri üçüncü (0,6484). Onay kartı çıkıyor ama varsayılanı
+        Almanya.
+Neden:  İki ayrı boşluk. Havuzda bir serinin başka bir ülkeyi anlattığını
+        gösteren hiçbir işaret yoktu; il için `places` vardı, ülke için
+        yoktu. İkincisi, TÜFE havuzda iki canlı sürümle duruyor (2003=100 ve
+        2025=100) ve EVDS ikisini de "(Arşiv)" işaretlemiyor, yani baz yılı
+        dışında onları ayıran hiçbir şey yok. İki aday metin olarak
+        ayırt edilemez: aynı konu, aynı etiketler, aynı not.
+Karar:  İki kural, ikisi de mevcut kalıba oturuyor ve ikisi de kaynağın
+        serisi hakkında söylediğini okuyor, sorgunun konusunu değil.
+        1) `country`: seri adı "Ülke (ISO3) ..." ile başlıyorsa o ülkeye
+        aittir; sorgu ülke adı anmıyorsa geri çekilir. Türkiye'nin kendi
+        satırları (TUR) yabancı sayılmaz. Kalıp tek başına yetmiyor, çünkü
+        "Konut Fiyat Endeksi (KFE)" de üç kelime artı üç büyük harf; bu
+        yüzden işaret veri grubuna bağlandı. Ölçüldü: gerçek ülke tabloları
+        39–185 farklı kod taşıyor, yanlış pozitifler tam olarak 1, arada
+        hiçbir şey yok. Eşik 10.
+        2) `_superseded`: bir tablonun daha yeni bazlı sürümü varsa eski
+        sürüm geri çekilir, sorgu o baz yılını anmadıkça. Karşılaştırmadan
+        önce bütün parantezler atılıyor, çünkü sürümler adın geri kalanında
+        anlaşmıyor ("Tüketici Fiyat Endeksi (Genel) (2003=100)" ile
+        "Tüketici Fiyat Endeksi (2025=100)" aynı tablonun iki sürümü).
+        Ölçüldü: baz yılı taşıyan 25 veri grubundan yalnızca iki ailenin
+        rakibi var, diğer 20'si etkilenmiyor.
+Sonuç:  Arama ölçümü: 25/27 aynı kaldı, iki sorgu iyileşti. "tüketici fiyat
+        endeksi" 3. sıradan 1.'ye, "cari işlemler dengesi" 5.'ten 4.'e.
+        Gerileme yok. İndeks yeniden kuruldu, gömme önbellekten geldi
+        (45.422/45.422 cache, sıfır MIA çağrısı).
+        **A6 yine de kapanmadı** ve nedeni üçüncü bir şey çıktı, aşağıda.
+
+## `tables_asked` sorguya kelime eklenince çöküyor — denendi, geri alındı (23 Eyl)
+Bağlam: İki sıralama kuralından sonra A6 hâlâ 2003=100 serisini seçiyordu.
+        Agent'ın gerçek sorgusunu izledim: "tüketici fiyat endeksi TÜFE
+        genel endeks". Bu sorguda ilk beş aday TÜFE'nin **alt kalemleri**:
+        "08. Bilgi Ve İletişim", "133. Sosyal Koruma", "011. Gıda". Ana
+        endeks listede yok.
+Neden:  `tables_asked` "sorgunun HER kelimesi tablo adında geçmeli" diyor.
+        Sorguya kendi eş anlamlısını ekleyen bir kullanıcı ("tufe") kuralı
+        devre dışı bırakıyor: hiçbir tablo istenmemiş sayılıyor, dolayısıyla
+        alt kalem indirimi de çalışmıyor ve alt kalemler kosinüste ana
+        endeksi geçiyor. Kural yalnızca sorgu tam olarak tablo adı olduğunda
+        tutuyor.
+Karar:  Ters okuma denendi (tablonun adı sorgunun içinde olsun, fazladan
+        kelime serbest). Agent'ın sorgusunu düzeltiyor ama **arama ölçümünü
+        bozuyor: 25/27 -> 23/27**, ayrık sorgularda 6/6 -> 5/6. "Ankara
+        konut fiyat endeksi" 3. sıradan listeden düştü, çünkü sorgu "Konut
+        Fiyat Endeksi" adını heceliyor ve tablonun ulusal toplamı, sorgunun
+        asıl istediği Ankara serisinin önüne geçiyor. "sanayi üretim
+        endeksi" 1.'den 20.'ye düştü. GERİ ALINDI.
+Sonuç:  Açık iş. Bir tablonun toplamını öne almakla, adı anılan ili
+        onurlandırmak birbirini çekiştiriyor; bu çözülmeden gevşek okuma
+        gelemez. A6 kırmızı kalıyor ve nedeni artık kayıtlı: sorun modelde
+        ya da gömmede değil, `tables_asked`'ın hep-ya-hiç olmasında.
+        Ölçüm: 11/12, `eval/results/answer_eval_2026-09-23.json`.
+
+## İnceleme bulguları: ölçüm kendi kendini vuruyordu (23 Eyl)
+Bağlam: `feat/answer-eval` dalının baştan incelemesi. Her bulgu bir kanıt
+        betiğine yazıldı, düzeltmeden önce 17 kontrolün 15'i kırmızıydı,
+        sonra 17'si de yeşil.
+Neden ve karar, en ağırdan başlayarak:
+  1. **Puanlama çökmesi bütün koşuyu siliyordu.** Kontroller `_one`'ın koruma
+     bloğunun dışındaydı ve rapor yalnızca `run()` bittikten sonra yazılıyor.
+     Yarım yazılmış tek bir `deger` kontrolü (`sutun` yok) `KeyError` ile
+     12 sorunun MIA maliyetini birden götürüyordu. Puanlama da korumaya
+     alındı: bozuk kontrol kendi satırını düşürüyor, koşu devam ediyor.
+  2. **Politika faizi sorusu yanlış ülkeyi döndürebiliyordu.** Ülke kalıbı üç
+     harfli kod arıyordu, Euro Bölgesi'nin kodu `(XM)` iki harf. 40 satırlık
+     `bie_bispolfaiz` ailesinden yalnızca Türkiye ve Euro Bölgesi geri
+     çekilmeden kalıyordu; aile tek adaya daraldığı için hangisinin
+     görüneceğine yalnızca kosinüs karar veriyordu. Kalıp bilerek gevşetildi
+     (2-3 harf, büyük/küçük farketmez, tire serbest, altı kelimeye kadar) ve
+     asıl koruma eşiğe bırakıldı. Ölçüm: 48 gerçek yabancı seri daha
+     yakalanıyor, yanlış pozitif sıfır, `Bosna-Hersek`, `Gürcistan(Geo)`,
+     `Güney Kıbrıs Rum Yönetimi` artık işaretli.
+  3. **Bronze olmadan kurulan indekste koruma çöküyordu.** Grubu olmayan
+     seriler `str(None)` ile tek kovaya düşüyor, o kova eşiği geçiyor ve
+     "Konut Fiyat Endeksi (KFE)" ülke sayılıyordu. `evds=None` belgelenmiş
+     bir mod ve bronze gitignore'da olduğu için taze klonun aldığı mod.
+     Grubu olmayan satır artık atlanıyor.
+  4. **Bayat indeks kimseyi uyarmıyordu.** Manifest digest'i kimlik ve arama
+     metnini hash'liyor, meta sütunu eklemek ikisini de değiştirmiyor.
+     Ölçüldü: `country` sütunu düşürülünce "tüketici fiyat endeksi" yine
+     Almanya'yı birinci getiriyor ve hiçbir not bunu söylemiyor. `meta_notes`
+     eklendi, eksik sütunu adıyla söyleyip yeniden kurmayı istiyor.
+  5. **Ülke adları alt dize olarak aranıyordu.** "içindeki" ve "cinsinden"
+     `cin`, "karşılık" `sili` eşliyordu. Eval'in kendi A3 sorusu Çin
+     serilerini kuraldan muaf tutuyordu, yani kural o soruda kapalıydı.
+     `_country_named` il kuralındaki kelime sınırını kullanıyor.
+  6. **Kontroller en eski tabloyu okuyordu.** `sorted()` ilk eşleşmeyi
+     alıyordu; agent seriyi yeniden çekince (A5'te haftalıktan aylığa) doğru
+     cevap `t02`'de, kontrol `t01`'e bakıyordu. Artık en yenisi okunuyor.
+  7. **Eksik değer hüküm sayılıyordu.** Boş bir `anlamli` sütunu
+     `beklenen: false` kontrolünü geçiyordu, yani "test hiç koşmadı" hali
+     "öncüllük yok" diye okunuyordu; `pd.NA` ise koşuyu öldürüyordu.
+  8. **Hayali araç çağrılmış sayılıyordu.** Registry'nin tanımadığı bir ad
+     `expected_tools`'u karşılıyordu. `unknown_tool` hatası artık sayılmıyor;
+     kapıda iptal edilen çağrı sayılmaya devam ediyor, o kasıtlı.
+  9. **Çöken satır maliyetini sıfır bildiriyor ve iki kez sayılıyordu.**
+     Gerçek maliyet `state.usage`'da duruyor; `kesintili` artık yalnızca
+     hatasız kesilen turları sayıyor.
+  10. Tek bir liste maddesine iki kontrol yazılırsa ikincisi sessizce
+      düşüyordu, artık biçim hatası olarak kırmızı veriyor. Testler çalışma
+      dizinine bağlıydı, `Path(__file__)` ile bağlandı. `dogrulandi` alanı
+      yazılıp okunmuyordu, artık verify adımı yoksa özet onu basıyor.
+Sonuç:  1021 test yeşil (23 yeni), ruff temiz. Arama ölçümü 25/27 ve ayrık
+        6/6 ile sabit, gerileme yok. Agent ölçümü 11/12, A6 hâlâ ve bilerek
+        kırmızı. Dört düzeltme tek tek bozulup testin kırmızıya düştüğü
+        görüldü. Doğrulanan ama DÜZELTİLMEYEN bir madde var: `_superseded`
+        bütün parantezleri attığı için ileride "Fiyat Endeksi (Üretici)"
+        gibi bir tablo tüketici endeksiyle aynı gövdeye düşebilir. Bugün
+        havuzda böyle bir çakışma yok, spekülatif olduğu için elle
+        değiştirilmedi.
+
+## B5 sahte yeşildi, adım kaydı yoktu, bağlantılar kaçak (23 Eyl, koşumdan)
+Bağlam: Manuel doğrulama koşusunda B5 geçti ama cevabında bayrak vardı ve
+        "sayfa 404 döndü" yazıyordu. Önbellekte o adres için 200 duruyordu.
+Neden:  Üç ayrı şey çıktı, biri benim hatamdı.
+        1. **`read_url` PDF'i tam okuyor**, ölçüldü: doğrudan verilince
+           `ok: True`, `t01_read_url` tablosu kuruluyor, metinde "yüzde
+           15'ten yüzde 17,5" geçiyor. Yetenek eksik değil. Araç sayfadaki
+           veri dosyalarını gösteriyor ama takip etmiyor; bu kasıtlı, her
+           çekim ayrı onaydan geçiyor.
+        2. **B5 sahte yeşil veriyordu.** Tek kontrolü `kaynak_url_var` idi ve
+           web araması da adres döndürüyor. HTML kabuğunda durup cevabı
+           kendi belleğinden yazan koşu da geçiyordu.
+        3. **Koşucu adım kaydı tutmuyordu**, bu yüzden hangi adresin
+           çağrıldığını söyleyemedim ve modeli haksız yere 404 uydurmakla
+           suçladım. Suçlamayı geri aldım.
+Karar:  B5'in kontrolü sonuca bağlandı: `tablo_var: read_url` artı
+        `cevapta_gecmeli: "17,5"`. O tabloyu yalnızca gerçekten okunan bir
+        belge kurar, web araması kuramaz.
+        Rapora `adimlar` eklendi: tur içindeki her araç çağrısı, argümanları
+        (200 karaktere kırpılı), `ok` ve hata. Düşen satırlarda özete de
+        basılıyor.
+        `_data_links` artık `href`'i `html.unescape` ile çözüyor. TCMB
+        bağlantılarını `?MOD=AJPERES&amp;CACHEID=...` diye yazıyor ve modele
+        olduğu gibi verilince ikinci parametre `amp;CACHEID` oluyor. Bu
+        sunucuda zararsız (ikisi de 200), parametreyi okuyan bir sunucuda
+        modelin açması istenen adres sayfanın kastettiği adres olmuyor.
+Sonuç:  Ölçüm 11/12'den 10/12'ye düştü ve bu bir gerileme DEĞİL: B5 artık
+        dürüstçe kırmızı. Adım kaydı ilk koşuda işe yaradı, A6'nın her
+        seferinde başka bir TÜFE serisi seçtiği görüldü (bu koşuda
+        `evds:TP.FE25.OKTG01`).
+        AÇIK KALAN: aynı koşuda agent tek bir `read_url` yapıp kabuk sayfayı
+        okudu, PDF bağlantısını takip etmedi ve "duyuruyu okudum" diyerek
+        kendi belleğinden sayı yazdı. Doğrulayıcı '250'yi yakaladı, '17,5'i
+        yakalamadı; boş oturumda ikisini de yakalıyor, yani gerçek koşuda
+        '17,5' araç çıktısında bir yerde bulunmuş. Hangisi olduğu
+        incelenmedi. Modelin veri dosyası bağlantısını takip etmemesi de
+        ayrı bir iş.
+
+## İki çit, iki anlam: arama kanıt değil, okunan belge kanıt (23 Eyl)
+Bağlam: B5'in `cevapta_gecmeli: "17,5"` kontrolü düştü. Kullanıcı "daha önce
+        URL'den sayı yazmasın diye bir şey yapmamış mıydık" diye sordu.
+Neden:  İki ayrı şey bulundu.
+        1. **Kural var ve aramayı hedefliyor.** `answer.md` 5. madde:
+           "Aramadan gelen sayıyı cevaba yazma... Sayı gerekiyorsa kaynağı
+           `read_url` ile aç ve oradan al." B5'in o koşumunda ilk `read_url`
+           başarısız oldu, model aramaya düştü ve kurala uyarak oranı
+           yazmadı. Kontrol doğru davranışı cezalandırdı; satırın notuna
+           yazıldı, kontrol değiştirilmedi çünkü kaynağı okumayan bir koşunun
+           kırmızı olması doğrudur.
+        2. **Çit ayrımı tesadüfe dayanıyordu.** `without_fenced` yalnızca
+           `formatting.UNTRUSTED_OPEN`'ı tanıyor. `web_search` onu kullanıyor,
+           dolayısıyla parçacıklardaki sayılar kanıt sayılmıyor. `read_url`
+           kendi metnini kullanıyor ve tanınmadığı için sayfa metnindeki
+           sayılar kanıt sayılıyor. Ölçüldü: çit içine konan 98.765,4 cevapta
+           yazılınca bayrak almıyor, hiç geçmeyen sayı alıyor. Doğrulayıcının
+           docstring'i ise ikisini de kestiğini söylüyordu, yani davranış ile
+           yazılı niyet ayrışmıştı.
+Karar:  Mevcut davranış DOĞRU kabul edildi ve kasıtlı hale getirildi.
+        Gerekçe: arama yabancı bir derlemedir ve bir sayı başka aya ait
+        olabilir (ölçüldü: model Temmuz kararını Ağustos oranıyla yazmıştı);
+        `read_url` ise kullanıcının kendi sorusunda verdiği belgeyi okur ve
+        şartname "pdf, excel, resim veya ilgili yazı bölümlerinden anlam
+        çıkartılması" diyor. Çiti de kesmek, cevabı tablo değil düzyazı olan
+        her sayfada 5. kuralı uyulamaz hale getirirdi.
+        `web_url` sabitleri `SOURCE_OPEN`/`SOURCE_CLOSE` diye adlandırıldı,
+        eski adlar takma ad olarak duruyor. İki dosyada da ayrımın neden
+        ayrım olduğu yazıldı. Doğrulayıcının docstring'i gerçeğe çekildi.
+Sonuç:  Üç test ayrımı sabitliyor: arama parçacığındaki sayı bayrak alıyor,
+        okunan sayfadaki sayı almıyor, ve iki çit metninin eşit olmaması
+        ayrıca iddia ediliyor. Çitleri birleştirince üçünden ikisi kırmızıya
+        düşüyor, denendi. Güvenlik tarafı değişmedi: iki çitin içi de talimat
+        olarak okunmuyor.
+
+## Üç oynak satır kapatıldı: adres, TÜFE tablosu, faiz ikizi (23 Eyl)
+Bağlam: Üç ardışık ölçüm koşusu 10/12 verdi ama düşen satırlar değişiyordu.
+        Adım kaydı üç kök neden gösterdi: model uzun adresi yeniden yazarken
+        bozuyor (`main+menu/duyurular` -> `main+menu+duyurular`, çekim 404);
+        `tables_asked` sorguya kelime eklenince kapanıyor (A6 üç koşuda üç
+        farklı yanlış TÜFE serisi); ve "Konut Kredisi (TL, Akım, %)" ile
+        "Konut Kredisi, (TL, Akım, %)" ad, birim, frekans ve türde birebir
+        aynı, biri faiz öteki katılım bankası kâr payı (A1).
+Karar:  1. **Adres sorudan sabitleniyor.** `read_url`, verilen adres soruda
+           birebir yoksa ama aynı host'ta üç düzenleme uzağında bir adres
+           varsa onu okuyor ve uyarı yazıyor. Host birebir karşılaştırılıyor,
+           bir harflik host farkı başka site demektir. Sorudaki metin, ne
+           okunacağının tek doğru kaynağı.
+        2. **`tables_asked` iki okumanın birleşimi.** Düz okuma (sorgunun her
+           kelimesi tablo adında) tablo adı sorgudan uzun olduğunda gerekli:
+           "sanayi üretim endeksi" mevsimsellikten arındırılmış tabloyu da
+           istiyor ve arama onun başını bekliyor. Gevşek okuma (tablonun
+           parantezsiz adı sorgunun içinde) sorgu tablo adından uzun olduğunda
+           gerekli: A6'nın "TÜFE" ekli sorgusu. 22 Eylül'de yalnız gevşek
+           okumaya geçiş 25/27'den 23/27'ye düşürmüştü; birleşim 25/27'de
+           tutuyor, üç sorgu da (SÜE 1, TÜFE 1, Ankara KFE 3) yerinde.
+        3. **İl ya da ülke anan sorgu tablo istemiyor.** "Ankara konut fiyat
+           endeksi" KFE tablosunu heceliyor ama Ankara satırını istiyor; o
+           satır bir alt kalem ve tablonun toplamını öne almak onu beş adayın
+           dışına atıyordu. Ülke için aynı şekil bir üst katta: "Almanya
+           tüketici fiyat endeksi" TÜİK toplamını öne alıp Almanya'yı
+           gömüyordu. Yer anılıyorsa `asked` boş.
+        4. **`CatalogHit.table` eklendi** (isteğe bağlı, sözleşme belgesine
+           yazıldı). `search_catalog` modele `tablo` olarak gösteriyor, onay
+           kartı ayrıntının başına koyuyor. İkizleri ayıran tek alan bu.
+Sonuç:  Agent ölçümü iki koşumda da **12/12**, sıfır bayrak, sıfır kesinti;
+        ilk kez. A6 kendi sorgusuyla ("tüketici fiyat endeksi TÜFE")
+        sözleşmedeki `TP.TUKFIY2025.GENEL`'i seçti, A1 `TP.KTF12`'yi. Arama
+        ölçümü 25/27 ve ayrık 6/6, gerileme yok. Yeni testler dört sabotajda
+        da kırmızıya düştü. A6'nın "bile bile kırmızı" notu artık geçersiz,
+        soru dosyasından kaldırıldı.

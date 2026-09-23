@@ -28,6 +28,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import re
 import socket
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -98,6 +99,60 @@ _SECRET_PARAMS = frozenset(
         "sig",
     }
 )
+
+
+_ANY_URL = re.compile(r"https?://[^\s<>\"'()\[\]]+")
+#: Edits a model may make to an address it was copying before we stop
+#: trusting that it meant the one in the question. Three covers the case
+#: measured 23 Sep (one character) with room for a dropped or doubled slash;
+#: a bigger distance starts matching sibling pages.
+URL_SNAP_EDITS = 3
+
+
+def _edits(a: str, b: str) -> int:
+    """Levenshtein distance. Addresses are short; the plain table is fine."""
+    previous = list(range(len(b) + 1))
+    for i, char_a in enumerate(a, start=1):
+        current = [i]
+        for j, char_b in enumerate(b, start=1):
+            current.append(
+                min(
+                    previous[j] + 1,
+                    current[j - 1] + 1,
+                    previous[j - 1] + (char_a != char_b),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def nearest_url(url: str, text: str, *, max_edits: int = URL_SNAP_EDITS) -> str | None:
+    """The address in `text` that `url` is a slightly wrong copy of, or None.
+
+    The model retypes an address from the question rather than copying it,
+    and a long one comes back altered. Measured 23 Sep: TCMB's
+    `.../main+menu/duyurular/...` was passed to `read_url` as
+    `.../main+menu+duyurular/...` -- the address already held two plus
+    signs and the model continued the pattern -- and the fetch failed. The
+    person's own text is the ground truth for what they asked to be read.
+
+    None when `url` appears in `text` as written (nothing to correct), when
+    `text` holds no address on the same host, or when the nearest one is
+    further than `max_edits` away. Host is compared exactly: a one-letter
+    slip in a host name is a different site, not a typo to be helpful about.
+    """
+    if not text or url in text:
+        return None
+    host = urlparse(url).netloc.lower()
+    best: tuple[int, str] | None = None
+    for candidate in _ANY_URL.findall(text):
+        candidate = candidate.rstrip(".,;:")
+        if candidate == url or urlparse(candidate).netloc.lower() != host:
+            continue
+        distance = _edits(url, candidate)
+        if distance <= max_edits and (best is None or distance < best[0]):
+            best = (distance, candidate)
+    return best[1] if best else None
 
 
 def redact_url(url: str) -> str:

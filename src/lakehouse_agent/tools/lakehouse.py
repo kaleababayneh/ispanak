@@ -248,6 +248,7 @@ def make_search_catalog() -> ToolSpec:
             {
                 "series_id": hit.series_id,
                 "name_tr": hit.name_tr,
+                "tablo": hit.table,
                 "unit": hit.unit,
                 "freq": hit.freq,
                 "kind": hit.kind,
