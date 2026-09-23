@@ -38,6 +38,7 @@ from lakehouse_agent.agent.context import ToolContext
 from lakehouse_agent.agent.formatting import preview_rows
 from lakehouse_agent.contracts import Source, ToolResult
 from lakehouse_agent.tools.registry import ToolSpec
+from lakehouse_agent.web import browser
 from lakehouse_agent.web import extract as extractor
 from lakehouse_agent.web.fetch import WebFetchError, fetch, nearest_url, redact_url
 
@@ -163,6 +164,29 @@ def make_read_url() -> ToolSpec:
                     "Baska bir bicimde (PDF, Excel, CSV) bir adres varsa onu dene."
                 ),
             )
+
+        # Third layer, only when the first two (a page's own <table>s, then
+        # the JSON it may carry inside itself) both came back empty. See
+        # web/browser.py and docs/decisions.md.
+        if extractor.needs_browser_render(document.body, found):
+            try:
+                rendered = browser.render(document.final_url)
+            except browser.BrowserUnavailable as exc:
+                found.notes.append(str(exc))
+            except browser.RenderError as exc:
+                found.notes.append(
+                    f"Tarayici ile render basarisiz: {exc} Statik sonuc kullanildi."
+                )
+            else:
+                found = extractor.extract(
+                    rendered,
+                    content_type="text/html",
+                    url=document.final_url,
+                    ocr=ocr,
+                )
+                found.notes.append(
+                    "Sayfa JavaScript ile render edildi (headless tarayici)."
+                )
 
         warnings = list(found.notes)
         if snapped is not None:

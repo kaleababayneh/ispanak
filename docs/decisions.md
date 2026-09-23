@@ -943,6 +943,133 @@ Sonuç:  Canlı koşu: soru bir sayfa adresiyle geldi → araç sayfayı okudu, 
         tablonun içinde değil, başlığında), bu yüzden böyle bir tablo zaman
         serisi araçlarına (anomali, kırılma) girmiyor; `top` ve `mark` çalışır.
 
+## `read_url` üçüncü katman: headless tarayıcı (23 Eyl, 908-944'teki kararı günceller)
+Bağlam: 908-944'teki karar Playwright'ı reddetmiyor, "Docker imajı kurulurken
+        verilir" diyerek erteliyor ve o kararla birlikte iki katman tanımlıyor:
+        önce sayfanın kendi `<table>`'ları, o boş kalırsa sayfaya gömülü JSON
+        (`<script type="application/json">`, `__NEXT_DATA__`; `_embedded_json`).
+        O zaman ölçülen iki hedefin ikisi de bu iki katmandan biriyle okundu.
+        Gerçek kullanım bunu kırıyor: prompt'ta gelen adres ne düz `<table>` ne
+        de gömülü JSON taşıyan, verisini tamamen istemci tarafında (React/Vue
+        SPA) kuran bir sayfa olabilir — bu iki katman da boş döner, araç
+        yalnızca "JavaScript ile yükleniyor olabilir" der ve elde tablo kalmaz.
+Ölçüm:  İlk sürüm sahte (mock) Playwright ile test edilip birleştirildi, ama
+        gerçek Chromium'a karşı ikisi de yanlış çıktı:
+        - `context.on("page", lambda p: p.close())`, `context.new_page()`'den
+          ÖNCE kayıtlıydı. Bu olay context içindeki HER yeni sayfa için
+          tetikleniyor — kendi `new_page()` çağrısı da dahil — yani render()
+          kendi ana sayfasını açar açmaz kapatıyordu; üzerine kurulan
+          `page.route` bir sonraki adımda `TargetClosedError` verdi.
+        - `_BLOCKED_RESOURCE_TYPES` içindeki `"websocket"` etkisizdi:
+          Playwright'ta `page.route`/`context.route` bir WebSocket el
+          sıkışmasını hiç görmüyor (ayrı bir API, `route_web_socket`). Sayfa
+          JS'i `ws://127.0.0.1` ya da içe dönük bir adrese bağlanmaya
+          çalışsaydı bu route handler'ından hiç geçmeden gidecekti — yazılı
+          niyetle (SSRF'e karşı her alt istek kontrol edilsin) çalışan kod
+          arasında sessiz bir boşluk.
+        İlk ikisi düzeltilip `route_web_socket` eklendikten sonra, WebSocket
+        açan gerçek bir sayfaya karşı ÜÇÜNCÜ bir hata çıktı: `render()` 2+
+        dakika kilitlendi, `NAV_TIMEOUT_S` hiç çalışmadı. Engelin kendisi
+        çalışıyordu (iç portta dinleyen `nc` hiçbir bağlantı görmedi) ama
+        çağrı hiç dönmedi. Yığın: `page.goto` -> `route_web_socket`
+        işleyicisi -> `_reject_websocket` -> içindeki `ws.close()` -> Playwright
+        sync API'nin kendi `_sync` sarmalayıcısı -> `dispatcher_fiber.switch`.
+        Sebep: sync API'nin her çağrısı (işleyici içinden yapılan senkron bir
+        çağrı dahil) tek bir fiber üzerinden yürütülüyor; `ws.close()` bu
+        fiber'a dispatcher'ın KENDİ o an çalıştırdığı işleyicinin sonucunu
+        beklemek için geri dönmeye çalışıyor — kendi kendini bekleyen bir
+        çağrı. Playwright'ın kendi belgesi: "By default, the routed WebSocket
+        will not connect to the server" — yani `connect_to_server()`
+        çağrılmazsa bağlantı zaten sahte (mock), gerçek sunucuya hiç gitmiyor;
+        `close()` gereksizdi ve tam olarak kilitlenen şeydi.
+Karar:  - Üçüncü katman eklendi: `web/browser.py`, yalnız ilk iki katman
+          `extracted.tables`'ı boş bıraktığında (`web/extract.py`'de
+          `needs_browser_render`) devreye giren, opsiyonel Playwright/Chromium
+          tabanlı headless render. Tespit üç sinyalden biri: metin çok kısa
+          (`MIN_TEXT_CHARS_FOR_STATIC`), `<noscript>` içinde "JavaScript"
+          geçiyor, veya `<div id="root">`/`<div id="app">` boş.
+        - **Opsiyonel bağımlılık** (`pyproject.toml`'un ilk `[project.optional-
+          dependencies]` grubu, `browser = ["playwright>=1.48"]`): kurulu
+          değilse `read_url` çökmez, statik/gömülü-JSON sonucu bir uyarıyla
+          döner. Bu, 908-944'teki "tarayıcı kararı Docker imajı kurulurken
+          verilir" cümlesini birebir gerçekleştiriyor — imajı kuran, extra'yı
+          isteyip istememeye karar veriyor.
+        - **Her HTTP alt isteği yeniden kontrol ediliyor.** Statik `fetch()`'in
+          tek bir adresi var; render edilen sayfanın kendi JavaScript'i kendi
+          isteklerini attığı için tehdit modeli tek bir GET'ten geniş. Bu
+          yüzden `context.route("**/*")` — `page` değil, ölçülen hatanın
+          gerekçesiyle: popup gibi context'in açtığı başka bir sayfa da aynı
+          kontrolden geçsin — her isteği `web/fetch.py::check_url`'den geçiriyor
+          (import edilmiş, kopyalanmamış); görsel/font/medya istekleri hız ve
+          yüzey için doğrudan düşürülüyor.
+        - **Her WebSocket ayrıca engelleniyor**, `context.route_web_socket(
+          "**/*", ...)` ile — `context.route`'un görmediği yer. İşleyici
+          BİLEREK bomboş: Playwright'ın kendi belgesine göre routed bir
+          WebSocket `connect_to_server()` çağrılmadıkça zaten sunucuya
+          bağlanmıyor (sahte/mock), yani boş işleyici tek başına ağa çıkışı
+          engelliyor. `ws.close()` çağırmak (denendi) ölçülen kilitlenmeye yol
+          açtı — bkz. Ölçüm.
+        - **`server_addr()` ile ikinci kontrol**, `web/fetch.py::_peer_address`
+          ile birebir aynı gerekçeyle: `check_url`'ün DNS çözümlemesiyle
+          tarayıcının kendi çözümlemesi arasında adres değişebilir (DNS
+          rebinding). Render edilen sayfanın gövdesi bu kontrolden önce hiç
+          okunmuyor.
+        - **Popup, `page.on("popup", ...)` ile kapatılıyor** — `context.on(
+          "page", ...)` değil, ölçülen hatanın düzeltmesi tam olarak bu. İndirme
+          kapalı (`accept_downloads=False`), service worker'lar bloklanıyor, tek
+          kullanımlık context (kalıcı değil).
+        - **Duvar saati sınırı, ayrı süreçte.** Playwright'ın sync API'si tek
+          fiber üzerinden çalıştığı için bu SÜREÇ içinden kesilemiyor (Ölçüm'e
+          bkz.) — bir iş parçacığını dıştan durdurmak mümkün değil, bir süreci
+          her zaman mümkün. `render()` artık `_render_sync`'i
+          `multiprocessing` (spawn) ile ayrı bir çocuk süreçte çalıştırıyor
+          (`_run_in_subprocess`) ve `HARD_TIMEOUT_S` (`NAV_TIMEOUT_S + 10s
+          = 30s`) içinde dönmezse süreci `os.killpg` ile GRUBUYLA
+          (`os.setsid`, `_in_new_process_group`) öldürüyor — yalnızca Python
+          çocuğu değil, onun başlattığı Chromium da. Yan etki: bir Chromium
+          çökmesi artık ajan sürecini etkilemiyor, izole. Sonuç `RenderError`
+          olarak dönüyor, ne bir kesilmemiş `TimeoutError` ne sonsuz beklemedir.
+        - Gerçek Chromium açan iki entegrasyon testi **var**
+          (`tests/test_web_browser.py`, `@pytest.mark.live`):
+          `test_render_reads_a_real_javascript_rendered_page` ve, tam bu
+          kilitlenmeyi bir daha ölçmek için,
+          `test_rendering_a_page_that_opens_a_websocket_does_not_hang`
+          (httpbin.org/base64 ile WebSocket açan bir sayfa, `HARD_TIMEOUT_S`
+          içinde bitmesi doğrulanıyor). 22 Eyl'deki `live` marker'ının kapsamı
+          genişletildi: artık yalnız MIA API değil, gerçek bir sayfa da
+          "live". Varsayılan koşudan hariç (`addopts = "-q -m 'not live'"`),
+          `uv run pytest -m live` ile elle çalıştırılır; `browser` extra'sının
+          kurulu olmasını ve `playwright install chromium`'un çalıştırılmış
+          olmasını gerektirir. Diğer tüm testler sahte Playwright nesneleri /
+          monkeypatch ile ağsız; üç hatanın üçü de kendi seviyesinde test
+          edildi: ilk ikisi sahte-Playwright testleriyle
+          (`test_render_sync_never_closes_its_own_main_page`,
+          `test_the_popup_handler_is_on_the_page_not_the_context`,
+          `test_every_websocket_is_routed_but_left_unconnected`), üçüncüsü
+          (kilitlenme) `_run_in_subprocess`'i gerçekten sonsuza kadar
+          uyuyan sıradan bir fonksiyonla çağırıp süresi içinde
+          `TimeoutError` ile döndüğünü ölçerek
+          (`test_a_hung_subprocess_is_killed_within_the_deadline`) — sahte
+          Playwright bir dispatcher-fiber kilitlenmesini asla üretemezdi,
+          bu yüzden bu üçüncü hata için mekanizma Playwright'sız test edildi.
+Sonuç:  Canlı koşu (23 Eyl): `browser.render("https://quotes.toscrape.com/js/")`
+        gerçek Chromium ile 8985 baytlık render edilmiş HTML döndürdü, içinde
+        `<div class="quote"` var — sayfa gerçekten JavaScript ile dolduruluyor
+        ve üçüncü katman onu okuyor. WebSocket açan sayfa (httpbin.org/base64,
+        `ws://127.0.0.1:9999/`) düzeltmeden önce 2+ dakika kilitleniyordu;
+        düzeltmeden sonra `HARD_TIMEOUT_S` içinde başarıyla bitiyor (elle
+        doğrulandı, komut ve süresi bu kaydın sonunda). Kalan risk açık: alt
+        kaynakların DNS-rebinding'i yalnızca route-anındaki `check_url` ile
+        önleniyor, alt kaynağın kendi bağlantısı anında ikinci bir IP kontrolü
+        yok (yalnızca ana belge için var). Kabul edilebilir, çünkü alt
+        kaynakların gövdeleri hiç okunmuyor — yalnızca ana belgenin render
+        edilmiş DOM'u (`page.content()`) sonuca giriyor. `HARD_TIMEOUT_S`
+        (30s) statik `fetch()`'in kendi payıyla (50s) birlikte kötü durumda
+        `AgentConfig.step_timeout_s` (60s) aşılabilir; bu artık salt
+        `agent/loop.py`'nin kendi adım zaman aşımına bırakılan bir risk değil
+        — `render()`'in kendi süreç-içi ölümü zaten 30s'de garanti, aşan
+        kısım yalnızca statik fetch'in kendi payı olabilir.
+
 ## Testler makinedeki havuz indeksini kullanamaz (22 Eyl, CI hatası)
 Bağlam: PR #11'in ilk CI koşusunda iki test kırmızı döndü, oysa ikisi de yerelde
         yeşildi. Sebep: `data/pool_index` türetilmiş ve gitignore'da — indeksi

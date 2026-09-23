@@ -188,6 +188,53 @@ def test_a_page_with_no_table_and_no_files_says_javascript_may_be_the_reason():
     assert any("JavaScript" in note for note in got.notes)
 
 
+def test_needs_browser_render_is_true_for_an_empty_spa_root():
+    body = b'<html><body><div id="root"></div></body></html>'
+    found = extractor.extract(body, content_type="text/html", url="https://x/e")
+
+    assert extractor.needs_browser_render(body, found) is True
+
+
+def test_needs_browser_render_is_true_for_a_noscript_javascript_notice():
+    filler = "Bu sayfa uzun bir metin icerir ve JavaScript'ten bahsetmez. " * 10
+    body = (
+        f"<html><body><noscript>Bu siteyi kullanmak icin JavaScript "
+        f"gereklidir.</noscript><p>{filler}</p></body></html>"
+    ).encode()
+    found = extractor.extract(body, content_type="text/html", url="https://x/e")
+
+    assert len(found.text) >= extractor.MIN_TEXT_CHARS_FOR_STATIC  # isolate the signal
+    assert extractor.needs_browser_render(body, found) is True
+
+
+def test_needs_browser_render_is_false_for_a_normal_page():
+    filler = "Bu sayfa uzun bir metin icerir. " * 20
+    body = f"<html><body><p>{filler}</p></body></html>".encode()
+    found = extractor.extract(body, content_type="text/html", url="https://x/e")
+
+    assert len(found.text) >= extractor.MIN_TEXT_CHARS_FOR_STATIC
+    assert extractor.needs_browser_render(body, found) is False
+
+
+def test_needs_browser_render_is_false_when_a_table_was_already_found():
+    body = (
+        b"<html><body><table><tr><th>Ay</th><th>Deger</th></tr>"
+        b"<tr><td>Ocak</td><td>1</td></tr><tr><td>Subat</td><td>2</td></tr>"
+        b"</table></body></html>"
+    )
+    found = extractor.extract(body, content_type="text/html", url="https://x/e")
+
+    assert found.tables  # sanity: the static (first) layer already worked
+    assert extractor.needs_browser_render(body, found) is False
+
+
+def test_needs_browser_render_is_false_for_non_html():
+    body = b"a,b\n1,2\n3,4\n"
+    found = extractor.extract(body, content_type="text/csv", url="https://x/e.csv")
+
+    assert extractor.needs_browser_render(body, found) is False
+
+
 def test_the_text_is_the_page_not_its_menu():
     """Measured on borsaistanbul.com: without this the excerpt handed to the
     model is thousands of characters of navigation."""
