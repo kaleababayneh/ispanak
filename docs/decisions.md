@@ -1430,3 +1430,75 @@ Sonuç:  `nearest` doğrudan test edildi (`test_nearest_scores_the_hits_it_
         returns`): sıra benzerliğe göre ve en yakın kayıt 1,0 veriyor. Skoru
         sabitleyince test kırmızıya düşüyor, yani sıralamanın sessizce ekleme
         sırasına dönmesini de yakalıyor.
+
+## Agent katmanı ölçülüyor (23 Eyl)
+Bağlam: Doğrulama katmanı vardı (onay noktaları, kural tabanlı doğrulayıcı,
+        kaynak gösterimi) ama uçtan uca hiçbir ölçüm yoktu.
+        `eval/questions_A.yaml` 16 Eylül'de yazılmış, beklenen seri ve elle
+        hesaplanmış değerlerle 7 soru taşıyordu, fakat repoda bu dosyayı
+        okuyan tek satır kod yoktu. Arama katmanının ölçümü vardı
+        (`lake/search_eval.py`), agent katmanının yoktu.
+Neden:  Demo günü bilinmeyen girdiler gelecek. Neyin kırıldığını jüriden önce
+        görmenin tek yolu bir soru takımı; ayrıca bundan sonraki her değişiklik
+        için gerileme ağı oluyor.
+Karar:  `agent/answer_eval.py`, `search_eval` deseninin aynısı: enjekte
+        edilebilir `deps`, `run()` içinde yazma yok, Türkçe anahtarlı düz
+        rapor, `eval/results/answer_eval_<tarih>.json`. Her soru **temiz bir
+        oturumda** koşuyor; CLI takip sorusu için oturumu paylaşıyor, eval
+        maddeleri bağımsız, paylaşılsa bir sorunun tablosu diğerinin
+        kontrolünü sahte geçirirdi. Onay noktaları demo ile aynı davranıyor
+        (otomatik varsayılan, seri sabitlenmiyor), yani ölçülen şey gerçek
+        uçtan uca davranış. Kapsama kuralı üst küme serbest: listede olmayan
+        bir araç çağırmak düşürmüyor, eksik bırakmak düşürüyor.
+        Doğrulayıcı bayrağı satırı DÜŞÜRMÜYOR, ayrı raporlanıyor; doğrulayıcı
+        da ölçüm altında ve bayrağı geçme koşulu yapmak onu sessizce
+        gevşetmeye teşvik ederdi.
+        `questions_A.yaml` → `questions.yaml`: "A şeridi" tarihsel.
+Sonuç:  12 soru, sekiz kayıtlı aracın hepsi kapsanıyor ve bunu bir test
+        bekçilik ediyor. Taşırken üç hata çıktı, üçü de ölçümle bulundu:
+        A2'nin beklediği `kfe_endeks` sütunu hiç üretilmiyor (`rebase`
+        çıktısı `{sutun}_endeks_{bazYYYYAA}`), A5 ve A6'nın makine kontrolü
+        yoktu, A7 hiçbir şey ölçmüyordu. A5 artık asıl tuzağı ölçüyor:
+        2026-06'da ortalama 40,335, toplam 161,34; oran serisini toplamla
+        toplulaştırmak buradan yakalanıyor.
+        Reddetme kontrolü (`tabloda_donem_yok`) sütun bazlı ve yalnızca DOLU
+        değere bakıyor. İlk yazdığım hali "tabloda o dönem olmasın" diyordu ve
+        yanlıştı: EVDS pencerenin tamamına hücre verip seri yayımlanmadan
+        önceki dönemleri boş bırakıyor, yani 2021'den çekmek doğru davranışken
+        kontrolü düşürüyordu.
+        `deger` dönem verilmediğinde bütün satırlara bakıyor; öncüllük tablosu
+        iki satırlı ve hangi yönün önce geldiği modelin hangi sütunu `column`
+        diye geçtiğine bağlı, satır indeksine bakmak kırılgan olurdu.
+        27 test, hepsi ağsız. Dört kural tek tek bozulup testin kırmızıya
+        düştüğü görüldü. Bu sırada kendi testimin bir tanesi yakalanmadı:
+        `_same`'in bool dalını kaldırdığımda test yeşil kalıyordu, çünkü
+        seçtiğim durum ayırt edici değildi. Gerçek risk tolerans verildiğinde:
+        `beklenen: false` + `tolerans_yuzde: 1` sayısal okunursa "sıfıra 1
+        yakın" olur ve `True` bunu sağlar, yani soru ters hükümle geçerdi.
+        Test o duruma çevrildi ve artık ısırıyor.
+
+## Eval'in ilk bulgusu: TÜFE serisi sözleşmeye aykırı seçiliyor (23 Eyl)
+Bağlam: `answer_eval` ilk gerçek koşusunda 11/12 verdi. Düşen satır A6:
+        "TÜFE 2021 başından bugüne yüzde kaç arttı?"
+Neden:  Agent yüzdeyi DOĞRU buluyor (%706,1) ama seriyi `TP.GENENDEKS.T1`
+        (2003=100) üzerinden hesaplıyor. `CLAUDE.md` TÜFE'yi
+        `evds:TP.TUKFIY2025.GENEL` olarak şart koşuyor. Sonuç aynı çıkıyor,
+        çünkü ikisi de aynı enflasyonu ölçüyor; seri seçimi yine de
+        sözleşmeye aykırı ve tutarlılığı bozuyor. `deflate` işlemi kendi
+        deflatörünü içeriden doğru seçtiği için A4'te sorun yok; açık uçlu
+        soruda arama ne bulursa o geliyor.
+Karar:  Soru KIRMIZI BIRAKILDI. Beklentiyi gevşetmek bulguyu gizlemek olurdu
+        ve eval'in varlık sebebi tam olarak bu. İki koşumda da aynı şekilde
+        düştü, yani tesadüf değil.
+Sonuç:  Açık kalan iş: agent'ın havuzdaki onlarca TÜFE serisinden sözleşmenin
+        şart koştuğunu seçmesi gerekiyor. Muhtemel yollar, ölçülmeden karar
+        verilmemeli: katalog arama metnine sözleşme işareti koymak, ya da
+        planlayıcı promptunda seriyi adıyla anmak. İkincisi tek seriyi
+        ayrıcalıklı kılar ve başka sorularda yan etki yapabilir.
+        Aynı koşuda iki eskimiş beklenti de düzeldi: A4'ün beklediği
+        `TP.HPBITABLO6.3`'ün değeri dolu ilk haftası 2024-06-24, yani soru
+        2021'den reel seri isterken o seriyle cevaplanamaz; havuz
+        genişleyince BDDK'nın aylık konut kredisi bakiyesi doğru cevap oldu.
+        A4'ün `cevapta_gecmeli: "baz"` kontrolü de kelime arıyordu: agent
+        bazı "TÜFE 2025=100" diye yazdı, kavramı verip kelimeyi vermedi;
+        kontrol bazın kendisini arar hale getirildi.

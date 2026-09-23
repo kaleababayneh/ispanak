@@ -440,6 +440,34 @@ hangi kırılım ailesinden. Sıralama kuralları ve ölçüm: `docs/decisions.m
 `eval/results/search_eval_2026-09-22.json` (ilk 5 isabet 25/27, ayrık sorgularda
 6/6).
 
+### Agent ölçümü (`agent/answer_eval.py`)
+
+`python -m lakehouse_agent.agent.answer_eval` `eval/questions.yaml`'daki her
+soruyu kendi temiz oturumunda koşturur ve `eval/results/answer_eval_<tarih>.json`
+yazar. Arama ölçümünün bir katman üstü: o serinin bulunup bulunmadığını sorar,
+bu döngünün tamamının savunulabilir bir cevap üretip üretmediğini.
+
+Soru dosyası 12 soru taşıyor (A1–A7 seri bulma, dönüşüm ve reddetme; B1–B5 yeni
+araçlar) ve sekiz kayıtlı aracın hepsini kapsar; bunu bir test bekçilik eder.
+Kontrol tipleri ve sütun adı kuralları dosyanın kendi başlığında yazılı.
+
+Bir soru dört şeyden geçmek zorunda: beklenen serileri kullanmak, beklenen
+araçları çağırmak, `checks`'in hepsini geçmek, turu kesintisiz bitirmek. Üst
+küme serbest. Doğrulayıcı bayrakları raporlanır ama satırı düşürmez.
+
+Beklenen değerler 23 Eylül'de gerçek gold verisinden ölçüldü: TÜFE 2021-01 →
+2026-06 artışı %706,1; KTF12'nin 2026-06 aylık ortalaması 40,335 (toplamı
+161,34, aradaki fark A5'in tamamı); ipotekli satış payı 2026-06'da %19,998;
+KTF12'de tek kırılma 2023-07; KTF12 ile KFE arasında iki yönde de anlamlı
+öncüllük yok.
+
+Ölçüm dosyası: `eval/results/answer_eval_2026-09-23.json` (11/12, 64 sn,
+521 bin token, `deepseek-ai/DeepSeek-V4.1-Flash`). Düşen tek satır A6 ve
+**bilerek kırmızı**: agent artışı doğru buluyor (%706,1) ama seriyi
+`CLAUDE.md`'nin şart koştuğu `TP.TUKFIY2025.GENEL` yerine
+`TP.GENENDEKS.T1` (2003=100) üzerinden hesaplıyor. İki koşumda da aynı.
+Satır, soru gevşetilerek değil agent doğru seriyi seçerek kapanmalı.
+
 ### BDDK FinTürk (illere göre)
 
 Bronze: `data/bronze/bddk_finturk/tNN/YYYY-M.json` (M = 3/6/9/12), tablo ×
