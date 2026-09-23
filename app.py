@@ -14,6 +14,7 @@ tested, and this file is the shell that calls `cl.*` with what it returns.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,8 @@ load_dotenv(find_dotenv(usecwd=True))
 #: Its lazy initialisation is guarded by a lock for exactly this reason
 #: (`LakeAdapter._pool_index`).
 LAKE = LakeAdapter()
+
+logger = logging.getLogger(__name__)
 
 #: How long an approval card waits for a person. Longer than Chainlit's 90s
 #: default: a jury reads the card, and `SessionState.approval_wait_s` keeps
@@ -105,6 +108,14 @@ class ChainlitSink:
         ref = str(payload.get("table_ref") or "")
         if not ref:
             return
+        removed = webui.removed_note(payload)
+        if removed:
+            # The quality gate took it away; nothing to draw, and it must
+            # not be drawn from an earlier update either.
+            self._touched.pop(ref, None)
+            self._new.discard(ref)
+            await cl.Message(content=removed).send()
+            return
         fresh = {str(name) for name in payload.get("new_columns") or []}
         is_new, changed = webui.note_table(self._known, ref, fresh)
         if is_new:
@@ -167,11 +178,19 @@ class ChainlitSink:
             ).send()
 
     async def _draw_error(self, payload: dict[str, Any]) -> None:
-        await cl.Message(content=f"**Hata:** {payload.get('message', '')}").send()
+        user, log = webui.error_message(payload)
+        logger.error(log)
+        await cl.Message(content=f"**Hata:** {user}").send()
 
     async def finish(self) -> None:
-        """Commit the streamed answer; Chainlit only persists it on update."""
+        """Commit the streamed answer; Chainlit only persists it on update.
+
+        The ids are fenced here, on the whole text, not per token: a token
+        boundary can fall inside `evds:TP.KTF12`, and fencing halves would
+        leave the join unprotected.
+        """
         if self._answer is not None:
+            self._answer.content = webui.protect_series_ids(self._answer.content)
             await self._answer.update()
             self._answer = None
 
@@ -201,7 +220,16 @@ async def start() -> None:
     state = SessionState(session_id=session_id)
 
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    deps = real_deps(lake=LAKE, sink=None)
+    try:
+        deps = real_deps(lake=LAKE, sink=None)
+    except Exception:
+        # A missing key is the usual cause. Without this the tab opens onto
+        # a silent page; the log has the detail, the person gets a sentence.
+        logger.exception("agent baslatilamadi")
+        await cl.Message(
+            content="Agent başlatılamadı; sunucu logunu kontrol edin."
+        ).send()
+        return
     path = (
         Path(deps.settings.adhoc_dir) / "sessions" / f"{stamp}-{session_id[:8]}.jsonl"
     )
@@ -214,21 +242,40 @@ async def start() -> None:
     cl.user_session.set("state", state)
     cl.user_session.set("deps", deps)
     cl.user_session.set("log", log)
+    cl.user_session.set("turn_running", False)
 
 
 @cl.on_message
 async def message(msg: cl.Message) -> None:
-    state: SessionState = cl.user_session.get("state")
+    # The browser drew this bubble before this handler ran, bare ids and all;
+    # `update()` re-sends it and the browser replaces it in place.
+    protected = webui.protect_series_ids(msg.content)
+    if protected != msg.content:
+        msg.content = protected
+        await msg.update()
+
+    state: SessionState | None = cl.user_session.get("state")
     deps = cl.user_session.get("deps")
+    if state is None or deps is None:
+        await cl.Message(content="Oturum hazır değil; sayfayı yenileyin.").send()
+        return
+    if cl.user_session.get("turn_running"):
+        # One `SessionState` per tab and `run_turn` mutates it; a second
+        # turn on it at the same time would interleave two histories.
+        await cl.Message(content="Önceki soru hâlâ işleniyor, lütfen bekleyin.").send()
+        return
+
     sink: ChainlitSink = deps.sink
     charts_before = len(state.charts)
-
+    cl.user_session.set("turn_running", True)
     try:
         result = await run_turn(state, deps, msg.content)
     except AgentError as exc:
         await sink.finish()
         await cl.Message(content=f"**Tur tamamlanamadı:** {exc}").send()
         return
+    finally:
+        cl.user_session.set("turn_running", False)
 
     await sink.finish()
     if not result.answer:

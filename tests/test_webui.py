@@ -372,3 +372,52 @@ def test_flags_and_sources_become_bullets_with_the_overflow_counted():
 
     url = webui.source_lines({"sources": [{"url": "https://x.y/z"}]})
     assert url == ["- `https://x.y/z`"]
+
+
+# --- carried over from feat/chainlit-ui (Burak) ------------------------------
+
+
+def test_bare_series_ids_are_fenced_for_the_markdown_renderer():
+    """Chainlit's markdown reads `:TP` as a directive and drops it."""
+    assert (
+        webui.protect_series_ids("Kaynak evds:TP.KTF12 idi.")
+        == "Kaynak `evds:TP.KTF12` idi."
+    )
+    assert (
+        webui.protect_series_ids("bddk:aylik:tuketici:konut:TL:sektor ve")
+        == "`bddk:aylik:tuketici:konut:TL:sektor` ve"
+    )
+    assert (
+        webui.protect_series_ids("zaten `evds:TP.KFE.TR` var")
+        == "zaten `evds:TP.KFE.TR` var"
+    )
+    assert (
+        webui.protect_series_ids("evds:TP.KTF12 ile evds:TP.KFE.TR")
+        == "`evds:TP.KTF12` ile `evds:TP.KFE.TR`"
+    )
+    assert webui.protect_series_ids("hic kimlik yok") == "hic kimlik yok"
+    assert webui.protect_series_ids("") == ""
+
+
+def test_a_known_error_kind_gets_a_short_message_and_the_log_gets_the_detail():
+    user, log = webui.error_message(
+        {"kind": "LlmTimeoutError", "message": "Traceback ..."}
+    )
+    assert user == webui.ERROR_MESSAGES["LlmTimeoutError"]
+    assert "Traceback" in log and "Traceback" not in user
+
+    user, log = webui.error_message({"kind": "ValueError", "message": "x"})
+    assert user == webui.GENERIC_ERROR and log == "ValueError: x"
+    assert webui.error_message(None) == (webui.GENERIC_ERROR, "")
+
+
+def test_a_removed_table_is_announced_not_ignored():
+    assert webui.removed_note(
+        {"table_ref": "t02_a", "removed": True, "reason": "quality_cancel"}
+    ) == ("Tablo t02_a kaldırıldı (quality_cancel).")
+    assert (
+        webui.removed_note({"table_ref": "t02_a", "removed": True})
+        == "Tablo t02_a kaldırıldı."
+    )
+    assert webui.removed_note({"table_ref": "t02_a", "new_columns": ["x"]}) is None
+    assert webui.removed_note(None) is None

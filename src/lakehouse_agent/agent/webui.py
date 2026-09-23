@@ -12,6 +12,7 @@ section 6 and neither is known to the loop.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -39,6 +40,27 @@ AXIS_COLUMNS = ("period", "obs_date", "date", "tarih")
 #: the eval reads it and a ratio of 19.998 must stay 19.998. Four is what
 #: the terminal shows too (`console.DECIMALS`), so the two screens agree.
 DECIMALS = 4
+
+#: A series id, `evds:TP.KTF12` or `bddk:aylik:tuketici:konut:TL:sektor`.
+#: Fenced in backticks before it reaches Chainlit's markdown: the shipped
+#: frontend bundles `micromark-extension-directive` (its `directiveContainer*`
+#: tokenizer states are in `frontend/dist/assets/index-*.js`, checked 23
+#: Sep), which reads a bare `:name` outside a code span as a directive. So
+#: `evds:TP.KTF12` rendered as "evds", a break, ".KTF12". The lookaround
+#: leaves an id a caller already fenced alone. Found and fixed on Burak's
+#: `feat/chainlit-ui` (`ui/render.py`); carried over here unchanged in effect.
+_SEGMENT = r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*"
+_SERIES_ID = re.compile(rf"(?<!`)\b(?:evds|bddk):{_SEGMENT}(?::{_SEGMENT})*(?!`)")
+
+#: Short, non-technical text for a known error kind. The raw message goes to
+#: the server log; a person must not be shown a stack trace. Keyed by the
+#: `kind` the `error` event carries (`loop.py`: `type(exc).__name__`).
+ERROR_MESSAGES = {
+    "LlmError": "Model ile iletişim kurulamadı. Lütfen tekrar deneyin.",
+    "LlmTimeoutError": "Model yanıtı zaman aşımına uğradı. Lütfen tekrar deneyin.",
+    "CancelledError": "Tur durduruldu.",
+}
+GENERIC_ERROR = "Bir hata oluştu. Lütfen tekrar deneyin."
 
 #: Most series a default chart draws. Beyond this the picture is a hairball
 #: and the model should have asked for the columns it meant.
@@ -89,6 +111,41 @@ def decision(request: ApprovalRequest, value: Any) -> ApprovalDecision:
         choice=chosen,
         note="arayuzden secildi",
     )
+
+
+def protect_series_ids(text: str) -> str:
+    """Fence every bare series id in `text` with backticks (see `_SERIES_ID`).
+
+    For prose the model or a person wrote. `source_lines` fences its own ids
+    by hand and the lookaround leaves those alone either way.
+    """
+    if not text:
+        return text
+    return _SERIES_ID.sub(lambda m: f"`{m.group(0)}`", text)
+
+
+def error_message(payload: Mapping[str, Any] | None) -> tuple[str, str]:
+    """`(what the person reads, what the log gets)` for an `error` event."""
+    payload = payload or {}
+    kind = str(payload.get("kind") or "")
+    user = ERROR_MESSAGES.get(kind, GENERIC_ERROR)
+    log = f"{kind}: {payload.get('message') or ''}".strip(": ")
+    return user, log
+
+
+def removed_note(payload: Mapping[str, Any] | None) -> str | None:
+    """One line when the quality gate took a table away, else `None`.
+
+    The loop fires `table_update{removed, reason}` when a person rejects a
+    low-quality table (`loop.py`, `quality_cancel`). Silently dropping that
+    event left the interface showing a table the session no longer has.
+    """
+    payload = payload or {}
+    if not payload.get("removed"):
+        return None
+    ref = str(payload.get("table_ref") or "")
+    reason = payload.get("reason")
+    return f"Tablo {ref} kaldırıldı" + (f" ({reason})" if reason else "") + "."
 
 
 def note_table(known: set[str], ref: str, fresh: Iterable[str]) -> tuple[bool, bool]:

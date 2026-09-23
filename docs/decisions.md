@@ -2268,3 +2268,41 @@ Kanıt:  Beş sabotaj (okunan tablo yine çiziliyor, terminal de basıyor, yedek
         Apple Color Emoji (🥬, 160 px tek bitmap boyu) + Arial Rounded
         Bold'dan üretildi; üretici betik commit edilmedi, macOS fontuna
         bağlı, PNG'ler kaynaktır.
+
+## Burak'ın iki dalından taşınanlar (23 Eyl)
+Bağlam: `feat/chainlit-ui` (Burak) aynı temel üstüne ikinci bir Chainlit
+        arayüzü kurmuştu; iki arayüz birleştirilmedi, bizimki kaldı, onun
+        dalındaki beş somut kazanım buraya taşındı. `fix/read-url-js` ise
+        motora dokunan bağımsız bir işti ve olduğu gibi alındı.
+Karar:  **`fix/read-url-js` (3d85df1) cherry-pick, commit'siz.** Tek çakışma
+        `uv.lock`; bizim kilit alınıp `uv lock` ile yeniden çözüldü,
+        Playwright yalnız `browser` ekstrası olarak kilitte, kurulu değil.
+        İnceleme: her alt istek `web/fetch.py::check_url`'den geçiyor
+        (import, kopya değil), WebSocket'ler reddediliyor, peer adresi ikinci
+        kez doğrulanıyor, render ayrı süreçte sert zaman sınırıyla, çekilen
+        HTML hiçbir yerde `eval`/`exec`'e girmiyor (grep'lendi), iki canlı
+        test `live` işaretli ve varsayılan koşumun dışında. Onun karar
+        girdisi ve `docs/contracts.md` paragrafı olduğu gibi geldi.
+        **`feat/chainlit-ui`'den beş taşıma**, `webui.py`'ye saf fonksiyon +
+        `app.py`'ye çağrı olarak:
+        1. `protect_series_ids` — Chainlit'in markdown'ı `micromark-
+           extension-directive` taşıyor (paketteki `index-*.js`'de
+           `directiveContainer*` durumları doğrulandı); `evds:TP.KTF12`
+           içindeki `:TP` directive sanılıp yutuluyordu. Cevap metni
+           `finish`'te bütün olarak, kullanıcı mesajı `update()` ile.
+        2. `turn_running` — tur sürerken gelen mesaj reddedilir; tek
+           `SessionState` üstünde iki eşzamanlı `run_turn` olmaz.
+        3. `error_message` — `error` olayının `kind`'ına göre kısa Türkçe
+           metin kişiye, ham `message` sunucu loguna.
+        4. `removed_note` — kalite kapısının kaldırdığı tablo
+           (`table_update{removed, reason}`) ekrana yazılır, çizilmez.
+        5. Config: `features.mcp.enabled=false`,
+           `features.spontaneous_file_upload.enabled=false`
+           (`unsafe_allow_html` zaten false). Artı: deps kurulamazsa
+           "Agent başlatılamadı" mesajı.
+        Alınmayanlar ve nedeni: parola girişi (demo tek makinede; `.env`'e
+        üç değişken daha, gerek yok), üst "Ajan adımları" kartı (sıralama
+        sorunu bizde gözlenmedi; görülürse alınır), aylıkta `2021-01`
+        biçimi (sözleşme `period`'u tarih diyor, tam tarih yanlış değil),
+        `_real_deps` kopyası (biz `real_deps(lake=, sink=)` açtık).
+

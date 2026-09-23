@@ -56,7 +56,8 @@ reaction_on_message_received = false
 
 # Authorize users to spontaneously upload files with messages
 [features.spontaneous_file_upload]
-    enabled = true
+    # Kapali: sorular metindir; yuklenen dosya okunmaz ve saldiri yuzeyidir.
+    enabled = false
     # Define accepted file types using MIME types
     # Examples:
     # 1. For specific file types:

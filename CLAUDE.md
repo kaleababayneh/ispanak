@@ -67,6 +67,8 @@ uv run python -m lakehouse_agent.agent.loop --fake --chat     # ayni sey, agsiz 
 # Tarayici arayuzu (Chainlit). app.py repo kokunde, src/ disinda: motor arayuzu
 # import etmez kurali (tests/test_import_discipline.py) muafiyetsiz kalir.
 uv run chainlit run app.py -w
+# read_url ucuncu katman (JavaScript ile kurulan sayfalar), istege bagli:
+uv sync --extra browser && uv run playwright install chromium
 ```
 
 ## Kesin kurallar
