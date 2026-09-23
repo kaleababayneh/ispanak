@@ -778,6 +778,30 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
         raise
 
     answer = result.content or ""
+    if not answer.strip() and spent.thinking:
+        # Empty content with thinking on means the model spent the call on
+        # reasoning and never wrote the answer: measured 23 Sep, 374
+        # completion tokens and not one character of content, on a turn whose
+        # tools had all succeeded. Asking again with thinking off is a
+        # different request -- there is no reasoning channel for it to
+        # disappear into -- and it is cheap, because the work is already
+        # done and only the writing is missing. Once: a model that answers
+        # nothing twice is not going to answer the third time, and the turn
+        # still owes the person a reply.
+        logger.warning("cevap bos dondu; dusunme kapali bir kez daha deneniyor")
+        with contextlib.suppress(LlmError):
+            retry = await _chat(
+                state,
+                deps,
+                [{"role": "system", "content": system}, *_answer_messages(state)],
+                tools=None,
+                thinking=False,
+                tag=f"answer-retry@{prompt.tag}",
+                spent=spent,
+                last_chance=True,
+            )
+            state.usage = state.usage + retry.usage
+            answer = retry.content or ""
     if not answer.strip():
         # The failure `AgentConfig` names in its own docstring: an open-weights
         # model that plans forever and never answers, or returns only a

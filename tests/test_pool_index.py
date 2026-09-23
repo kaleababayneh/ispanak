@@ -214,3 +214,69 @@ def test_a_search_over_the_index_puts_the_national_series_first(tmp_path):
     assert hits[0].series_id == "bddk:aylik:tuketici:konut:TL:sektor"
     assert len(hits) == 2  # the two provinces are one candidate
     assert any("1 baska il/bolge" in note for note in notes)
+
+
+def _grouped_meta() -> pd.DataFrame:
+    """A pool where one datagroup's name is what the query spells out."""
+    return pd.DataFrame(
+        [
+            {
+                "series_id": "evds:kfe",
+                "table": "Konut Fiyat Endeksi",
+                "places": "",
+                "archive": False,
+                "family": None,
+                "group": "bie_kfe",
+                "head": True,
+            },
+            {
+                "series_id": "evds:kfe_arsiv",
+                "table": "Hedonik Konut Fiyat Endeksi",
+                "places": "",
+                "archive": True,
+                "family": None,
+                "group": "bie_hkfe",
+                "head": True,
+            },
+            {
+                "series_id": "evds:tufe_konut_sigortasi",
+                "table": "Tüketici Fiyat Endeksi (2025=100)",
+                "places": "",
+                "archive": False,
+                "family": None,
+                "group": "bie_tukfiy2025",
+                "head": False,
+            },
+        ]
+    )
+
+
+def test_a_table_the_query_names_is_led_by_its_own_total():
+    """Naming a table used to demote its sub-items and nothing more, so the
+    table's own total competed on cosine alone against every unrelated series.
+    Measured on the real pool: "Konut Fiyat Endeksi (KFE)" scored 0.639 while
+    four housing-related CPI rows scored 0.645-0.684, and the five candidates
+    held none of them."""
+    scored = [
+        ("evds:tufe_konut_sigortasi", 0.684),
+        ("evds:kfe_arsiv", 0.726),
+        ("evds:kfe", 0.639),
+    ]
+
+    ordered, _standing = pool_index.rank("konut fiyat endeksi", scored, _grouped_meta())
+
+    assert [sid for sid, _ in ordered][0] == "evds:kfe"
+    # The archived head of an archived table is not promoted past it.
+    assert [sid for sid, _ in ordered][-1] == "evds:kfe_arsiv"
+
+
+def test_a_query_that_names_no_table_keeps_the_similarity_order():
+    """The promotion must not disturb every other query."""
+    scored = [
+        ("evds:tufe_konut_sigortasi", 0.684),
+        ("evds:kfe", 0.639),
+    ]
+
+    ordered, _standing = pool_index.rank("mevduat faizi", scored, _grouped_meta())
+
+    assert [sid for sid, _ in ordered] == [s for s, _ in scored]

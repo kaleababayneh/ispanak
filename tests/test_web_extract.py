@@ -330,3 +330,65 @@ def test_a_link_that_is_not_http_is_not_offered_to_the_model():
     links = extractor._data_links(html, "https://x.example.com/")
 
     assert [url for url, _ in links] == ["https://x.example.com/veri.csv"]
+
+
+class _Word(dict):
+    """The keys pdfplumber gives each word."""
+
+    def __init__(self, text, x0, x1, top):
+        super().__init__(text=text, x0=x0, x1=x1, top=top, bottom=top + 8)
+
+
+class _Row:
+    def __init__(self, top):
+        self.bbox = (0, top, 100, top + 10)
+
+
+class _Page:
+    """Enough of a pdfplumber page for `_repaired_header`.
+
+    The columns are 0-30, 30-70, 70-100; the heading words straddle 30 and 70
+    exactly as they do on Borsa İstanbul's gold table, which is what the
+    cell-by-cell reading splits.
+    """
+
+    bbox = (0, 0, 100, 100)
+
+    def __init__(self):
+        self.rows = [_Row(0), _Row(20)]
+        self.cells = [(0, 0, 30, 10), (30, 0, 70, 10), (70, 0, 100, 10)]
+
+    def find_tables(self, _settings):
+        return [self]
+
+    def extract_words(self):
+        return [
+            _Word("AY", 2, 20, 2),
+            _Word("Hacim/Volume", 26, 60, 2),  # midpoint 43 -> middle column
+            _Word("TOPLAM", 72, 96, 2),
+            _Word("dipnot", 2, 20, 60),  # below the first data row: ignored
+        ]
+
+
+def test_a_pdf_heading_is_read_word_by_word_not_cell_by_cell():
+    """Without ruling lines the column boundaries come from where the numbers
+    sit, and a printed heading does not line up with them: "Hacim/Volume"
+    arrived as "H" in one column and "acim/Volume" in the next. A word is
+    atomic, so assigning whole words to the column their midpoint falls in
+    cannot split one."""
+    rows = [["H", "acim/Volume", "TO"], ["Ocak", "1.234", "5"]]
+
+    header = extractor._repaired_header(_Page(), rows)
+
+    assert header == ["AY", "Hacim/Volume", "TOPLAM"]
+
+
+def test_a_heading_that_cannot_be_rebuilt_leaves_the_table_alone():
+    """A page whose columns do not match the extracted grid gets the old
+    reading rather than a guess."""
+
+    class _Mismatched(_Page):
+        def find_tables(self, _settings):
+            return []
+
+    assert extractor._repaired_header(_Mismatched(), [["a", "b", "c"]]) is None

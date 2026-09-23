@@ -301,14 +301,15 @@ def rank(
     """Candidates (best cosine first) in the order a reader should see them,
     and, per candidate standing for a family, how many other places it hides.
 
-    Tiers, each keeping the similarity order: a series the query did not ask
-    for goes after those it may have -- an archived series unless the query
-    says "arşiv", a province's share unless the query names that province (or
-    asks for the breakdown), and a table's sub-item when the query named the
-    table itself ("tüketici fiyat endeksi" asks for the CPI, not for "011.
-    Gıda"; EVDS lists the table's own total first, see `series_meta`). Then
-    one candidate per family: the first, which is the province the query
-    names if it names one.
+    Tiers, each keeping the similarity order. First the total of a table the
+    query spelled out ("konut fiyat endeksi" asks for the KFE itself). Then
+    everything else; and after those, a series the query did not ask for --
+    an archived series unless the query says "arşiv", a province's share
+    unless the query names that province (or asks for the breakdown), and a
+    table's sub-item when the query named the table itself ("tüketici fiyat
+    endeksi" asks for the CPI, not for "011. Gıda"; EVDS lists the table's
+    own total first, see `series_meta`). Then one candidate per family: the
+    first, which is the province the query names if it names one.
     """
     if meta is None or meta.empty:
         return scored, {}
@@ -325,10 +326,29 @@ def rank(
         """In a table the query named, and not that table's own total."""
         return has_groups and row["group"] in asked and not bool(row.get("head", False))
 
-    def tier(series_id: str) -> int:
+    def _asked_total(row: pd.Series) -> bool:
+        """The own total of a table the query spelled out."""
+        return has_groups and row["group"] in asked and bool(row.get("head", False))
+
+    def tier(series_id: str) -> tuple[int, int]:
+        """(promoted first, then how late). Two keys, not one sum.
+
+        Naming a table used to demote its sub-items and do nothing else, so
+        the table's own total stayed in the same tier as every unrelated
+        series and had to win on cosine alone. Measured on "konut fiyat
+        endeksi": `Konut Fiyat Endeksi (KFE)` scored 0.639 while four
+        housing-related *CPI* rows scored 0.645 to 0.684, so the five
+        candidates held none of them. The docstring already said such a query
+        asks for the table's own total; now it does.
+
+        Kept separate from `late` so the promotion cannot cancel a demotion:
+        the archived head of an archived table stays behind, which is why
+        `TP.HKFE01` (Arşiv, 0.726) does not take the place of the current
+        index.
+        """
         row = _row(series_id)
         if row is None:
-            return 0
+            return (1, 0)
         late = 0
         if bool(row["archive"]) and not wants_archive:
             late += 1
@@ -337,7 +357,7 @@ def rank(
             late += 1
         if _sub_item(row):
             late += 1
-        return late
+        return (0 if late == 0 and _asked_total(row) else 1, late)
 
     ordered = sorted(scored, key=lambda pair: tier(pair[0]))
     families = meta["family"].copy()

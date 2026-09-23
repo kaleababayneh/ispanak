@@ -1151,3 +1151,81 @@ Uygulanmadı (gerekçesiyle):
         - **Seri seçim kapısının 0,9 oranı** 45 binde yeniden ölçülmedi.
         - **`_recent_rate`** hâlâ istem okuma süresini token hızına katıyor;
           doğrusu akış (streaming) istiyor.
+
+## Sorgu bir tablonun adını söylediğinde o tablonun toplamı öne alınır
+Bağlam: 23 Eyl canlı koşusu, senaryonun 3. sorusu. "konut fiyat endeksi"
+        araması Konut Fiyat Endeksi'ni hiç döndürmedi; beş aday TÜFE'nin konut
+        alt kalemleriydi ("Konut Sigortası", "Konutun Bakımı ...").
+Ölçüm:  `evds:TP.KFE.TR` havuzda, adı/konusu/etiketleri sorguyla birebir
+        örtüşüyor, en yakın 500'de **40. sırada, kosinüs 0,639** — eşiğin
+        (0,40) çok üstünde. `tables_asked` sorguyu doğru okuyor (`bie_kfe`,
+        `bie_hkfe`) ve KFE.TR o tablonun başlık serisi. Yani ne arama ne de
+        eşik hatalıydı: rakipler biraz daha yüksek puan aldı (0,645 / 0,660 /
+        0,679 / 0,684) ve beş aday sınırı KFE.TR'yi tam dışarıda bıraktı.
+Karar:  `rank` bir tablonun adı geçtiğinde yalnızca o tablonun alt kalemlerini
+        geriye atıyordu; başlık serisini hiç öne almıyordu, oysa fonksiyonun
+        kendi belgesi "böyle bir sorgu tablonun kendi toplamını ister" diyor.
+        `tier` artık tek sayı değil ikili anahtar döndürüyor: (öne alındı mı,
+        ne kadar geriye atıldı). Öne alma geriye atmayı iptal edemiyor, bu
+        yüzden arşiv bir tablonun arşiv başlığı (`TP.HKFE01`, 0,726) güncel
+        endeksin önüne geçmiyor.
+Sonuç:  Aynı skorlarla yeniden hesaplandı: ilk sıra `evds:TP.KFE.TR`, arşiv
+        serileri en sonda. Tablo adı geçmeyen sorgularda sıralama hiç
+        değişmiyor (testle sabitlendi). "tüketici fiyat endeksi" sorgusunda
+        da aynı kural TÜFE Genel Endeks'i öne alıyor.
+
+## Boş cevap bir kez daha sorulur (23 Eyl)
+Bağlam: `--real` koşusu, araçların hepsi başarılı: arama doğru seriyi buldu,
+        `get_series` 66 ayı getirdi, ve cevap adımı **374 tamamlama token'ı
+        harcayıp tek karakter içerik üretmedi**. Kullanıcı bitmiş bir analizin
+        altında "Model bu tur icin bir cevap uretmedi" gördü. Aynı arıza 22
+        Eylül'de 31 turun 6'sında ölçülmüştü.
+Karar:  Cevap boş dönerse ve düşünme açıksa, bir kez daha düşünme kapalı
+        sorulur. Farklı bir istek: akıl yürütme kanalı yok, dolayısıyla cevap
+        oraya kaybolamıyor. Ucuz, çünkü iş zaten bitmiş, eksik olan yalnızca
+        yazma adımı. Bir kez: iki kez cevap vermeyen model üçüncüde de
+        vermez, ve turun kişiye hâlâ bir yanıt borcu var. Yeniden denemenin
+        süresi aynı paydan yeniyor (`_Spent` paylaşılıyor), yani tur bütçesi
+        aşılmıyor; `LlmError` gelirse eski davranışa düşülüyor.
+Sonuç:  `_answer_messages`'ın 22 Eylül'deki düzeltmesi (istek asistan
+        mesajıyla bitmesin) yeterli değildi: bu koşuda istek araç sonucuyla
+        bitiyordu ve cevap yine boş geldi. İkisi farklı arızalar.
+
+## Cevap adımı sistemin yetenekleri hakkında konuşmaz (23 Eyl)
+Bağlam: `--real`, "Konut fiyat endeksini aylik getir." Model soruyu "aylık
+        getiri" diye okudu (şapkasız yazım) ve cevabında şunu yazdı: "istediğin
+        aylık getiri serisini üretecek bir hesaplama aracı elimde yok".
+        `transform_table` bunu `pct_change` ile yapıyor; araç tanımında da
+        "yuzde degisim" yazılı.
+Neden:  `answer.md` araçlardan hiç bahsetmiyor. Cevap adımında modelin elinde
+        araç listesi yok, yalnızca tablolar, kaynaklar ve uyarılar var. Model
+        1. kuralı ("kendi hesabını yapma") doğru uyguladı ama bunu "böyle bir
+        araç yok" diye genelleştirdi. Doğrulayıcı bunu göremez: ortada yanlış
+        bir sayı değil, sistem hakkında yanlış bir ifade var.
+Karar:  answer.md v2, 9. kural: cevap adımı sistemin neyi yapıp yapamadığı
+        hakkında iddiada bulunmaz. Bir hesap yapılmadıysa "yapılmadı" denir,
+        "aracım yok" denmez.
+Sonuç:  Kural prompt'ta; etkisi ancak canlı koşumlarda ölçülebilir. Asıl
+        çözüm planlama adımının dönüşümü baştan yapması olurdu, ama planner
+        10. kural kullanıcının istemediği dönüşümü eklemeyi yasaklıyor ve bu
+        soruda ne istendiği gerçekten belirsizdi ("getir" mi "getiri" mi).
+
+## PDF başlıkları hücreden değil kelimeden kurulur (23 Eyl)
+Bağlam: Demo adresinin altın PDF'i okundu, veriler doğru geldi ama 11 sütun
+        başlığının 7'si parçalanmıştı: "Hacim/Volume (TL)" bir sütunda "H",
+        diğerinde "acim/Volume (TL)"; "TOPLAM" → "TO" + "PLAM"; "of" → "o" +
+        "f". Model bununla başa çıktı ama ekranda görünen buydu.
+Neden:  Çizgisiz tabloda pdfplumber sütun sınırlarını **sayıların** durduğu
+        yerden türetiyor; basılı başlık o sınırlara oturmuyor ve sınır
+        kelimenin ortasından geçiyor. `text_x_tolerance` ve
+        `min_words_vertical` ayarlarının hiçbiri değiştirmedi (ölçüldü).
+Karar:  Başlık bandı hücre hücre değil kelime kelime okunuyor: her kelime
+        orta noktasının düştüğü sütuna yazılıyor. Kelime bölünemez olduğu
+        için sınır artık kelimeyi kesemiyor. Band tablonun üstü ile ilk veri
+        satırı arasıyla sınırlı; bu da belgenin kendi başlığını (tablonun
+        üstünde, tam genişlikte basılı) sütun adlarından uzak tutuyor.
+        Kurulamadığı her durumda (tablo bulunamadı, sütun sayısı tutmadı,
+        pdfplumber hata verdi) eski okuma kullanılıyor.
+Sonuç:  Aynı PDF'te 11 başlığın 11'i doğru: `AY/MONTH`, `Hacim/Volume (TL)`,
+        `TOPLAM / TOTAL Miktar/Amount (KG)` ... Yinelenen `Sayısı/ Trans.`
+        adları `_unique` ile ayrılıyor. Veri satırları değişmedi.

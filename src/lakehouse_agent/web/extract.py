@@ -191,16 +191,92 @@ def _from_pdf(body: bytes, ocr: OcrFn | None) -> Extracted:
     return out
 
 
+_TEXT_STRATEGY = {"vertical_strategy": "text", "horizontal_strategy": "text"}
+
+
 def _page_tables(page) -> list[list[list]]:  # noqa: ANN001 - pdfplumber page
     """A page's tables, by ruling lines when it has them and by the words'
     own alignment when it does not (see the module docstring)."""
     tables = [table for table in page.extract_tables() if table]
     if any(max((len(row) for row in table), default=0) >= 2 for table in tables):
         return tables
-    by_text = page.extract_table(
-        {"vertical_strategy": "text", "horizontal_strategy": "text"}
+    by_text = page.extract_table(_TEXT_STRATEGY)
+    if not by_text:
+        return tables
+    repaired = _repaired_header(page, by_text)
+    if repaired is None:
+        return [by_text]
+    return [[repaired, *_after_header(by_text)]]
+
+
+def _after_header(rows: list[list]) -> list[list]:
+    """The rows from the first one that reads as data."""
+    start = next(
+        (
+            index
+            for index, row in enumerate(rows)
+            if _mostly_numbers([(cell or "").strip() for cell in row])
+        ),
+        0,
     )
-    return [by_text] if by_text else tables
+    return rows[start:]
+
+
+def _repaired_header(page, rows: list[list]) -> list[str] | None:  # noqa: ANN001
+    """The header read word by word instead of cell by cell, or None.
+
+    Without ruling lines pdfplumber derives the column boundaries from where
+    the *numbers* sit, and a printed heading does not line up with them: on
+    Borsa İstanbul's gold table those boundaries cut straight through the
+    words, so "Hacim/Volume (TL)" arrived as "H" in one column and
+    "acim/Volume (TL)" in the next, "TOPLAM" as "TO" + "PLAM", "of" as "o" +
+    "f". Seven of its eleven headings were damaged, and the model was handed
+    column names it could not use.
+
+    A word is atomic, so assigning whole words to the column their midpoint
+    falls in cannot split one. Only the band between the table's top and its
+    first data row is read, which is what keeps the document's own title --
+    printed above the table, across its full width -- out of the headings.
+    """
+    try:
+        found = page.find_tables(_TEXT_STRATEGY)
+        if not found:
+            return None
+        table = found[0]
+        first_data = next(
+            (
+                index
+                for index, row in enumerate(rows)
+                if _mostly_numbers([(cell or "").strip() for cell in row])
+            ),
+            None,
+        )
+        if not first_data or first_data >= len(table.rows):
+            return None
+        top, bottom = table.bbox[1], table.rows[first_data].bbox[1]
+        edges = sorted(
+            {cell[0] for cell in table.cells if cell}
+            | {cell[2] for cell in table.cells if cell}
+        )
+        if len(edges) - 1 != len(rows[0]):
+            return None
+        columns: dict[int, list[tuple[float, float, str]]] = {}
+        for word in page.extract_words():
+            if not (top <= word["top"] and word["bottom"] <= bottom):
+                continue
+            middle = (word["x0"] + word["x1"]) / 2
+            index = max(0, sum(1 for edge in edges if edge <= middle) - 1)
+            columns.setdefault(index, []).append(
+                (round(word["top"]), word["x0"], word["text"])
+            )
+        header = [
+            " ".join(text for _, _, text in sorted(columns.get(index, [])))
+            for index in range(len(edges) - 1)
+        ]
+    except Exception as exc:  # noqa: BLE001 - a heading is not worth a crash
+        logger.debug("pdf basligi kelimelerden kurulamadi: %s", exc)
+        return None
+    return header if any(name.strip() for name in header) else None
 
 
 def _ocr_pdf(body: bytes, pages: int, ocr: OcrFn) -> str:

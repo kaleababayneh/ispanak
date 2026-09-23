@@ -1833,12 +1833,33 @@ def test_a_verifier_that_crashes_does_not_cost_the_turn_its_answer():
 
 
 def test_a_model_that_returns_no_answer_is_not_a_finished_turn():
-    """The failure `AgentConfig` names in its own docstring."""
+    """The failure `AgentConfig` names in its own docstring. Two empties: the
+    first is retried with thinking off, and a model that answers nothing
+    twice has nothing to say."""
     state = initial_state("s1")
-    result = turn(state, build([FakeLLM.text("Plan."), FakeLLM.text("")]))
+    deps = build([FakeLLM.text("Plan."), FakeLLM.text(""), FakeLLM.text("")])
+
+    result = turn(state, deps)
 
     assert result.truncated_reason == "llm_error"
     assert "cevap uretmedi" in result.answer
+
+
+def test_an_empty_answer_is_asked_for_once_more_without_thinking():
+    """Measured 23 Sep on a turn whose tools had all succeeded: the answer
+    call spent 374 completion tokens on reasoning and wrote no content at
+    all, and the person got "cevap uretmedi" under a finished analysis.
+    Thinking off is a different request, with no reasoning channel for the
+    answer to disappear into."""
+    state = initial_state("s1")
+    deps = build([FakeLLM.text("Plan."), FakeLLM.text(""), FakeLLM.text("Cevap.")])
+
+    result = turn(state, deps)
+
+    assert result.answer == "Cevap."
+    assert result.truncated_reason is None
+    retry = deps.llm.calls[-1]
+    assert retry["thinking"] is False
 
 
 def test_the_delta_stream_joins_back_into_the_answer():
