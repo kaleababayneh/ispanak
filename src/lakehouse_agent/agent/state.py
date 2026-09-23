@@ -62,6 +62,11 @@ class ChartSeries(BaseModel):
     column: str
     axis: Literal["left", "right"] = "left"
     kind: Literal["line", "bar"] = "line"
+    #: What a person reads in the legend, chosen by the model that knows the
+    #: question ("Konut kredisi faiz oranı"). `None` means the catalog's own
+    #: name, derived from lineage (`agent/labels.py`). The column is still
+    #: addressed by name; this is for the eye only.
+    label: str | None = None
 
 
 class ChartSpec(BaseModel):

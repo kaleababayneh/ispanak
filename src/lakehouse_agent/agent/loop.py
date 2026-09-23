@@ -45,6 +45,7 @@ from lakehouse_agent.agent.formatting import (
     preview_rows,
 )
 from lakehouse_agent.agent.history import model_messages
+from lakehouse_agent.agent.narration import draft_hint, looks_like_narration
 from lakehouse_agent.agent.prompts import load_prompt, render
 from lakehouse_agent.agent.state import (
     ApprovalDecision,
@@ -624,6 +625,7 @@ async def _act(
         user_message=question,
         _tables=state.tables,
         retired_refs=frozenset(state.retired_tables),
+        charts=tuple(state.charts),
     )
 
     request = approval_rules.needs_fetch_approval(spec, args, ctx, state)
@@ -785,7 +787,8 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
         raise
 
     answer = result.content or ""
-    if not answer.strip() and spent.thinking:
+    narration = looks_like_narration(answer)
+    if (not answer.strip() and spent.thinking) or narration:
         # Empty content with thinking on means the model spent the call on
         # reasoning and never wrote the answer: measured 23 Sep, 374
         # completion tokens and not one character of content, on a turn whose
@@ -795,12 +798,29 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
         # done and only the writing is missing. Once: a model that answers
         # nothing twice is not going to answer the third time, and the turn
         # still owes the person a reply.
-        logger.warning("cevap bos dondu; dusunme kapali bir kez daha deneniyor")
+        #
+        # A sentence of intent ("... tablodan çekiyorum.") is the same
+        # failure wearing words: measured 23 Sep in the browser, with the
+        # real answer sitting in the observe note this call never sees. The
+        # retry is told so, and handed that note as a draft when there is one.
+        retry_system = system
+        if narration:
+            logger.warning("cevap niyet cumlesi dondu; bir kez daha deneniyor")
+            draft = draft_hint(state.messages)
+            retry_system += (
+                "\n\n## Dikkat\n\nBir onceki denemede cevap yerine ne yapacagini "
+                "yazdin. Bu adimda arac cagiramazsin; elindeki sonuclarla "
+                "cevabi simdi yaz."
+            )
+            if draft:
+                retry_system += f"\n\n## Son adimda yazdigin taslak\n\n{draft}"
+        else:
+            logger.warning("cevap bos dondu; dusunme kapali bir kez daha deneniyor")
         with contextlib.suppress(LlmError):
             retry = await _chat(
                 state,
                 deps,
-                [{"role": "system", "content": system}, *_answer_messages(state)],
+                [{"role": "system", "content": retry_system}, *_answer_messages(state)],
                 tools=None,
                 thinking=False,
                 tag=f"answer-retry@{prompt.tag}",
@@ -808,7 +828,7 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
                 last_chance=True,
             )
             state.usage = state.usage + retry.usage
-            answer = retry.content or ""
+            answer = retry.content or answer
     if not answer.strip():
         # The failure `AgentConfig` names in its own docstring: an open-weights
         # model that plans forever and never answers, or returns only a
@@ -1660,12 +1680,17 @@ def _live_deps() -> AgentDeps:
     )
 
 
-def _real_deps() -> AgentDeps:
+def real_deps(*, lake: Any = None, sink: EventSink | None = None) -> AgentDeps:
     """Real model, real tools, real data: what the demo runs.
 
     No fakes are imported here, so this mode cannot put a synthetic number on
     screen. The lake reads the committed gold data and, on the first search,
     embeds the pool catalog once (cached on disk afterwards).
+
+    `lake` and `sink` are parameters because the browser interface builds one
+    set of deps per chat session and must hand every one of them the *same*
+    `LakeAdapter`: it holds the opened pool index, roughly half a gigabyte,
+    and opening it per session would pay that cost again for nothing.
     """
     from dotenv import find_dotenv, load_dotenv
 
@@ -1680,8 +1705,8 @@ def _real_deps() -> AgentDeps:
         llm=MiaLLM(settings),
         registry=make_registry(),
         settings=settings,
-        lake=LakeAdapter(),
-        sink=JsonlSink(),
+        lake=lake if lake is not None else LakeAdapter(),
+        sink=sink if sink is not None else JsonlSink(),
     )
 
 
@@ -1814,7 +1839,7 @@ def _cli(argv: list[str] | None = None) -> int:
     state = initial_state("cli")
     try:
         if args.real:
-            deps = _real_deps()
+            deps = real_deps()
         elif args.live:
             deps = _live_deps()
         else:
@@ -1839,7 +1864,9 @@ def _cli(argv: list[str] | None = None) -> int:
             # the interface, and the engine must not depend on it.
             from lakehouse_agent.agent.console import Terminal
 
-            terminal = Terminal(tables=state.tables.get)
+            terminal = Terminal(
+                tables=state.tables.get, lineage=state.lineage, charts=state.charts
+            )
             deps.sink = _Both(deps.sink, terminal)
             deps.approve = terminal.approve
         return asyncio.run(_run_cli(state, deps, questions, terminal, args.fake))

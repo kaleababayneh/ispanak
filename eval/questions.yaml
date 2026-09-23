@@ -31,6 +31,10 @@
 #       O sütun, verilen tarihten önce hiçbir dönemde DEĞER taşımamalı.
 #       Boş hücre sayılmaz: kaynak pencerenin tamamına hücre verip seri
 #       yayımlanmadan önceki dönemleri boş bırakıyor.
+#   grafik_var: true
+#       Oturumda çizilmiş (plotly_json taşıyan) en az bir grafik olmalı.
+#       Yalnızca `make_chart` üretir; arayüzün kendi çizdiği yedek grafik
+#       eval'de yoktur, yani bu kontrol modelin aracı çağırdığını ölçer.
 #
 # Sütun adları uydurma değil, üretilme kuralları belli:
 #   get_series  -> evds:TP.KTF12 => TP_KTF12  (tools/lakehouse.py column_name)
@@ -47,8 +51,17 @@
   category: seri_bulma
   expected_series: ["evds:TP.KTF12"]
   expected_tools: [search_catalog, get_series]
+  not: "Kontrol 16 Eylül'de 'ağırlıklı ortalama' altdizgesiydi. 23 Eylül'ün
+        son üç koşumunda cevap üç kez 'aylık ortalama' dedi, 'ağırlıklı'
+        demedi; seri, değerler ve yorum doğruydu. Bir sözcük seçimi cevabın
+        doğruluğunu ölçmüyor. Şimdi ölçülen: doğru seri (expected_series),
+        son ayın değeri (haftalıktan aya ortalamayla, 40,335; toplam 161,34
+        olurdu) ve ortalamadan söz edildiği (kural 8: dönüşüm uyarısı cevaba
+        taşınır). Aynı ikiz tuzağı burada da var: arama ilk sıraya
+        TP.KBK.TRY.18'i (kâr payı) getirir; expected_series onu reddeder."
   checks:
-    - cevapta_gecmeli: "ağırlıklı ortalama"
+    - deger: {sutun: "TP_KTF12", donem: "2026-06", beklenen: 40.335, tolerans_yuzde: 0.5}
+    - cevapta_gecmeli: "ortalama"
 
 - id: A2
   question: "Konut fiyat endeksini 2021-01 = 100 olacak şekilde endeksle."
@@ -193,3 +206,16 @@
         önce `adimlar` alanına bak, ilk read_url'in `ok` değeri cevabı verir."
   checks:
     - cevapta_gecmeli: "17,5"
+
+# --- grafik (23 Eylül) --------------------------------------------------------
+
+- id: C1
+  question: "Konut kredisi faizinin son 24 ayını grafikle göster."
+  category: grafik
+  expected_series: ["evds:TP.KTF12"]
+  expected_tools: [get_series, make_chart]
+  not: "Soru açıkça grafik istiyor; planner kural 20 tabloyu kurduktan sonra
+        `make_chart` çağırmayı söylüyor. Kontrol yalnızca bir grafiğin
+        çizildiğine bakıyor; hangi sütunların seçildiği modelin işi."
+  checks:
+    - grafik_var: true

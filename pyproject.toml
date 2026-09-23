@@ -24,7 +24,16 @@ dependencies = [
     "ruptures>=1.1.10",
     "statsmodels>=0.15.0",
     "rich>=15.0.0",
+    "chainlit>=2.12.0",
+    "plotly>=7.1.0",
 ]
+
+[project.optional-dependencies]
+# `read_url`'in ucuncu, opsiyonel katmani: JavaScript ile render olan sayfalar
+# icin headless Chromium. Kurulum: `uv sync --extra browser && uv run
+# playwright install chromium`. Kurulu degilse read_url statik sonuca duser,
+# cokmez (web/browser.py, docs/decisions.md).
+browser = ["playwright>=1.48"]
 
 [project.scripts]
 lakehouse-agent = "lakehouse_agent:main"
@@ -63,5 +72,5 @@ known-first-party = ["lakehouse_agent"]
 testpaths = ["tests"]
 addopts = "-q -m 'not live'"
 markers = [
-    "live: hits the real MIA API; needs MIA_API_KEY. Run manually with -m live.",
+    "live: hits a real external service (MIA API, or a real page with headless Chromium). Run manually with -m live.",
 ]

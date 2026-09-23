@@ -668,3 +668,59 @@ def test_an_index_built_from_another_catalog_says_what_it_misses(
     _hits, notes = adapter.search_detailed("faiz")
 
     assert any("1 havuz serisi indekste yok" in note for note in notes)
+
+
+def test_two_threads_opening_the_index_at_once_both_get_it(
+    catalog_path, tmp_path, monkeypatch
+):
+    """The lazy open is reached from worker threads by every chat session.
+
+    It used to set `_index_checked` *before* assigning `_index`, so a second
+    caller arriving during the open saw "checked, and there is no index" and
+    fell back to keyword search with nothing said. The open is slowed here so
+    the two callers genuinely overlap; without the lock the second one comes
+    back with `None`.
+    """
+    import threading
+    import time as _time
+
+    from lakehouse_agent.lake import pool_index
+    from lakehouse_agent.tools import lake_adapter
+
+    index_dir = tmp_path / "index"
+    pool_index.build(
+        pd.read_parquet(catalog_path),
+        path=index_dir,
+        embed_documents=_documents_with_failures,
+    )
+    adapter = LakeAdapter(
+        catalog_path=catalog_path,
+        embed_query=_fake_query,
+        index_path=index_dir,
+        in_memory_limit=0,
+    )
+
+    real_open = lake_adapter.PoolIndex.open
+    opened = []
+
+    def slow_open(path):
+        opened.append(path)
+        _time.sleep(0.05)
+        return real_open(path)
+
+    monkeypatch.setattr(lake_adapter.PoolIndex, "open", staticmethod(slow_open))
+
+    seen = []
+    workers = [
+        threading.Thread(target=lambda: seen.append(adapter._pool_index()))
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert len(opened) == 1, "indeks iki kez acildi"
+    assert len(seen) == 2
+    assert all(index is not None for index in seen), "bir cagiran indeksi gormedi"
+    assert seen[0] is seen[1]

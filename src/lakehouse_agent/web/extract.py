@@ -426,6 +426,51 @@ def _record_lists(payload: object, depth: int = 0) -> list[list[dict]]:
     return []
 
 
+#: Below this many characters of a page's own text (after the menu is
+#: stripped, `_text_of`), a real page has not loaded yet: measured against an
+#: SPA shell's "you need JavaScript to run this app" placeholder, which is a
+#: sentence or two. A real article or table page clears this by a wide margin.
+MIN_TEXT_CHARS_FOR_STATIC = 250
+
+_NOSCRIPT = re.compile(r"<noscript[^>]*>(.*?)</noscript>", re.S | re.I)
+#: An SPA's mount point with nothing in it yet -- the two names React's and
+#: Vue's own starter templates use. Matched on the `id` value, not by
+#: assuming every empty `<div>` is one: a page can legitimately have an empty
+#: `<div id="spacer">` that means nothing about how the page was built.
+_EMPTY_SPA_ROOT = re.compile(
+    r'<div[^>]*\bid=["\'](?:root|app)["\'][^>]*>\s*</div>', re.I
+)
+
+
+def needs_browser_render(body: bytes, extracted: Extracted) -> bool:
+    """True when a headless browser stands a chance where `extracted` did not.
+
+    Only asked about HTML that came out of `_from_html` with no table at all
+    -- `_from_html` already tries a page's own `<table>`s and then the JSON it
+    may carry inside itself (`_embedded_json`), and both land in the same
+    `out.tables`, so "no table" already means both of those failed. A
+    document with a table, or one that was never HTML, has nothing for a
+    browser to add.
+
+    Any one of three signals is enough: the page's own text (menu already
+    stripped, `_text_of`) is shorter than a loaded page ever legitimately is
+    (`MIN_TEXT_CHARS_FOR_STATIC`); a `<noscript>` block says outright that
+    JavaScript is required; or an SPA's mount point is still empty
+    (`_EMPTY_SPA_ROOT`). Pure and network-free like the rest of this module,
+    so it can be tested against hand-written HTML.
+    """
+    if extracted.kind != "html" or extracted.tables:
+        return False
+    html = _decode(body)
+    if _EMPTY_SPA_ROOT.search(html):
+        return True
+    if any(
+        "javascript" in match.group(1).lower() for match in _NOSCRIPT.finditer(html)
+    ):
+        return True
+    return len(extracted.text.strip()) < MIN_TEXT_CHARS_FOR_STATIC
+
+
 #: A page's own content, when it marks it. Without this the text handed to
 #: the model is the site's navigation menu -- measured on
 #: borsaistanbul.com/endeks/xtumy, where the menu runs for thousands of

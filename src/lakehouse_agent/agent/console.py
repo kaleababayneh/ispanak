@@ -20,7 +20,7 @@ bracket, or worse, be coloured by text we did not write.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
@@ -28,6 +28,8 @@ from rich.panel import Panel
 from rich.table import Table
 
 from lakehouse_agent.agent.formatting import json_safe, preview_rows
+from lakehouse_agent.agent.labels import table_labels
+from lakehouse_agent.agent.webui import chart_labels, note_table, table_title
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime, types only
     from lakehouse_agent.agent.events import Event
@@ -57,6 +59,8 @@ class Terminal:
         stream: Any = None,
         *,
         tables: Callable[[str], Any] | None = None,
+        lineage: Mapping[str, Any] | None = None,
+        charts: Iterable[Any] | None = None,
         quiet: bool = False,
     ) -> None:
         self.console = console or Console(stderr=True)
@@ -67,10 +71,20 @@ class Terminal:
         #: every column added to it.
         self._pending_table = ""
         self._fresh: set[str] = set()
+        #: Tables already announced, so a follow-up that only reads one
+        #: (`top`) does not print its sixty rows again (`webui.note_table`).
+        self._known: set[str] = set()
         #: Resolves a table reference to the whole frame. The event only
         #: carries a preview; `docs/contracts.md` section 4 keeps the full
         #: table in the session store for the interface to read.
         self._tables = tables
+        #: The session's column provenance, read to put a person's label
+        #: over each column name. The name stays: it is what the next
+        #: question has to use.
+        self._lineage = lineage if lineage is not None else {}
+        #: The session's charts, read live: the model's word for a column
+        #: on the legend is the word the table header uses too.
+        self._charts = charts if charts is not None else ()
         #: True while an answer is streaming, so the next event starts on a
         #: fresh line instead of running into it.
         self._streaming = False
@@ -149,12 +163,15 @@ class Terminal:
             # all there will ever be: drawn now rather than lost.
             self._draw_preview(payload)
             return
+        is_new, changed = note_table(self._known, ref, fresh)
+        if not changed:
+            return
         self._pending_table = ref or self._pending_table
         self._fresh.update(fresh)
-        if fresh:
-            self._say(f"  tablo {ref}: {', '.join(fresh)} eklendi", style="dim")
-        else:
+        if is_new:
             self._say(f"  tablo {ref} kuruldu", style="dim")
+        else:
+            self._say(f"  tablo {ref}: {', '.join(fresh)} eklendi", style="dim")
 
     def _draw_done(self, _payload: dict[str, Any]) -> None:
         """The turn is over: draw the table it ended with, once."""
@@ -206,14 +223,23 @@ class Terminal:
             )
         if not columns:
             return
-        table = Table(title=ref, title_style="bold")
+        table = Table(
+            title=f"{table_title(ref, columns, self._lineage, self._charts)}\n[dim]{ref}[/dim]",
+            title_style="bold",
+        )
+        labels = table_labels(
+            ref, columns, self._lineage, chart_labels(self._charts, ref)
+        )
         for name in columns:
             # Folded, not truncated: a generated name like
             # `aylik_tuketici_tuketici_kredileri_konut_toplam_sektor` is
             # unreadable cut off, and it is the name the next question has to
-            # use.
+            # use. The label sits above it when the lineage knows one.
+            header = (
+                f"{labels[name]}\n[dim]{name}[/dim]" if labels[name] != name else name
+            )
             table.add_column(
-                name, style="yellow" if name in fresh else None, overflow="fold"
+                header, style="yellow" if name in fresh else None, overflow="fold"
             )
         for row in rows:
             table.add_row(*[self._cell(row.get(name)) for name in columns])
@@ -276,6 +302,15 @@ class Terminal:
         more = len(sources) - SOURCES_SHOWN
         if more > 0:
             self._say(f"  ... ve {more} kaynak daha", style="dim")
+
+    def _draw_chart(self, payload: dict[str, Any]) -> None:
+        """A terminal cannot draw it; say that it exists and where it shows."""
+        ref = payload.get("chart_ref") or "?"
+        traces = len((payload.get("plotly_json") or {}).get("data") or [])
+        self._say(
+            f"  grafik {ref} hazir ({traces} seri) -- tarayici arayuzunde cizilir",
+            style="dim",
+        )
 
     def _draw_approval_decision(self, payload: dict[str, Any]) -> None:
         how = "otomatik" if payload.get("automatic") else "secildi"

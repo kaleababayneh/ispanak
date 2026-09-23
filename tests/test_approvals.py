@@ -613,3 +613,157 @@ def test_a_candidate_without_a_name_is_read_by_its_id(state):
     )
 
     assert approvals.needs_series_choice(result, state, 1) is not None
+
+
+# --- name twins (23 Sep) ------------------------------------------------------
+
+
+def _hit(series_id, name, score, tablo):
+    return {
+        "series_id": series_id,
+        "name_tr": name,
+        "score": score,
+        "tablo": tablo,
+        "unit": "Ağırlıklı ortalama",
+        "freq": "W",
+        "kind": "rate",
+        "eslesme": "anlamsal",
+    }
+
+
+def test_two_candidates_with_one_name_are_a_card_even_with_a_stranger_between(state):
+    """Measured 23 Sep: profit share first, the loan rate third, a stock
+    series between them; the old rule saw four names and stayed quiet."""
+    preview = [
+        _hit(
+            "evds:TP.KBK.TRY.18",
+            "Konut Kredisi, (TL, Akım, %)",
+            0.7128,
+            "Kredi Kâr Oranları (Akım)",
+        ),
+        _hit(
+            "evds:TP.KKP.TRY.18",
+            "Konut Kredisi (TL, Stok, %)",
+            0.6792,
+            "Kredi Kâr Oranları (Stok)",
+        ),
+        _hit(
+            "evds:TP.KTF12",
+            "Konut Kredisi (TL, Akım, %)",
+            0.6650,
+            "Kredi Faiz Oranları (Akım)",
+        ),
+        {
+            **_hit("evds:TP.KM.B11", "3.2.1.1. Konut Kredileri", 0.6454, "Krediler"),
+            "kind": "stock",
+        },
+    ]
+
+    request = approvals.needs_series_choice(
+        ToolResult(ok=True, summary="", preview=preview), state, 1
+    )
+
+    assert request is not None
+    assert [o.id for o in request.options] == ["evds:TP.KBK.TRY.18", "evds:TP.KTF12"]
+    assert request.options[0].detail.startswith("Kredi Kâr Oranları (Akım)")
+    assert request.options[1].detail.startswith("Kredi Faiz Oranları (Akım)")
+
+
+def test_names_differing_only_in_a_number_are_not_twins(state):
+    """ "3 Aya Kadar Vadeli" and "6 Aya Kadar Vadeli" are different maturities."""
+    preview = [
+        _hit("evds:A", "3 Aya Kadar Vadeli (Euro, %)", 0.70, "Mevduat Faiz"),
+        _hit("evds:B", "6 Aya Kadar Vadeli (Euro, %)", 0.69, "Mevduat Faiz"),
+    ]
+    request = approvals.needs_series_choice(
+        ToolResult(ok=True, summary="", preview=preview), state, 1
+    )
+    # the old rule may still ask (same quantity, close scores) -- but not as twins
+    assert approvals._name_twins(preview, 0.9, 4) == []
+    assert request is None or len(request.options) == 2
+
+
+def test_a_twin_scoring_far_below_the_top_is_left_to_the_model(state):
+    preview = [
+        _hit("evds:A", "Konut Kredisi, (TL, Akım, %)", 0.70, "Kâr"),
+        _hit("evds:B", "Konut Kredisi (TL, Akım, %)", 0.50, "Faiz"),
+    ]
+    assert approvals._name_twins(preview, 0.9, 4) == []
+
+
+def _searched(state, query):
+    """The history as the loop leaves it: the search call already made."""
+    import json as _json
+
+    state.messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "search_catalog",
+                        "arguments": _json.dumps({"query": query}),
+                    },
+                }
+            ],
+        }
+    )
+    return state
+
+
+def test_the_twin_whose_table_matches_the_question_is_the_default(state):
+    """ "faiz" in the question, "Faiz" in the table: the loan rate, not the
+    profit share that happened to score higher. In the auto path the
+    default is what gets applied, so this is what the eval fetches."""
+    preview = [
+        _hit(
+            "evds:TP.KBK.TRY.18",
+            "Konut Kredisi, (TL, Akım, %)",
+            0.7128,
+            "Kredi Kâr Oranları (Akım)",
+        ),
+        _hit(
+            "evds:TP.KTF12",
+            "Konut Kredisi (TL, Akım, %)",
+            0.6650,
+            "Kredi Faiz Oranları (Akım)",
+        ),
+    ]
+    request = approvals.needs_series_choice(
+        ToolResult(ok=True, summary="", preview=preview),
+        _searched(state, "konut kredisi faiz oranı"),
+        1,
+    )
+
+    assert request is not None
+    assert request.default == "evds:TP.KTF12"
+    assert [o.id for o in request.options] == [
+        "evds:TP.KBK.TRY.18",
+        "evds:TP.KTF12",
+    ]  # score order kept
+
+
+def test_without_a_matching_word_the_top_score_stays_the_default(state):
+    preview = [
+        _hit("evds:A", "8.İşsizlik oranı (%)", 0.70, "İşgücü İstatistikleri"),
+        _hit("evds:B", "8.İşsizlik oranı (%)", 0.69, "Mevsim Etkisinden Arındırılmış"),
+    ]
+    request = approvals.needs_series_choice(
+        ToolResult(ok=True, summary="", preview=preview),
+        _searched(state, "işsizlik oranı"),
+        1,
+    )
+    assert request is not None and request.default == "evds:A"
+
+    # no search call in the history at all: still the top
+    from lakehouse_agent.agent.state import initial_state
+
+    untouched = initial_state("s2")
+    fresh = approvals.needs_series_choice(
+        ToolResult(ok=True, summary="", preview=preview), untouched, 1
+    )
+    assert fresh is not None and fresh.default == "evds:A"
+    assert approvals._query_hint(untouched) == ""

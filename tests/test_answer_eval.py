@@ -260,6 +260,24 @@ def test_a_web_source_is_required_only_where_the_question_asks_for_one():
     assert not _check({"kaynak_url_var": True}, without)["gecti"]
 
 
+def test_a_chart_counts_only_when_it_carries_a_figure():
+    """`state.charts` can hold a spec the model described but nothing drew;
+    `plotly_json` is what reaches the interface, so it is what is counted."""
+    from lakehouse_agent.agent.state import ChartSpec
+
+    described = _state()
+    described.charts = [ChartSpec(chart_ref="c01", table_ref="t01_a")]
+    drawn = _state()
+    drawn.charts = [
+        ChartSpec(chart_ref="c01", table_ref="t01_a", plotly_json={"data": []})
+    ]
+
+    assert not _check({"grafik_var": True}, described)["gecti"]
+    assert _check({"grafik_var": True}, drawn)["gecti"]
+    assert _check({"grafik_var": False}, described)["gecti"]
+    assert _check({"grafik_var": True}, drawn)["detay"] == "1 grafik"
+
+
 # --- tabloda_donem_yok -----------------------------------------------------
 
 
@@ -478,6 +496,7 @@ def test_every_shipped_question_uses_a_known_check_type():
         "tablo_var",
         "kaynak_url_var",
         "tabloda_donem_yok",
+        "grafik_var",
     }
 
     used = {
@@ -488,9 +507,9 @@ def test_every_shipped_question_uses_a_known_check_type():
     }
 
     assert used <= known, f"bilinmeyen kontrol turu: {used - known}"
-    assert {entry["id"] for entry in entries} == {f"A{n}" for n in range(1, 8)} | {
-        f"B{n}" for n in range(1, 6)
-    }
+    assert {entry["id"] for entry in entries} == (
+        {f"A{n}" for n in range(1, 8)} | {f"B{n}" for n in range(1, 6)} | {"C1"}
+    )
 
 
 def test_the_shipped_questions_cover_every_registered_tool():

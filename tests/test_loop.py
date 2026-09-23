@@ -1525,7 +1525,7 @@ def test_real_mode_says_what_is_missing_instead_of_traceback(capsys, monkeypatch
 
 def test_real_mode_wires_real_tools_and_a_lake_and_no_fakes(monkeypatch):
     """The demo's dependency set: the production registry, a real lake."""
-    from lakehouse_agent.agent.loop import _real_deps
+    from lakehouse_agent.agent.loop import real_deps
     from lakehouse_agent.config import AgentSettings
     from lakehouse_agent.tools.lake_adapter import LakeAdapter
 
@@ -1535,7 +1535,7 @@ def test_real_mode_wires_real_tools_and_a_lake_and_no_fakes(monkeypatch):
         lambda: AgentSettings(MIA_API_KEY="test-only-not-a-real-key"),
     )
 
-    deps = _real_deps()
+    deps = real_deps()
 
     assert isinstance(deps.lake, LakeAdapter)
     assert {"search_catalog", "get_series", "transform_table"} <= set(
@@ -1903,6 +1903,44 @@ def test_an_empty_answer_is_asked_for_once_more_without_thinking():
     assert result.truncated_reason is None
     retry = deps.llm.calls[-1]
     assert retry["thinking"] is False
+
+
+def test_a_sentence_of_intent_is_not_accepted_as_the_answer():
+    """Measured 23 Sep in the browser: "En düşük ve en yüksek aylardaki faiz
+    düzeylerini tablodan çekiyorum." came back as the answer, with the real
+    one sitting in the observe note the answer call never sees."""
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.text("Plan."),
+            FakeLLM.text("Simdi faiz duzeylerini tablodan çekiyorum."),
+            FakeLLM.text("Faiz en dusuk 2023-12, en yuksek 2022-06."),
+        ]
+    )
+
+    result = turn(state, deps)
+
+    assert result.answer == "Faiz en dusuk 2023-12, en yuksek 2022-06."
+    retry = deps.llm.calls[-1]
+    assert retry["thinking"] is False
+    assert "niyet" not in retry["messages"][0]["content"]  # the note is Turkish prose
+    assert "cevabi simdi yaz" in retry["messages"][0]["content"]
+
+
+def test_a_narration_retry_that_also_narrates_keeps_the_text_rather_than_nothing():
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.text("Plan."),
+            FakeLLM.text("Tablodan çekiyorum."),
+            FakeLLM.text("Yine çekiyorum."),
+        ]
+    )
+
+    result = turn(state, deps)
+
+    assert result.answer == "Yine çekiyorum."  # honest about what came back
+    assert result.truncated_reason is None
 
 
 def test_the_delta_stream_joins_back_into_the_answer():

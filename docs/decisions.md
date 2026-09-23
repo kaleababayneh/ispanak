@@ -943,6 +943,133 @@ Sonuç:  Canlı koşu: soru bir sayfa adresiyle geldi → araç sayfayı okudu, 
         tablonun içinde değil, başlığında), bu yüzden böyle bir tablo zaman
         serisi araçlarına (anomali, kırılma) girmiyor; `top` ve `mark` çalışır.
 
+## `read_url` üçüncü katman: headless tarayıcı (23 Eyl, 908-944'teki kararı günceller)
+Bağlam: 908-944'teki karar Playwright'ı reddetmiyor, "Docker imajı kurulurken
+        verilir" diyerek erteliyor ve o kararla birlikte iki katman tanımlıyor:
+        önce sayfanın kendi `<table>`'ları, o boş kalırsa sayfaya gömülü JSON
+        (`<script type="application/json">`, `__NEXT_DATA__`; `_embedded_json`).
+        O zaman ölçülen iki hedefin ikisi de bu iki katmandan biriyle okundu.
+        Gerçek kullanım bunu kırıyor: prompt'ta gelen adres ne düz `<table>` ne
+        de gömülü JSON taşıyan, verisini tamamen istemci tarafında (React/Vue
+        SPA) kuran bir sayfa olabilir — bu iki katman da boş döner, araç
+        yalnızca "JavaScript ile yükleniyor olabilir" der ve elde tablo kalmaz.
+Ölçüm:  İlk sürüm sahte (mock) Playwright ile test edilip birleştirildi, ama
+        gerçek Chromium'a karşı ikisi de yanlış çıktı:
+        - `context.on("page", lambda p: p.close())`, `context.new_page()`'den
+          ÖNCE kayıtlıydı. Bu olay context içindeki HER yeni sayfa için
+          tetikleniyor — kendi `new_page()` çağrısı da dahil — yani render()
+          kendi ana sayfasını açar açmaz kapatıyordu; üzerine kurulan
+          `page.route` bir sonraki adımda `TargetClosedError` verdi.
+        - `_BLOCKED_RESOURCE_TYPES` içindeki `"websocket"` etkisizdi:
+          Playwright'ta `page.route`/`context.route` bir WebSocket el
+          sıkışmasını hiç görmüyor (ayrı bir API, `route_web_socket`). Sayfa
+          JS'i `ws://127.0.0.1` ya da içe dönük bir adrese bağlanmaya
+          çalışsaydı bu route handler'ından hiç geçmeden gidecekti — yazılı
+          niyetle (SSRF'e karşı her alt istek kontrol edilsin) çalışan kod
+          arasında sessiz bir boşluk.
+        İlk ikisi düzeltilip `route_web_socket` eklendikten sonra, WebSocket
+        açan gerçek bir sayfaya karşı ÜÇÜNCÜ bir hata çıktı: `render()` 2+
+        dakika kilitlendi, `NAV_TIMEOUT_S` hiç çalışmadı. Engelin kendisi
+        çalışıyordu (iç portta dinleyen `nc` hiçbir bağlantı görmedi) ama
+        çağrı hiç dönmedi. Yığın: `page.goto` -> `route_web_socket`
+        işleyicisi -> `_reject_websocket` -> içindeki `ws.close()` -> Playwright
+        sync API'nin kendi `_sync` sarmalayıcısı -> `dispatcher_fiber.switch`.
+        Sebep: sync API'nin her çağrısı (işleyici içinden yapılan senkron bir
+        çağrı dahil) tek bir fiber üzerinden yürütülüyor; `ws.close()` bu
+        fiber'a dispatcher'ın KENDİ o an çalıştırdığı işleyicinin sonucunu
+        beklemek için geri dönmeye çalışıyor — kendi kendini bekleyen bir
+        çağrı. Playwright'ın kendi belgesi: "By default, the routed WebSocket
+        will not connect to the server" — yani `connect_to_server()`
+        çağrılmazsa bağlantı zaten sahte (mock), gerçek sunucuya hiç gitmiyor;
+        `close()` gereksizdi ve tam olarak kilitlenen şeydi.
+Karar:  - Üçüncü katman eklendi: `web/browser.py`, yalnız ilk iki katman
+          `extracted.tables`'ı boş bıraktığında (`web/extract.py`'de
+          `needs_browser_render`) devreye giren, opsiyonel Playwright/Chromium
+          tabanlı headless render. Tespit üç sinyalden biri: metin çok kısa
+          (`MIN_TEXT_CHARS_FOR_STATIC`), `<noscript>` içinde "JavaScript"
+          geçiyor, veya `<div id="root">`/`<div id="app">` boş.
+        - **Opsiyonel bağımlılık** (`pyproject.toml`'un ilk `[project.optional-
+          dependencies]` grubu, `browser = ["playwright>=1.48"]`): kurulu
+          değilse `read_url` çökmez, statik/gömülü-JSON sonucu bir uyarıyla
+          döner. Bu, 908-944'teki "tarayıcı kararı Docker imajı kurulurken
+          verilir" cümlesini birebir gerçekleştiriyor — imajı kuran, extra'yı
+          isteyip istememeye karar veriyor.
+        - **Her HTTP alt isteği yeniden kontrol ediliyor.** Statik `fetch()`'in
+          tek bir adresi var; render edilen sayfanın kendi JavaScript'i kendi
+          isteklerini attığı için tehdit modeli tek bir GET'ten geniş. Bu
+          yüzden `context.route("**/*")` — `page` değil, ölçülen hatanın
+          gerekçesiyle: popup gibi context'in açtığı başka bir sayfa da aynı
+          kontrolden geçsin — her isteği `web/fetch.py::check_url`'den geçiriyor
+          (import edilmiş, kopyalanmamış); görsel/font/medya istekleri hız ve
+          yüzey için doğrudan düşürülüyor.
+        - **Her WebSocket ayrıca engelleniyor**, `context.route_web_socket(
+          "**/*", ...)` ile — `context.route`'un görmediği yer. İşleyici
+          BİLEREK bomboş: Playwright'ın kendi belgesine göre routed bir
+          WebSocket `connect_to_server()` çağrılmadıkça zaten sunucuya
+          bağlanmıyor (sahte/mock), yani boş işleyici tek başına ağa çıkışı
+          engelliyor. `ws.close()` çağırmak (denendi) ölçülen kilitlenmeye yol
+          açtı — bkz. Ölçüm.
+        - **`server_addr()` ile ikinci kontrol**, `web/fetch.py::_peer_address`
+          ile birebir aynı gerekçeyle: `check_url`'ün DNS çözümlemesiyle
+          tarayıcının kendi çözümlemesi arasında adres değişebilir (DNS
+          rebinding). Render edilen sayfanın gövdesi bu kontrolden önce hiç
+          okunmuyor.
+        - **Popup, `page.on("popup", ...)` ile kapatılıyor** — `context.on(
+          "page", ...)` değil, ölçülen hatanın düzeltmesi tam olarak bu. İndirme
+          kapalı (`accept_downloads=False`), service worker'lar bloklanıyor, tek
+          kullanımlık context (kalıcı değil).
+        - **Duvar saati sınırı, ayrı süreçte.** Playwright'ın sync API'si tek
+          fiber üzerinden çalıştığı için bu SÜREÇ içinden kesilemiyor (Ölçüm'e
+          bkz.) — bir iş parçacığını dıştan durdurmak mümkün değil, bir süreci
+          her zaman mümkün. `render()` artık `_render_sync`'i
+          `multiprocessing` (spawn) ile ayrı bir çocuk süreçte çalıştırıyor
+          (`_run_in_subprocess`) ve `HARD_TIMEOUT_S` (`NAV_TIMEOUT_S + 10s
+          = 30s`) içinde dönmezse süreci `os.killpg` ile GRUBUYLA
+          (`os.setsid`, `_in_new_process_group`) öldürüyor — yalnızca Python
+          çocuğu değil, onun başlattığı Chromium da. Yan etki: bir Chromium
+          çökmesi artık ajan sürecini etkilemiyor, izole. Sonuç `RenderError`
+          olarak dönüyor, ne bir kesilmemiş `TimeoutError` ne sonsuz beklemedir.
+        - Gerçek Chromium açan iki entegrasyon testi **var**
+          (`tests/test_web_browser.py`, `@pytest.mark.live`):
+          `test_render_reads_a_real_javascript_rendered_page` ve, tam bu
+          kilitlenmeyi bir daha ölçmek için,
+          `test_rendering_a_page_that_opens_a_websocket_does_not_hang`
+          (httpbin.org/base64 ile WebSocket açan bir sayfa, `HARD_TIMEOUT_S`
+          içinde bitmesi doğrulanıyor). 22 Eyl'deki `live` marker'ının kapsamı
+          genişletildi: artık yalnız MIA API değil, gerçek bir sayfa da
+          "live". Varsayılan koşudan hariç (`addopts = "-q -m 'not live'"`),
+          `uv run pytest -m live` ile elle çalıştırılır; `browser` extra'sının
+          kurulu olmasını ve `playwright install chromium`'un çalıştırılmış
+          olmasını gerektirir. Diğer tüm testler sahte Playwright nesneleri /
+          monkeypatch ile ağsız; üç hatanın üçü de kendi seviyesinde test
+          edildi: ilk ikisi sahte-Playwright testleriyle
+          (`test_render_sync_never_closes_its_own_main_page`,
+          `test_the_popup_handler_is_on_the_page_not_the_context`,
+          `test_every_websocket_is_routed_but_left_unconnected`), üçüncüsü
+          (kilitlenme) `_run_in_subprocess`'i gerçekten sonsuza kadar
+          uyuyan sıradan bir fonksiyonla çağırıp süresi içinde
+          `TimeoutError` ile döndüğünü ölçerek
+          (`test_a_hung_subprocess_is_killed_within_the_deadline`) — sahte
+          Playwright bir dispatcher-fiber kilitlenmesini asla üretemezdi,
+          bu yüzden bu üçüncü hata için mekanizma Playwright'sız test edildi.
+Sonuç:  Canlı koşu (23 Eyl): `browser.render("https://quotes.toscrape.com/js/")`
+        gerçek Chromium ile 8985 baytlık render edilmiş HTML döndürdü, içinde
+        `<div class="quote"` var — sayfa gerçekten JavaScript ile dolduruluyor
+        ve üçüncü katman onu okuyor. WebSocket açan sayfa (httpbin.org/base64,
+        `ws://127.0.0.1:9999/`) düzeltmeden önce 2+ dakika kilitleniyordu;
+        düzeltmeden sonra `HARD_TIMEOUT_S` içinde başarıyla bitiyor (elle
+        doğrulandı, komut ve süresi bu kaydın sonunda). Kalan risk açık: alt
+        kaynakların DNS-rebinding'i yalnızca route-anındaki `check_url` ile
+        önleniyor, alt kaynağın kendi bağlantısı anında ikinci bir IP kontrolü
+        yok (yalnızca ana belge için var). Kabul edilebilir, çünkü alt
+        kaynakların gövdeleri hiç okunmuyor — yalnızca ana belgenin render
+        edilmiş DOM'u (`page.content()`) sonuca giriyor. `HARD_TIMEOUT_S`
+        (30s) statik `fetch()`'in kendi payıyla (50s) birlikte kötü durumda
+        `AgentConfig.step_timeout_s` (60s) aşılabilir; bu artık salt
+        `agent/loop.py`'nin kendi adım zaman aşımına bırakılan bir risk değil
+        — `render()`'in kendi süreç-içi ölümü zaten 30s'de garanti, aşan
+        kısım yalnızca statik fetch'in kendi payı olabilir.
+
 ## Testler makinedeki havuz indeksini kullanamaz (22 Eyl, CI hatası)
 Bağlam: PR #11'in ilk CI koşusunda iki test kırmızı döndü, oysa ikisi de yerelde
         yeşildi. Sebep: `data/pool_index` türetilmiş ve gitignore'da — indeksi
@@ -1896,3 +2023,423 @@ Sonuç:  Aynı soru tekrar koşuldu. Cevap: "Faizin düştüğü ama kredinin
         "tablo t01_get_series: X eklendi" satırı çıkıyor, tablo `done` ile bir
         kez çiziliyor. Tablo deposu bağlanmamış bir çağıran için eski davranış
         (olayın kendi önizlemesi) korundu, yoksa hiç tablo görmezdi.
+
+## Tarayıcı arayüzü: `app.py` kökte, mantık `webui.py`'de (23 Eyl)
+Bağlam: Şartname çıktıyı "rapor, grafik veya tablo" diye tanımlıyor; jüriye
+        gösterilecek yüzey tarayıcı. Motor hazırdı: on üç olay, `approve`
+        async, sözleşme §6 her olayın arayüz karşılığını yazıyor.
+Karar:  Chainlit uygulaması `src/` dışında, repo kökünde `app.py`.
+        `test_agent_and_tools_do_not_import_chainlit` `src/lakehouse_agent`
+        altını muafiyetsiz tarıyor; kök dışarıda kaldığı için kural tek harfi
+        değişmeden yürürlükte. Bedeli `app.py`'nin pytest'ten import
+        edilememesi; bu yüzden karar veren her şey `agent/webui.py`'de
+        (`action_specs`, `decision`, `default_chart`, metin yardımcıları),
+        `chainlit` ve `plotly` import etmez ve test edilir. `app.py` yalnızca
+        `cl.*` çağrıları. `plotly` de yalnızca orada:
+        `test_no_module_imports_plotly`, `rich` ve `chainlit` kuralının
+        üçüncü sürümü.
+        Onay kartı `cl.AskActionMessage` ile düğme; cevap gelmezse (zaman
+        aşımı, kapanan sekme, karttaki olmayan seçenek) `default` +
+        `automatic=True`. Bayrak kozmetik değil: `decision_message` kişi
+        seçtiğinde modele başka cümle söylüyor.
+        Tablo tur sonunda, `done`'da bir kez ve **tam** (`cl.Dataframe` kendi
+        sayfalıyor; §4 "tam tablo doğrudan arayüze gider"). Terminalin 200
+        satır sınırı burada yok.
+        Oturum kimliği `cl.user_session["id"]`; `"cli"` sabiti terminalde
+        kaldı. Olaylar `data/adhoc/sessions/<zaman>-<id>.jsonl`'e de yazılır.
+        `.chainlit/config.toml` commit edilir (ad, açıklama), `translations/`
+        edilmez: silinince açılışta yeniden üretildiği ölçüldü.
+
+## Grafik: model tarif eder, `tools/charts.py` sözlük kurar, `app.py` çizer (23 Eyl)
+Bağlam: Boru hattının tamamı vardı — `ChartSpec.plotly_json`, `add_chart`,
+        `chart` olayı, `answer.md`'de `Grafikler: {{charts}}` — ama
+        `add_chart`'ı çağıran üretim kodu yoktu; yalnızca testler çağırıyordu.
+Karar:  `make_chart` aracı (`tools/charts.py`). `ChartSpec` docstring'inin
+        seçtiği tasarım uygulandı: "The model describes it; it never draws
+        it." `figure_json` plotly'nin tel biçimini (`{"data", "layout"}`) düz
+        sözlük olarak kurar, kütüphane yok; `Event.payload` JSON kalır.
+        `cl.Plotly` gerçek `Figure` istediği için sarmalama `app.py`'de
+        (`go.Figure(sözlük)`). Eksik değer `None` olarak gider, satır
+        düşürülmez: plotly null'da çizgiyi keser, düşürülen satır iki komşuyu
+        düz çizgiyle birleştirip ölçülmemiş ayı icat ederdi (CLAUDE.md #2).
+        Grafik `ctx.add_chart` ile döner, `artifacts` ile DEĞİL: döngü
+        ikisini de `state.charts`'a ekliyor (`loop.py` 1208-1215), ikisini
+        birden vermek çift sayardı; sabotajla kanıtlandı.
+        `ToolContext.new_chart_ref` eklendi: oturumdaki + bu adımda yazılan
+        grafikleri birlikte sayar; `new_table_ref`'in aynısı.
+        `planner.md` v9, kural 20: zaman serisi cevabında tablo hazır olunca
+        `make_chart`. `max_steps = 12` ve kural 12 adım cimriliği istediği için
+        model bazı turlarda grafiği atlayacak; çare motorda değil arayüzde:
+        tur grafiksiz bitmişse `app.py` aktif tablodan varsayılan çizgi grafik
+        çizer ve başlığına "(arayuz cizdi)" yazar. Eval'de bu yedek yok, yani
+        `grafik_var` kontrolü modelin aracı çağırdığını ölçer. C1 sorusu
+        eklendi; `test_the_shipped_questions_cover_every_registered_tool`
+        yeni aracı sorusuz bırakmayı zaten reddediyordu.
+
+## `LakeAdapter` yarışı: bayrak indeksten önce set ediliyordu (23 Eyl)
+Bağlam: Chainlit çok oturumlu; tek `LakeAdapter` bütün oturumlarca paylaşılır
+        (indeks ~0,5 GB, oturum başına açmak anlamsız) ve araçlar worker
+        thread'de koşar.
+Neden:  `_pool_index` `self._index_checked = True` yazıp SONRA
+        `self._index = PoolIndex.open(...)` yapıyordu (`lake_adapter.py`
+        365-367). Açılış sürerken gelen ikinci çağıran "bakıldı, indeks yok"
+        okuyup sessizce kelime aramasına düşüyordu; uyarı bile yoktu.
+Karar:  `threading.Lock` (asyncio değil: thread'deyiz), çift kontrollü;
+        notlar dâhil her şey hazırlanıp bayrak **en son** set edilir.
+Kanıt:  `test_two_threads_opening_the_index_at_once_both_get_it`: açılışa
+        50 ms gecikme, iki thread. Kilit kaldırılıp eski sıra geri konunca
+        test kırmızı (sabotaj koşumu, 7/7 yakalandı).
+
+## Grafik ve tablo başlıkları insan için, sütun adları model için (23 Eyl, ekran görüntüsünden)
+Bağlam: İlk gerçek grafikte lejant `aylik_tuketici_tuketici_kredileri_konut_
+        toplam_sektor` ve `TP_KTF12` yazıyordu; tabloda `TP_KTF12_diff`. Tablo
+        adlarını bilmeyen biri için anahtar, başlık değil.
+Neden:  Ad değiştirilemez: planner kural 3 modele sütun adını bir sonraki
+        çağrıya **birebir** kopyalamasını söylüyor, eval kontrolleri
+        (`deger: {sutun: "TP_KTF12"}`) o adı okuyor. Ama insan için gereken
+        bilgi zaten oturumda: `ColumnInfo` (sözleşme §5, anahtar
+        `"{table_ref}.{column}"`) çekilen sütunda kataloğun `name_tr` ve
+        `unit` değerini, türetilmişte `op` ve `inputs`'u taşıyor.
+Karar:  `agent/labels.py`, saf: `column_label` etiketi soyağacından türetir,
+        uydurmaz, kısaltmaz. Çekilen sütun = katalog adı + birim (birim adın
+        içinde geçiyorsa tekrar yok; `TP.KTF12`'nin adı `%` taşıyor).
+        Türetilmiş sütun = girdinin etiketi (**birimsiz**) + işlem sözü
+        (`OP_PHRASES`: fark, % değişim, endeks, payı…) + sütunun kendi
+        birimi; baz dönem sütun adının sonundan okunur (`_endeks_202101`).
+        Soyağacının bilmediği sütun kendi adıyla kalır; `period` → Dönem.
+        Etiketler üç yere gider: `make_chart` lejant ve eksenlere
+        (`figure_json(labels=)`; `ChartSpec.series[].column` ad olarak
+        kalır), tarayıcı tablosu `webui.display_frame` ile **kopyanın**
+        başlıklarına (oturumun çerçevesi dokunulmaz; aynı etiketli iki
+        sütun kendi adında kalır, tek başlığa çökmez), terminal tablosu
+        başlığa etiket + altına soluk ham ad (sonraki soru o adı kullanacak).
+        Modelin gördüğü `tables_summary` ham adla kalır.
+        Sahte `get_series` de `label_tr`'yi sahte katalogdan yazıyor artık;
+        gerçek araç bunu zaten yapıyordu, prova demo ekranını göstermeliydi.
+Ölçüm:  Gold veri, gerçek araçlar, model yok. İlk sürüm endeks sütununda
+        girdinin birimini sürükledi: "Tüketici Kredileri - Konut (Toplam)
+        (milyon TL) — endeks (2021-01 = 100)". Endeksin birimi milyon TL
+        değil; türetilmişte girdi birimsiz alınır oldu. Şimdi:
+        `TP_KTF12` → "Konut Kredisi (TL, Akım, %) (Ağırlıklı ortalama)"
+        (katalogda `unit` sütununda "Ağırlıklı ortalama" yazıyor; kaynağın
+        verisi, düzeltilmedi), `TP_KTF12_diff` → "… — fark (yuzde puan)",
+        `..._pay` → "Türkiye_Konut_İpotekli Satışlar / Türkiye_Konut_Toplam
+        Satışlar payı (%)". Sekiz sabotaj, sekizi yakalandı. `answer_eval`
+        yeniden koşulmadı: modelin girdisi (araç özeti, sütun adları)
+        değişmedi, yalnızca insan tarafı.
+
+## "300k" 300 milyon değil 300 milyar; tarihte saat yok (23 Eyl, ikinci ekran görüntüsünden)
+Bağlam: Grafikte sol eksen "300k", başlık "(milyon TL)"; okuyan "300 milyon"
+        anladı. Tabloda dönem `2021-01-01T00:00:00.000`.
+Ölçüm:  `bddk:aylik:tuketici:tuketici_kredileri_konut:toplam:sektor` 2021-01
+        değeri **276.785**, birimi `milyon TL`. Yani 300k = 300 bin milyon TL
+        = 300 milyar TL. Birim doğru; plotly'nin SI kısaltması (`k`) Türkçe
+        birim başlığının yanında yanlış okunuyor.
+Karar:  Birim çevrilmedi (CLAUDE.md #3; grafik tabloyla aynı sayıyı
+        göstermeli). Değer eksenlerinde `exponentformat: "none"` (sayı tam
+        yazılır), `separators: ",."` (Türkçe: ondalık virgül, binlik nokta).
+        "300k" → "300.000", başlık "(milyon TL)" olduğu gibi. Tarih ekseni
+        sayı değil, dokunulmadı.
+        Tarih: `webui.display_frame` gösterim kopyasında datetime64
+        sütunları `YYYY-MM-DD` yazar; `period` sözleşmede tarihtir, saat
+        veri değil serileştirme gürültüsüydü. Oturumun çerçevesi datetime64
+        kalır. Terminal zaten `json_safe` ile tarih yazıyordu.
+        Üç sabotaj (kısaltma geri, İngilizce ayraç, saat geri), üçü yakalandı.
+
+        Açık soru: `TP.KTF12` etiketi "Konut Kredisi (TL, Akım, %)" — bu
+        kataloğun `name_tr`'si, "faiz oranı" kelimesi adında yok. Kelime
+        `topic`'te ("FAİZ VE KÂR PAYI İSTATİSTİKLERİ (AKIM)"), `tags`'te
+        ("kredi, faiz"), `notes`'ta ve bronze veri grubu adında ("Kredi Faiz
+        Oranları (Akım)") var; veri grubu adı gold kataloğa taşınmıyor
+        (sütun listesi sözleşme). Nasıl gösterileceği kullanıcıya soruldu.
+
+## Lejant etiketini model yazar, katalog yedektir (23 Eyl, kullanıcı kararı)
+Bağlam: "Konut Kredisi (TL, Akım, %)" kataloğun kendi adı; "faiz oranı"
+        kelimesi adında yok. Kullanıcı okuyanın anlayacağı etiket istedi.
+        Üç yol soruldu: model yazsın (katalog yedek), EVDS veri grubu adını
+        kataloğa taşı (şema değişikliği, gold yeniden kurulur, BDDK'da
+        karşılığı yok), olduğu gibi kalsın. İlki seçildi.
+Karar:  `make_chart` seri başına isteğe bağlı `label` alır (≤ 80 karakter;
+        şemada sınır ve örnek var). `ChartSeries.label` kaydeder. Araç
+        önce kataloğun etiketini kurar (`agent/labels.py`), sonra modelin
+        yazdığını üstüne yazar; boş ya da yalnız boşluk etiket üstüne
+        yazmaz. `title` zaten modelindi, `label` aynı sınıf: model tarif
+        eder, çizmez. Planner kural 20 etiketi ister ve sınırı koyar:
+        "sorudaki dille yaz ama anlamı değiştirme — stoku akım, oranı tutar
+        diye adlandırma". Doğrulayıcı etiketi denetlemez; bilinen risk.
+        Tablo başlığı lejantla aynı şeyi söyler: `webui.chart_labels`
+        oturumun grafiklerinden o tablonun sütun etiketlerini okur (son
+        grafik kazanır, etiketsiz seri katkı vermez), `display_frame` ve
+        terminal tablosu kataloğun etiketinin üstüne yazar. Sütun adı
+        yine ad; modelin gördüğü özet değişmez.
+Kanıt:  Beş sabotaj (etiket kullanılmıyor, boş etiket kataloğu eziyor,
+        tablo etiketi almıyor, başka tablonun etiketi sızıyor, terminal
+        almıyor), beşi yakalandı.
+Ölçüm:  Gerçek modelle tek soru ("Konut kredisi faizi ile konut kredisi
+        bakiyesini 2021-2025 için grafikle göster"). Model `make_chart`'ı
+        şöyle çağırdı: `TP_KTF12` → label "Konut kredisi faiz oranı (%)",
+        bakiye sütunu → "Konut kredisi bakiyesi (milyon TL)", ikincisi sağ
+        eksende, başlık "Konut kredisi faiz oranı ve konut kredisi bakiyesi
+        (2021-2025)". Birimi kimse istemedi, araç özetinden kendisi taşıdı.
+        Lejant ve eksen başlıkları bu etiketlerle çıktı; sütun adları ve
+        modelin gördüğü özet değişmedi.
+
+## Yedek grafik önceki sorunun tablosunu çizdi (23 Eyl, üçüncü ekran görüntüsünden)
+Bağlam: 13. soru (TCMB duyurusunu oku) doğru cevaplandı, altına konut satış
+        serilerinin grafiği geldi: "t03_get_series (arayuz cizdi)".
+Neden:  Yedek grafik "bu turda grafik eklendi mi" ve "aktif tablo var mı"
+        diye bakıyordu. Aktif tablo turdan tura yaşar; `read_url`'ün
+        sayfasında tablo yoktu, aktif tablo 3. sorudan kalan `t03` idi.
+        `TurnResult.table_refs` de yardımcı değil: oturumun bütün
+        tablolarını taşıyor, bu turunkileri değil (`loop.py` 337).
+        İkinci kusur aynı grafikte: üç sütun tek eksende, "payı (%)" adet
+        ekseninde sıfıra yapışık düz çizgi.
+Karar:  `webui.fallback_table(active, touched, charts_added)`, saf: yalnız
+        bu turda `table_update` ile dokunulan tablo, yalnız tur kendisi
+        grafik çizmediyse. `ChainlitSink` turun dokunduğu tabloları `done`
+        anında `last_touched` olarak saklar; `app.py` kararı vermez, sorar.
+        `default_chart` sütunları soyağacındaki birime göre eksene dağıtır:
+        ilk birim sol, ikinci sağ, üçüncü çizilmez — yanlış ölçekte çizmek
+        yerine eksik çizmek. Birimi olmayan sütunlar kendi grubudur.
+Kanıt:  Dört sabotaj (bayat tablo, grafik çizilmişken yedek, ikinci birim
+        solda, üçüncü birim çiziliyor), dördü yakalandı. Tablosuz bir
+        turda artık grafik yok; `docs/manual_test.md` 13. soru bunu
+        bekliyor.
+
+## Modelin sözcükleri türetilmiş sütunlara da akar; tablo dört ondalık; ad "🥬 Ispanak" (23 Eyl)
+Bağlam: Tablo başlıkları karışık görünüyordu: modelin lejant için verdiği
+        etiket yalnız grafiğe koyduğu sütunlara gidiyordu, `_diff`, `_pay`
+        ve koşul sütunları kataloğun uzun teknik adından üretiliyordu, koşul
+        sütunu ise ilk girdisinden ("…faiz oranı — koşul işareti") yanlış
+        adlanıyordu. Hücrelerde 1716481.7634920634 gibi değerler vardı.
+Karar:  `column_label` modelin etiketlerini (`overrides`) **sonuçtan sonra
+        yapıştırmak yerine** türetimin başında okur: `TP_KTF12` "Konut
+        kredisi faiz oranı (%)" ise `TP_KTF12_diff` "Konut kredisi faiz
+        oranı (%) — fark (yuzde puan)" olur. Model etiketi olduğu gibi
+        alınır, birim eklenmez. `mark` sütunu modelin verdiği adı taşır
+        (`faiz dustu kredi artmadi (koşul)`), girdilerini değil. Katalog
+        adlarındaki ve araç sütunlarındaki alt çizgiler boşluk olur
+        (`Türkiye Konut İpotekli Satışlar`, `ortalama öncesi`); başka
+        hiçbir harf değişmez. `make_chart`, `display_frame` ve terminal
+        aynı yolu kullanır.
+        Tablo gösterim kopyasında float sütunlar 4 ondalığa yuvarlanır
+        (terminalle aynı `DECIMALS`); oturumun çerçevesi her basamağı
+        tutar, eval ve sonraki araç oradan okur.
+        Chainlit `[UI] name = "🥬 Ispanak"`; ıspanak emojisi Unicode'da yok,
+        en yakını "leafy green" (U+1F96C). Karşılama sayfası başlığı aynı.
+Kanıt:  Beş sabotaj (etiket türetilmişe akmıyor, koşul girdisinden adlanıyor,
+        alt çizgi kalıyor, yuvarlama yok, grafik aracı etiketi türetilmişe
+        vermiyor), beşi yakalandı. Gerçek gold tablosunda ölçülen
+        başlıklar bu girdinin altındaki koşum çıktısında.
+
+## Takip sorusu tabloyu ve grafiği yeniden getirdi; yedek grafik katalog adıyla çıktı (23 Eyl)
+Bağlam: 11. sorudan sonra "faizin en yüksek üç ayı" soruldu. Cevap doğru
+        (`top`: 2024-04, 2024-05, 2024-06), ama altına 60 satırlık tablo
+        yeniden geldi ve "t03_get_series (arayuz cizdi)" grafiği ikinci kez
+        çizildi; lejantı da modelin sözcükleri değil katalog adlarıydı.
+Neden:  Üç ayrı kusur. (1) `top` sütun eklemez ama `table_update` fırlatır
+        (`new_columns` boş); arayüz her `table_update`'i "dokunuldu" sayıp
+        tabloyu çiziyordu. (2) Yedek grafik "bu turda dokunulan tablo" diye
+        bakıyordu; takip sorusu tabloya dokunur. (3) `default_chart`'a
+        modelin etiketleri (`chart_labels`) verilmiyordu; tablo başlığı
+        modelin sözcüklerini alırken grafik kataloğu gösteriyordu. Bir de
+        iki seri aynı eksende olunca eksen başlığı iki uzun etiketin virgülle
+        birleşimi oluyor, grafiğin üstünden taşıyordu.
+Karar:  `webui.note_table(known, ref, fresh) -> (yeni mi, çizilsin mi)`:
+        tablo ilk görüldüğünde ve sütun eklendiğinde çizilir, yalnız
+        okunduğunda çizilmez. Tarayıcı ve terminal aynı kuralı kullanır.
+        `fallback_table` yalnız **bu turda kurulan** tablo için: yedek grafik
+        "model adımlarını bitirdi, tablo grafiksiz kaldı" durumu içindir,
+        takip sorusu için değil. `default_chart` `overrides` alır, arayüz
+        `chart_labels`'ı geçer. `figure_json(units=)`: bir eksende birden
+        çok seri varsa ve birimleri aynıysa eksen başlığı birimdir
+        ("milyon TL"), farklıysa etiketler; tek seride etiket.
+        Soruya cevap: her soruda tablo/grafik zorunlu değil. Model 14. soruda
+        grafik istemedi; ikisini de arayüz kuralları getirdi, kapatıldı.
+Kanıt:  Beş sabotaj (okunan tablo yine çiziliyor, terminal de basıyor, yedek
+        grafik modelin etiketini almıyor, paylaşılan eksen etiketlerle
+        başlıklanıyor, farklı birimler tek birimle), beşi yakalandı. Canlı
+        kontrol `docs/manual_test.md` takip sorusuyla elle yapılır.
+
+        Logo ve favicon: `public/logo_light.png`, `public/logo_dark.png`,
+        `public/favicon.png`. Chainlit `public/` altındaki bu adları
+        kendi varsayılanının yerine servis ediyor (`server.py` `/logo`,
+        `/favicon`); ölçüldü, üçü de bizimki geldi. Dosyalar Pillow ile
+        Apple Color Emoji (🥬, 160 px tek bitmap boyu) + Arial Rounded
+        Bold'dan üretildi; üretici betik commit edilmedi, macOS fontuna
+        bağlı, PNG'ler kaynaktır.
+
+## Burak'ın iki dalından taşınanlar (23 Eyl)
+Bağlam: `feat/chainlit-ui` (Burak) aynı temel üstüne ikinci bir Chainlit
+        arayüzü kurmuştu; iki arayüz birleştirilmedi, bizimki kaldı, onun
+        dalındaki beş somut kazanım buraya taşındı. `fix/read-url-js` ise
+        motora dokunan bağımsız bir işti ve olduğu gibi alındı.
+Karar:  **`fix/read-url-js` (3d85df1) cherry-pick, commit'siz.** Tek çakışma
+        `uv.lock`; bizim kilit alınıp `uv lock` ile yeniden çözüldü,
+        Playwright yalnız `browser` ekstrası olarak kilitte, kurulu değil.
+        İnceleme: her alt istek `web/fetch.py::check_url`'den geçiyor
+        (import, kopya değil), WebSocket'ler reddediliyor, peer adresi ikinci
+        kez doğrulanıyor, render ayrı süreçte sert zaman sınırıyla, çekilen
+        HTML hiçbir yerde `eval`/`exec`'e girmiyor (grep'lendi), iki canlı
+        test `live` işaretli ve varsayılan koşumun dışında. Onun karar
+        girdisi ve `docs/contracts.md` paragrafı olduğu gibi geldi.
+        **`feat/chainlit-ui`'den beş taşıma**, `webui.py`'ye saf fonksiyon +
+        `app.py`'ye çağrı olarak:
+        1. `protect_series_ids` — Chainlit'in markdown'ı `micromark-
+           extension-directive` taşıyor (paketteki `index-*.js`'de
+           `directiveContainer*` durumları doğrulandı); `evds:TP.KTF12`
+           içindeki `:TP` directive sanılıp yutuluyordu. Cevap metni
+           `finish`'te bütün olarak, kullanıcı mesajı `update()` ile.
+        2. `turn_running` — tur sürerken gelen mesaj reddedilir; tek
+           `SessionState` üstünde iki eşzamanlı `run_turn` olmaz.
+        3. `error_message` — `error` olayının `kind`'ına göre kısa Türkçe
+           metin kişiye, ham `message` sunucu loguna.
+        4. `removed_note` — kalite kapısının kaldırdığı tablo
+           (`table_update{removed, reason}`) ekrana yazılır, çizilmez.
+        5. Config: `features.mcp.enabled=false`,
+           `features.spontaneous_file_upload.enabled=false`
+           (`unsafe_allow_html` zaten false). Artı: deps kurulamazsa
+           "Agent başlatılamadı" mesajı.
+        Alınmayanlar ve nedeni: parola girişi (demo tek makinede; `.env`'e
+        üç değişken daha, gerek yok), üst "Ajan adımları" kartı (sıralama
+        sorunu bizde gözlenmedi; görülürse alınır), aylıkta `2021-01`
+        biçimi (sözleşme `period`'u tarih diyor, tam tarih yanlış değil),
+        `_real_deps` kopyası (biz `real_deps(lake=, sink=)` açtık).
+
+## Tablolar ne olduğunu söyler; adımlar tek katlanır kartta; araç adı adımda kalır (23 Eyl, U1 görüntüsünden)
+Bağlam: U1 sorusunda `t02_detect_changes` ve `t03_detect_changes` art arda
+        geldi, hangisinin kimin kırılması olduğu belli değildi. Adım kartları
+        ise "act · 1707 ms · …" diye başlıyordu — araç adı yoktu — ve sekiz
+        kart soru ile cevabın arasını dolduruyordu.
+Neden:  Başlık: arayüz yalnız `ref`'i yazıyordu; oysa sonuç sütunlarının
+        soyağacında `inputs` (analiz edilen sütun) ve `tool` var, analiz
+        edilen sütunun okunur adı da başka bir tablonun soyağacında ya da
+        modelin grafik etiketinde. Adım adı: `step_end` araç adı taşımaz
+        (sözleşme §6); `step_line` bitişte adı `node` ile eziyordu — benim
+        hatam, terminal kuralını tarayıcıya olduğu gibi taşımıştım.
+Karar:  `webui.table_title`: son ekten analiz türü (`TOOL_TITLES`),
+        `inputs`'tan konu; konunun etiketi önce oturumdaki herhangi bir
+        grafikteki model etiketi, yoksa hangi tabloda çekildiyse oradaki
+        katalog adı (`_label_anywhere`). "Kırılma analizi — Konut kredisi
+        faiz oranı", "Granger öncüllük testi — X ve Y", seri tablosunda
+        sütunlar, `read_url`'de adres. Terminal aynı başlığı kullanır.
+        Yeni kurulan tabloda "yeni: …" listesi yazılmaz (bütün başlıkları
+        tekrarlıyordu), yalnız var olan tabloya sütun eklendiğinde.
+        Adımlar: turun bütün araç adımları "Ajan adımları (N)" adlı tek
+        `cl.Step` altında (`parent_id`), tur bitince sayı yazılır; kart
+        katlı gelir, tıklayınca adımlar açılır. Tamamen gizlemek
+        istenirse `.chainlit/config.toml` `[UI] cot = "hidden"`; şartname
+        izlenebilirliği saydığı için varsayılan bu değil. Adım bitişinde
+        `step_line(payload, tool)` başlangıçta görülen araç adını korur,
+        hatalı adım `is_error` ile işaretlenir. (Burak'ın dalındaki
+        üst-kart fikri; onun gerekçesi sıralamaydı, bizimki kalabalık.)
+Kanıt:  Dört sabotaj (adım adı kayboluyor, başlık konuyu söylemiyor, model
+        etiketi başlığa akmıyor, terminal başlığı ref'te), dördü yakalandı.
+
+## Kaynaklar en altta, katlı kartta (23 Eyl)
+Bağlam: "Kaynaklar" bloğu cevabın üstünde görünüyordu; birden çok adım
+        kaynak eklediyse birden çok kez.
+Neden:  Döngü `sources` olayını her araç adımında, cevap akmadan önce
+        yayınlıyor (`loop.py` 1262, adım birleştirmesinde); arayüz geldiği
+        anda çiziyordu.
+Karar:  `webui.merge_sources`: turun bütün `sources` olayları biriktirilir,
+        `series_id` (yoksa `url`) ile tekilleştirilir, ilk görülme sırası
+        korunur, bozuk/kimliksiz girdi atlanır. `ChainlitSink.flush_sources`
+        bunu turun **en sonunda** — cevap, tablolar ve yedek grafikten sonra,
+        `AgentError` yolunda da — "Kaynaklar (N)" adlı `cl.Step` olarak
+        çizer; "Ajan adımları" gibi katlı gelir. Olay sözleşmesi değişmedi;
+        sıralama sunumun işi.
+Kanıt:  İki sabotaj (aynı kaynak iki kez, bozuk girdi listeye giriyor),
+        ikisi yakalandı.
+
+## U2 tablosu doğru; başlık ve reel etiketi düzeltildi (23 Eyl, dördüncü ekran görüntüsünden)
+Ölçüm:  Model deflatörü `base_period="2021-01"` ile çağırdı (soru "2021-01 =
+        100" diyor). Aynı çağrı araçla tekrarlandı: görüntüdeki her hücre
+        birebir (276.785 → 99.417,6162; endeks 35,9187; değişim −64,0813).
+        `docs/manual_test.md` U2 reel düzeyi 2025 bazıyla yazıyordu; endeks
+        ve yüzde bazdan bağımsız olduğu için ikisi de eklendi.
+Kusur:  (1) Seri tablosu başlığı türetilmiş sütunları da sayıyordu; bir
+        bakiyenin nominal, reel, endeks ve yüzde hâli üç satır başlık oldu.
+        (2) Reel sütunun başlığında "2021-01 fiyatlarıyla" iki kez: biri
+        sütun adının son ekinden (`_202101`), biri aracın yazdığı birimden
+        ("milyon TL, 2021-01 fiyatlariyla").
+Karar:  Başlık yalnız **çekilen** serileri sayar (soyağacında `label_tr`
+        taşıyan sütunlar), birimsiz. `deflate` için baz sütun adından
+        okunmaz; birim zaten söylüyor. Testli; sabotaj bu girdinin altında.
+
+## U3: kâr payı serisi faiz diye seçildi, cevap niyet cümlesi kaldı (23 Eyl, beşinci ekran görüntüsünden)
+Ölçüm:  Oturum kaydı (`data/adhoc/sessions/…1857274e.jsonl`): model
+        `search_catalog` sonucundan `evds:TP.KBK.TRY.18`'i seçti; tablo o
+        seriyle birebir doğru (18,514 / 18,5325 …), pay min/max 2023-12
+        %4,4 ve 2022-06 %26,7 doğru. Ama `KBK.TRY.18` bronze veri grubunda
+        "Kredi **Kâr** Oranları (Akım)" — katılım bankaları kâr payı;
+        `KTF12` "Kredi Faiz Oranları (Akım)". Gold katalogda `name_tr`
+        virgül farkıyla aynı, `topic` aynı; ayıran alanlar `tags` ("kredi,
+        kâr oranı" / "kredi, faiz") ve aday kartındaki `tablo`. İki seri
+        yakın (287 haftada korelasyon 0,98, ortalama fark 0,47 puan, en çok
+        13,6 puan) ama aynı şey değil. Arama: KBK 0,713 (1.), KKP stok
+        0,679 (2.), KTF12 0,665 (3.). Onay kapısı susmuş: skor oranı 0,953
+        eşiği geçiyor ama ortak-kelime ölçüsü ilk dördü birlikte tartıyor
+        ("3.2.1.1. Konut Kredileri" araya girince 0,167 < 0,40).
+        Cevap: 19. adımda (observe) beş cümlelik gerçek cevap yazılmış;
+        cevap çağrısı sondaki asistan notlarını bilerek düşürdüğü için
+        (`_answer_messages`, 22 Eyl kararı) onu görmedi ve "…tablodan
+        çekiyorum." dedi. Yeniden deneme yalnız **boş** cevapta çalışıyordu.
+        Doğrulayıcı sayı bulamadığı için geçti.
+Karar:  Şema değişikliği gerekmedi; üç düzeltme:
+        1. `approvals._name_twins`: ilk adayla **noktalama dışında birebir
+           aynı adı** taşıyan, skoru oran içinde adaylar varsa kart, yalnız
+           o ikizlerle. Rakamlar korunur ("3 Aya" ≠ "6 Aya"). 27 kayıtlı
+           arama sorgusunda: eski kural 3, %40 ortak-kelime çift kuralı 25
+           (reddedildi), birebir-ad kuralı **4** (konut faizi, ihtiyaç
+           faizi, işsizlik, cari işlemler — hepsi gerçek ikiz). Kartın
+           `detail`'i zaten `tablo` ile başlıyordu; şimdi görülüyor.
+        2. `agent/narration.py`: `looks_like_narration` (kısa, rakamsız,
+           "-yorum" yapma fiili; 13 eval cevabında sıfır yanlış pozitif)
+           ve `draft_hint` (son uzun asistan notu). `_answer` niyet
+           cümlesinde bir kez daha dener: düşünme kapalı, sistem promptuna
+           "cevabı şimdi yaz" ve varsa taslak. İkinci deneme de niyetse
+           metin olduğu gibi kalır; "cevap üretmedi" demek daha kötü.
+        3. Planner kural 12: `tablo` "Kâr Oranları" ise kâr payıdır, faiz
+           sorusunda "Faiz Oranları" olanı seç.
+        Plan cümleleri ("… arıyorum") artık "Ajan adımları" kartının
+        içinde; sohbet balonu olarak cevap sanılıyordu.
+        Kartın varsayılanı en yüksek skor değil: ikizler yalnız tablosuyla
+        ayrıldığı için varsayılan, tablosunda sorunun bir kelimesi geçen
+        ikizdir (`_preferred_twin`, sorgu `_query_hint` ile son
+        `search_catalog` çağrısından okunur). Otomatik yolda (eval, kapalı
+        kart) uygulanan varsayılan olduğu için bu, eval'in doğru seriyi
+        çekmesi demek; kelime eşleşmezse eski davranış (en yüksek skor).
+        A1 eval kontrolü: 16 Eylül'ün "ağırlıklı ortalama" altdizgesi 23
+        Eylül'ün son üç koşumunda üç kez düştü (cevap "aylık ortalama"
+        diyor, seri ve değerler doğru). Sözcük seçimi doğruluk ölçmüyor;
+        kontrol 2026-06 = 40,335 değer kontrolü + "ortalama" oldu.
+Kanıt:  Altı sabotaj (ikiz kuralı rakamları atıyor, ikizler kart açmıyor,
+        niyet cümlesi cevap sayılıyor, taslak verilmiyor, varsayılan yine en
+        yüksek skor, sorgu tarihten okunmuyor), altısı yakalandı.
+        `answer_eval` iki kez koşuldu: kapı + planner değişikliğinden sonra
+        12/13 (A1 sözcük kontrolü, yukarıda), A1 kontrolü değişip ikiz
+        varsayılanı eklendikten sonra **13/13**, 0 kesinti, 3 bayrak.
+
+## U3 ikinci koşum: adım sınırı — `top` satırın kalanını vermiyordu (23 Eyl)
+Ölçüm:  Kart bu kez doğru çalıştı (varsayılan `KTF12`, kişi onu seçti). Tur
+        yine de `step_limit` ile bitti: 3 arama + get_series + ratio + 2 top
+        + get_series(into=active) + top(KTF12) + mark(period, hata) + mark +
+        **tek aylık get_series** = 12. Modelin kendi notu: "Tablonun tamamını
+        göremiyorum; faiz serisini o aylara göre getireyim." `top` yalnız
+        sıralanan sütunu listeliyordu; aynı satırdaki faizi okumanın aracı
+        yoktu. Yedek grafik de tek satırlık `t02` tablosunu çizdi: milisaniye
+        eksenli boş bir grafik.
+Karar:  `top` seçilen dönemlerin **bütün sayısal sütunlarını** özete ve
+        önizlemeye koyar ("2022-06: pay=26.6872 (TP_KTF12=18.1775)"); işaret
+        (bool) ve metin sütunları dışarıda, en çok `MAX_TOP_COMPANIONS`=6.
+        Planner kural 13: "o ayda X neydi" aynı satırdan okunur, seri ay ay
+        çekilmez. `default_chart` tek satırlık tabloya grafik çizmez.
+        Kart değişikliği geri alınmadı: bu koşumda işini yaptı; sorun ondan
+        önce de vardı (ilk koşumda model taslağı observe'da yazıp cevapta
+        niyet cümlesi bırakmıştı), yalnız adım sayısı farklıydı.
+Kanıt:  İki sabotaj (satırın kalanı düşürülüyor, tek satıra grafik), ikisi
+        yakalandı. `answer_eval` 13/13. U3 gerçek modelle: **9 adım, kesinti
+        yok** (öncesi 12, `step_limit`); araçlar search×3, get_series,
+        ratio, top, top, mark?, make_chart; cevap 2022-06 (%26,7, faiz
+        %18,2) ve 2023-12 (%4,4) ile o aylardaki faizi aynı turda verdi.

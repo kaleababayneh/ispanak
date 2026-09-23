@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 import warnings
 from collections.abc import Callable
@@ -160,6 +161,13 @@ class LakeAdapter:
         self._coverage_cache: dict[str, tuple[str, str]] | None = None
         self._table_names_cache: dict[str, str] | None = None
         self._embed_model = _configured_embed_model()
+        # One adapter is shared by every browser session, and tools run in
+        # worker threads, so the lazy caches are reached concurrently. Only
+        # the index is guarded: it is the one whose half-built state is
+        # indistinguishable from "there is no index" and therefore silently
+        # downgrades a semantic search to keyword matching. `threading`, not
+        # `asyncio`: the loop calls tools off the event loop.
+        self._index_lock = threading.Lock()
 
     # -- catalog -----------------------------------------------------------
 
@@ -362,12 +370,17 @@ class LakeAdapter:
     def _pool_index(self) -> PoolIndex | None:
         """The built index, opened once; with a note when it was built from
         another catalog than the one being searched."""
-        if not self._index_checked:
-            self._index_checked = True
-            self._index = PoolIndex.open(self._index_path)
-            if self._index is not None:
+        if self._index_checked:
+            return self._index
+        with self._index_lock:
+            # Checked again inside the lock: the fast path above is the common
+            # case and must not take one, but two callers can both pass it.
+            if self._index_checked:
+                return self._index
+            index = PoolIndex.open(self._index_path)
+            if index is not None:
                 ids = set(self._series_catalog()["series_id"])
-                uncovered = len(ids - self._index.ids)
+                uncovered = len(ids - index.ids)
                 if uncovered:
                     self._index_notes.append(
                         f"Arama indeksi guncel degil: {uncovered} havuz serisi "
@@ -378,7 +391,7 @@ class LakeAdapter:
                 # and nothing else would notice (a different width at least
                 # raises). Older indexes carry no model name; those are left
                 # alone rather than called stale.
-                built_with = str(self._index.manifest.get("embed_model") or "")
+                built_with = str(index.manifest.get("embed_model") or "")
                 if built_with and built_with != self._embed_model:
                     self._index_notes.append(
                         f"Arama indeksi baska bir embedding modeliyle kurulmus "
@@ -388,8 +401,13 @@ class LakeAdapter:
                 # A ranking rule that adds a meta column leaves the digest
                 # and the model name untouched, so this is the only thing
                 # that can say the stored index predates it.
-                self._index_notes.extend(pool_index.meta_notes(self._index.meta))
-        return self._index
+                self._index_notes.extend(pool_index.meta_notes(index.meta))
+            # Published last, and only once the notes are in place. Setting
+            # the flag first let a second caller read `_index` while it was
+            # still None and fall back to keyword search with nothing said.
+            self._index = index
+            self._index_checked = True
+            return self._index
 
     def _index_scores(
         self, query: str, index: PoolIndex, catalog_df: pd.DataFrame, k: int

@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 def _deps() -> AgentDeps:
     """Real models, real pool, no event stream.
 
-    Deliberately not `loop._real_deps`: that one wires a `JsonlSink` so the
+    Deliberately not `loop.real_deps`: that one wires a `JsonlSink` so the
     CLI can stream events to stdout, and a measurement wants the summary at
     the end rather than a hundred thousand lines of JSON. A `None` sink is
     supported on purpose (`agent/events.py`).
@@ -305,6 +305,17 @@ def _run_check(spec: dict, state: SessionState, answer: str) -> dict:
         found = [source.url for source in state.sources if source.url]
         ok = bool(found) is bool(value)
         detail = f"{len(found)} adres kaynagi"
+    elif kind == "grafik_var":
+        # A chart with no figure is a chart nothing can draw, so only the
+        # ones carrying `plotly_json` count.
+        drawn = [
+            chart
+            for chart in state.charts
+            if getattr(chart, "plotly_json", None)
+            or (isinstance(chart, dict) and chart.get("plotly_json"))
+        ]
+        ok = bool(drawn) is bool(value)
+        detail = f"{len(drawn)} grafik"
     elif kind == "tabloda_donem_yok":
         ok, detail = _check_donem_yok(value, state)
     else:

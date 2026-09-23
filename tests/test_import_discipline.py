@@ -182,3 +182,21 @@ def test_only_the_console_module_imports_rich():
         f"Bu dosyalar rich import ediyor: {offenders}. "
         "Sunum yalnizca agent/console.py icinde."
     )
+
+
+def test_no_module_imports_plotly():
+    """The engine builds a figure as a plain dict; only `app.py` draws it.
+
+    The same rule as chainlit and rich, for the third presentation library.
+    `tools/charts.py` produces plotly's wire format without the package, so
+    a headless run never loads it and `Event.payload` stays plain JSON.
+    """
+    offenders = [
+        path.relative_to(SRC).as_posix()
+        for path in _python_files()
+        if "plotly" in _imported_modules(path)
+    ]
+    assert offenders == [], (
+        f"Bu dosyalar plotly import ediyor: {offenders}. "
+        "Grafik motorda sozluk olarak kurulur, plotly yalnizca app.py'de."
+    )

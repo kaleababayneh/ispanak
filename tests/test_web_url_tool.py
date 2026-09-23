@@ -78,6 +78,18 @@ def _serve(monkeypatch, document, *, raises: Exception | None = None):
     monkeypatch.setattr(web_url, "fetch", fake_fetch)
 
 
+@pytest.fixture(autouse=True)
+def _no_browser_by_default(monkeypatch):
+    """No test here may launch a real browser, or depend on one being
+    missing, by accident -- a test about the browser layer overrides this
+    explicitly. Mirrors `conftest.py`'s other ambient-safety fixtures."""
+
+    def _unavailable(_url, **_kwargs):
+        raise web_url.browser.BrowserUnavailable("test: tarayici katmani yok")
+
+    monkeypatch.setattr(web_url.browser, "render", _unavailable)
+
+
 # --- tables ------------------------------------------------------------------
 
 
@@ -216,6 +228,59 @@ def test_reading_a_cached_document_says_so(spec, context, monkeypatch):
     result = spec.fn(ReadUrlArgs(url="https://x/veri"), context)
 
     assert any("onbellek" in warning for warning in result.warnings)
+
+
+# --- the third, optional layer: the headless browser ---------------------------
+
+
+def test_playwright_not_installed_falls_back_to_the_static_result(
+    spec, context, monkeypatch
+):
+    """`_no_browser_by_default` already makes the browser layer unavailable;
+    this is a page with no table and too little text, which is what puts the
+    tool on that path in the first place."""
+    page = b"<html><body><p>Yukleniyor</p></body></html>"
+    _serve(monkeypatch, _document(page, content_type="text/html"))
+
+    result = spec.fn(ReadUrlArgs(url="https://x/veri"), context)
+
+    assert result.ok and result.table_ref is None
+    assert any("tarayici" in warning.lower() for warning in result.warnings)
+    assert context.written == {}
+
+
+def test_a_rendered_page_becomes_a_session_table(spec, context, monkeypatch):
+    page = b"<html><body><p>Yukleniyor</p></body></html>"
+    rendered = (
+        b"<html><body><table><tr><th>Ay</th><th>Deger</th></tr>"
+        b"<tr><td>2026-01</td><td>1</td></tr><tr><td>2026-02</td><td>2</td></tr>"
+        b"</table></body></html>"
+    )
+    _serve(monkeypatch, _document(page, content_type="text/html"))
+    monkeypatch.setattr(web_url.browser, "render", lambda _url, **_kwargs: rendered)
+
+    result = spec.fn(ReadUrlArgs(url="https://x/veri"), context)
+
+    assert result.ok and result.table_ref is not None
+    assert len(context.written) == 1
+    assert any("render edildi" in warning for warning in result.warnings)
+
+
+def test_a_page_that_already_has_a_table_never_calls_the_browser(
+    spec, context, monkeypatch
+):
+    """The static layer (and the embedded-JSON one it already tries) found
+    something; rendering again would only add time and attack surface."""
+    _serve(monkeypatch, _document(PAGE.encode(), content_type="text/html"))
+    calls: list[str] = []
+    monkeypatch.setattr(
+        web_url.browser, "render", lambda url, **_kwargs: calls.append(url)
+    )
+
+    result = spec.fn(ReadUrlArgs(url="https://x/veri"), context)
+
+    assert result.ok
+    assert calls == []
 
 
 # --- the excerpt --------------------------------------------------------------

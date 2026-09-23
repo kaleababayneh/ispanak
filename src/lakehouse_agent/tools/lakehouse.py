@@ -725,6 +725,10 @@ Op = Literal[
 
 #: Rows a `top` lists by default, and the most it will list.
 TOP_ROWS = 5
+#: Other numeric columns a `top` row is listed with. Enough for a table of
+#: two or three fetched series and their transforms; past this a summary
+#: line stops being a line.
+MAX_TOP_COMPANIONS = 6
 TOP_MAX = 25
 
 
@@ -1115,8 +1119,27 @@ def _top(
     labels = _row_labels(frame, _label_freq(frame, ref, ctx))
     order = values.sort_values(ascending=args.ascending, na_position="last").dropna()
     chosen = order.head(args.n)
+    # The whole row, not only the ranked column. The model never sees the
+    # table itself, and "what was the rate in the month the share peaked"
+    # is answered by the same row: measured 23 Sep, a model that got only
+    # the share spent six steps and a per-month `get_series` trying to read
+    # the rate beside it, and hit the step limit ("Tablonun tamamini
+    # goremiyorum; faiz serisini o aylara gore getireyim").
+    others = [
+        name
+        for name in frame.columns
+        if name not in (column, "period") and _is_numeric(frame, name, arithmetic=True)
+    ][:MAX_TOP_COMPANIONS]
     listed = ", ".join(
-        f"{labels[index]}: {_plain(values[index])}" for index in chosen.index
+        f"{labels[index]}: {_plain(values[index])}"
+        + (
+            " ("
+            + ", ".join(f"{name}={_plain(frame.at[index, name])}" for name in others)
+            + ")"
+            if others
+            else ""
+        )
+        for index in chosen.index
     )
     direction = "en dusuk" if args.ascending else "en yuksek"
     missing = int(values.isna().sum())
@@ -1128,7 +1151,11 @@ def _top(
         summary=summary,
         table_ref=ref,
         preview=[
-            {"satir": labels[index], column: _plain(values[index])}
+            {
+                "satir": labels[index],
+                column: _plain(values[index]),
+                **{name: _plain(frame.at[index, name]) for name in others},
+            }
             for index in chosen.index
         ],
     )

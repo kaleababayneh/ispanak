@@ -383,3 +383,149 @@ def test_a_table_is_drawn_once_at_the_end_not_after_every_column():
     assert mid.count("2021-01-01") == 0  # nothing drawn while the turn runs
     assert "a_diff eklendi" in mid  # but the person is told what changed
     assert end.count("2021-01-01") == 1  # and the table lands once, at the end
+
+
+def test_a_chart_is_announced_not_drawn():
+    """A terminal has no plotly; it says the chart exists and where it shows,
+    and counts the traces so a person can tell an empty figure from a full
+    one without opening the browser."""
+    figure = {"data": [{"name": "a"}, {"name": "b"}], "layout": {}}
+
+    screen = _drawn("chart", chart_ref="c02", plotly_json=figure)
+
+    assert "grafik c02 hazir (2 seri)" in screen
+    assert "tarayici" in screen
+    assert _drawn("chart", chart_ref="c03").count("c03") == 1  # no figure: no crash
+
+
+def test_a_table_header_shows_the_label_over_the_name_when_lineage_knows_it():
+    """The name stays because the next question has to use it; the label
+    goes above it because a person is reading."""
+    import pandas as pd
+
+    from lakehouse_agent.contracts import ColumnInfo
+
+    frame = pd.DataFrame({"period": ["2026-06-01"], "TP_KTF12": [40.3]})
+    lineage = {
+        "t01_get_series.TP_KTF12": ColumnInfo(
+            name="TP_KTF12", label_tr="Faiz", unit="%"
+        )
+    }
+    screen = StringIO()
+    terminal = Terminal(
+        console=Console(file=screen, width=110, no_color=True),
+        tables={"t01_get_series": frame}.get,
+        lineage=lineage,
+    )
+    asyncio.run(
+        terminal.emit(
+            _event("table_update", table_ref="t01_get_series", columns=[], rows=[])
+        )
+    )
+    asyncio.run(terminal.emit(_event("done")))
+    drawn = screen.getvalue()
+
+    assert "Faiz (%)" in drawn
+    assert "TP_KTF12" in drawn
+    assert "Dönem" in drawn
+
+
+def test_the_table_header_says_what_the_legend_said():
+    """A person who read "Konut kredisi faiz oranı" on the chart must not
+    meet the catalog's technical name in the table under it."""
+    import pandas as pd
+
+    from lakehouse_agent.agent.state import ChartSeries, ChartSpec
+    from lakehouse_agent.contracts import ColumnInfo
+
+    frame = pd.DataFrame({"period": ["2026-06-01"], "TP_KTF12": [40.3]})
+    lineage = {
+        "t01_get_series.TP_KTF12": ColumnInfo(
+            name="TP_KTF12", label_tr="Konut Kredisi (TL, Akım, %)"
+        )
+    }
+    charts = [
+        ChartSpec(
+            chart_ref="c01",
+            table_ref="t01_get_series",
+            series=[ChartSeries(column="TP_KTF12", label="Konut kredisi faiz oranı")],
+        )
+    ]
+    screen = StringIO()
+    terminal = Terminal(
+        console=Console(file=screen, width=110, no_color=True),
+        tables={"t01_get_series": frame}.get,
+        lineage=lineage,
+        charts=charts,
+    )
+    asyncio.run(
+        terminal.emit(
+            _event("table_update", table_ref="t01_get_series", columns=[], rows=[])
+        )
+    )
+    asyncio.run(terminal.emit(_event("done")))
+    drawn = screen.getvalue()
+
+    assert "Konut kredisi faiz oranı" in drawn
+    assert "Konut Kredisi (TL, Akım, %)" not in drawn
+    assert "TP_KTF12" in drawn
+
+
+def test_a_follow_up_that_only_reads_the_table_does_not_draw_it_again():
+    """`top` fires a `table_update` with no new columns. The first turn
+    draws the table; the second must not print sixty rows again."""
+    import pandas as pd
+
+    frame = pd.DataFrame({"period": ["2026-06-01"], "TP_KTF12": [40.3]})
+    screen = StringIO()
+    terminal = Terminal(
+        console=Console(file=screen, width=110, no_color=True),
+        tables={"t01_get_series": frame}.get,
+    )
+    update = dict(table_ref="t01_get_series", columns=["period", "TP_KTF12"], rows=[])
+
+    asyncio.run(
+        terminal.emit(_event("table_update", new_columns=["TP_KTF12"], **update))
+    )
+    asyncio.run(terminal.emit(_event("done")))
+    first = screen.getvalue()
+    asyncio.run(terminal.emit(_event("table_update", new_columns=[], **update)))
+    asyncio.run(terminal.emit(_event("done")))
+    second = screen.getvalue()[len(first) :]
+
+    assert "40.3" in first and "kuruldu" in first
+    assert "40.3" not in second and "tablo" not in second
+
+
+def test_the_terminal_table_carries_the_same_derived_title():
+    import pandas as pd
+
+    from lakehouse_agent.contracts import ColumnInfo
+
+    frame = pd.DataFrame({"tarih": ["2023-07-01"], "sicrama_yuzde": [51.4]})
+    lineage = {
+        "t01_get_series.TP_KTF12": ColumnInfo(name="TP_KTF12", label_tr="Faiz"),
+        "t02_detect_changes.sicrama_yuzde": ColumnInfo(
+            name="sicrama_yuzde", inputs=["TP_KTF12"]
+        ),
+    }
+    screen = StringIO()
+    terminal = Terminal(
+        console=Console(file=screen, width=110, no_color=True),
+        tables={"t02_detect_changes": frame}.get,
+        lineage=lineage,
+    )
+    asyncio.run(
+        terminal.emit(
+            _event(
+                "table_update",
+                table_ref="t02_detect_changes",
+                columns=[],
+                rows=[],
+                new_columns=["sicrama_yuzde"],
+            )
+        )
+    )
+    asyncio.run(terminal.emit(_event("done")))
+
+    assert "Kırılma analizi — Faiz" in screen.getvalue()

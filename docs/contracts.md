@@ -227,10 +227,17 @@ adımın çalışma süresinden düşülüyor. Jüri kartı okurken tur düşmes
 
 Aktif tablo kuralı: `get_series(into="new")`, `run_sql`, `ingest` ve `read_url`
 aktif tabloyu değiştirir; analiz sonucu tabloları değiştirmez. Üretim kaydı
-(`tools/toolset.py`, sekiz araç): search_catalog, get_series,
+(`tools/toolset.py`, dokuz araç): search_catalog, get_series,
 transform_table, detect_anomalies, detect_changes, **read_url**,
-**test_causality**, **web_search**. `run_sql` ve `ingest` henüz yalnızca
-sahte araçlarda; kural sıraları geldiğinde uyacakları kural.
+**test_causality**, **web_search**, **make_chart**. `run_sql` ve `ingest`
+henüz yalnızca sahte araçlarda; kural sıraları geldiğinde uyacakları kural.
+
+`make_chart` tablo yazmaz, aktif tabloyu değiştirmez; `ChartSpec`'i
+`ToolContext.add_chart` ile bırakır ve `plotly_json`'u **düz sözlük** olarak
+kurar (`tools/charts.py`, `plotly` import etmez). `ToolResult.artifacts`'a
+ayrıca yazılmaz: döngü iki kaynağı da `state.charts`'a eklediği için ikisini
+birden vermek grafiği iki kez sayar. Anahtar `ToolContext.new_chart_ref` ile
+üretilir; araç anahtar uydurmaz (tablolarla aynı kural).
 
 `read_url` aktif tabloyu devraldığında bunu **uyarıda söyler** ve önceki
 tablonun adını verir: analizin ortasında okunan bir adres, sonraki her
@@ -348,6 +355,18 @@ Demo günü prompt'ta URL verilecek (gereksinim: PDF, Excel, resim, metin).
 - `prepare_table` (lake adaptörü) her tabloyu temizler: adı ne olursa olsun
   tarih sütunu `period` olur, Türkçe biçimli sayılar sayıya çevrilir, ne
   yapıldığı kalite kartına yazılır.
+- **Üçüncü katman — headless tarayıcı (23 Eyl, `docs/decisions.md`).** Statik
+  `<table>` ve sayfaya gömülü JSON (`_embedded_json`) ikisi de boş kalırsa
+  (`web/extract.py::needs_browser_render`), `web/browser.py` opsiyonel
+  Playwright/Chromium ile sayfayı render eder. Opsiyonel bağımlılık:
+  `uv sync --extra browser && uv run playwright install chromium`; kurulu
+  değilse `read_url` çökmez, statik sonucu bir uyarıyla döner. Render edilen
+  sayfanın kendi JavaScript'i attığı her HTTP alt isteği `web/fetch.py::
+  check_url`'den geçer (`context.route`, görsel/font/medya doğrudan düşürülür);
+  her WebSocket ayrıca `context.route_web_socket` ile tamamen reddedilir
+  (`context.route` bir WebSocket el sıkışmasını hiç görmez). Ana belgenin
+  gerçek bağlandığı IP `server_addr()` ile ikinci kez doğrulanır — statik
+  yoldaki `_peer_address` ile aynı DNS-rebinding gerekçesi.
 
 `transform_table`'a `top` işlemi eklendi: bir sütuna göre en yüksek (ya da
 `ascending` ile en düşük) satırları sıralar ve değerleriyle listeler. Tabloya

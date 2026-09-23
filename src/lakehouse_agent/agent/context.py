@@ -15,7 +15,7 @@ from typing import Any
 
 import pandas as pd
 
-from lakehouse_agent.agent.state import new_table_ref
+from lakehouse_agent.agent.state import new_chart_ref, new_table_ref
 from lakehouse_agent.config import AgentSettings
 from lakehouse_agent.contracts import ColumnInfo
 from lakehouse_agent.llm import LLM
@@ -56,6 +56,11 @@ class ToolContext:
     #: References already handed out for tables that no longer exist. A removed
     #: table must not free its number; see `SessionState.retired_tables`.
     retired_refs: frozenset[str] = frozenset()
+
+    #: The charts the session already holds, so `new_chart_ref` can see them.
+    #: A tuple rather than the session's list: a tool must not be able to
+    #: append through it, which is the same reason `_tables` is proxied.
+    charts: tuple[Any, ...] = ()
 
     #: Write buffer. The loop merges this into the session on success.
     written: dict[str, pd.DataFrame] = field(default_factory=dict)
@@ -138,6 +143,16 @@ class ToolContext:
         known.update(self._tables)
         known.update(self.written)
         return new_table_ref(known, suffix)
+
+    def new_chart_ref(self) -> str:
+        """Generate the next chart reference. Tools never invent one.
+
+        Counts the charts written in this step too. A step that draws two
+        charts would otherwise ask twice, see the same session list both
+        times, and get `c01` back for both -- and the second would overwrite
+        the first in the interface, which looks up charts by key.
+        """
+        return new_chart_ref([*self.charts, *self.written_charts])
 
     def put_table(self, ref: str, frame: pd.DataFrame) -> None:
         self.written[ref] = frame
