@@ -627,3 +627,24 @@ def test_reading_parquet_directly_yields_different_period_dtype_than_get(
 
     assert not pd.api.types.is_datetime64_any_dtype(from_parquet["period"])
     assert pd.api.types.is_datetime64_any_dtype(from_get["period"])
+
+
+@pytest.mark.skipif(
+    not gold.OBSERVATIONS_PATH.exists(), reason="gerçek gold verisi yok"
+)
+def test_wide_leaves_a_coarser_series_on_its_own_periods():
+    """CLAUDE.md #4. `wide`'s docstring always claimed a series coarser than
+    the target was left alone; it was not. `to_freq` reindexes onto a
+    date_range, so a quarterly series became ten monthly rows with four
+    values, each relabelled to the wrong month -- and all 6.200 FinTürk
+    series are quarterly."""
+    gold.GOLD_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    sid = "bddk:finturk:bireysel:istanbul:konut_kredisi:sektor"
+
+    quarterly = gold.get([sid], "2021-01", "2021-12")
+    result = gold.wide([sid], "2021-01", "2021-12")
+
+    assert len(quarterly) == 4
+    assert len(result) == 4  # not ten, and no month it never reported
+    assert list(pd.to_datetime(result["period"]).dt.month) == [1, 4, 7, 10]
+    assert result[sid].notna().all()

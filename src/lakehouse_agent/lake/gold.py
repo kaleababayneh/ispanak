@@ -56,6 +56,10 @@ GOLD_SINCE = "2021-01"
 #: in docs/data_dictionary.md. Bronze keeps them.
 EXCLUDED_FREQUENCY_STRS = frozenset({"AYDA İKİ KEZ", "ALTI AYLIK"})
 
+#: Fine to coarse. `wide()` only ever converts downwards; the other direction
+#: is inventing data (CLAUDE.md #4).
+_FREQ_RANK = {"D": 0, "W": 1, "M": 2, "Q": 3, "A": 4}
+
 OBSERVATIONS_COLUMNS = [
     "series_id",
     "period",
@@ -618,10 +622,29 @@ def wide(
         return _pivot_raw(long)
 
     methods = _series_methods(ids)
+    freqs = _series_freqs(ids)
     aligned: dict[str, pd.DataFrame] = {}
     for sid in ids:
         sub = long.loc[long["series_id"] == sid, ["period", "obs_date", "value"]]
         if sub.empty:
+            continue
+        native = freqs.get(sid)
+        if native and _FREQ_RANK.get(native, 0) > _FREQ_RANK.get(freq, 0):
+            # Coarser than the target: leave it on its own periods. The
+            # docstring always claimed this happened; it did not. `to_freq`
+            # reindexes onto a date_range, so a quarterly series became 10
+            # monthly rows with 4 values -- each one relabelled to the wrong
+            # month (measured on a FinTürk series, and all 6.200 of them are
+            # quarterly). Spreading a coarse series over finer periods is
+            # inventing data, which CLAUDE.md #4 forbids.
+            logger.warning(
+                "wide(): %s %s yayimlaniyor, %s'e yukseltilmedi; kendi "
+                "donemlerinde birakildi",
+                sid,
+                native,
+                freq,
+            )
+            aligned[sid] = sub[["period", "value"]]
             continue
         kind, agg_method = methods.get(sid, (None, None))
         if kind is None and agg_method is None:

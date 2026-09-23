@@ -59,10 +59,23 @@ _SCRIPT_JSON = re.compile(
 _NEXT_DATA = re.compile(
     r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S | re.I
 )
-_TAGS = re.compile(r"<(script|style)[^>]*>.*?</\1>|<[^>]+>", re.S | re.I)
+#: Only the second half of the old pattern. The first half was
+#: `<(script|style)[^>]*>.*?</\1>`, and an unterminated opener made `.*?` scan
+#: to the end of the document and then backtrack, once per opener: measured
+#: quadratic, 16 s at 1.3 MB and about 17 minutes at the 10 MB fetch cap, on a
+#: thread the step timeout abandons but cannot kill. `_without_blocks` below
+#: does the same job with `str.find`, in one pass.
+_TAGS = re.compile(r"<[^>]+>")
+_BLOCK_OPEN = re.compile(r"<(script|style)\b", re.I)
 #: A number as printed here or abroad: "1.234.567,89", "1,234,567.89", "-12%".
 _NUMBER = re.compile(r"[-+(]?\d[\d.,\s]*\)?%?")
-_HREF = re.compile(r"""<a[^>]+href=["']([^"']+)["'][^>]*>(.*?)</a>""", re.S | re.I)
+#: The label is bounded rather than `(.*?)`: an unterminated <a> made that
+#: scan to the end of the document once per link, the same quadratic blow-up
+#: as `_TAGS` had (2 s at 0.43 MB). A link's visible text is a few words; 300
+#: characters is already far more than `_data_links` keeps (80).
+_HREF = re.compile(
+    r"""<a[^>]+href=["']([^"']+)["'][^>]*>(.{0,300}?)</a>""", re.S | re.I
+)
 #: Links worth following from a page that is a list of documents: the brief's
 #: own first target is one (Borsa İstanbul's market-data page holds no table,
 #: it links 21 PDFs, one of which is the gold trading data).
@@ -222,7 +235,14 @@ def _from_html(body: bytes, url: str = "") -> Extracted:
         # lxml cannot parse a page, and reports the missing optional
         # dependency as the reason the page had no tables (measured on
         # borsaistanbul.com's market-data page, which is a list of links).
-        frames = pd.read_html(io.StringIO(html), flavor="lxml")
+        # Turkish separators, not pandas' Anglo defaults. Measured: with the
+        # defaults "30,15" comes back as int64 3015 -- a hundredfold error,
+        # and an int column that `prepare_table`'s Turkish repair can no
+        # longer see, so nothing downstream notices. Every rate, share and FX
+        # quote on a Turkish page arrives this way.
+        frames = pd.read_html(
+            io.StringIO(html), flavor="lxml", thousands=".", decimal=","
+        )
         for index, frame in enumerate(frames, start=1):
             cleaned = _clean(frame)
             if cleaned is not None:
@@ -257,14 +277,27 @@ def _from_html(body: bytes, url: str = "") -> Extracted:
 
 
 def _data_links(html: str, url: str) -> list[tuple[str, str]]:
-    """The PDF/Excel/CSV files a page links to, as absolute addresses."""
-    from urllib.parse import urljoin
+    """The PDF/Excel/CSV files a page links to, as absolute addresses.
+
+    http(s) only. This list is read out to the model as "files you can open",
+    so a page that links `file:///etc/passwd.csv` or the cloud metadata
+    service would be handing it a menu of addresses to try. `check_url`
+    refuses all of those at fetch time, but a list nobody should act on does
+    not belong in front of the model in the first place.
+
+    The link's own text comes from the page, so it is truncated and stripped
+    of markup; it is still someone else's words, and `web_url` labels it as
+    such.
+    """
+    from urllib.parse import urljoin, urlparse
 
     found: dict[str, str] = {}
     for href, label in _HREF.findall(html):
         if not _DATA_LINK.search(href):
             continue
         absolute = urljoin(url, href.strip())
+        if urlparse(absolute).scheme not in ("http", "https"):
+            continue
         text = " ".join(_TAGS.sub(" ", label).split())[:80]
         found.setdefault(absolute, text)
     return list(found.items())[:MAX_LINKS]
@@ -327,9 +360,33 @@ _BLOCK = re.compile(
 _MIN_LINE = 40
 
 
+def _without_blocks(html: str) -> str:
+    """`html` with every <script>/<style> body removed, in one forward pass.
+
+    `str.find` never backtracks, so a page with a thousand unterminated
+    openers costs a thousand searches, not a thousand full scans. An opener
+    with no closer swallows the rest of the document, which is what a browser
+    does with it too.
+    """
+    out: list[str] = []
+    position = 0
+    while (match := _BLOCK_OPEN.search(html, position)) is not None:
+        out.append(html[position : match.start()])
+        closer = f"</{match.group(1).lower()}"
+        end = html.lower().find(closer, match.end())
+        if end == -1:
+            return "".join(out)
+        position = html.find(">", end)
+        if position == -1:
+            return "".join(out)
+        position += 1
+    out.append(html[position:])
+    return "".join(out)
+
+
 def _text_of(html: str) -> str:
     match = _MAIN.search(html)
-    body = match.group(2) if match else html
+    body = _without_blocks(match.group(2) if match else html)
     lines = [
         " ".join(line.split())
         for line in _TAGS.sub(" ", _BLOCK.sub("\n", body)).splitlines()
@@ -436,10 +493,12 @@ def _frame_from_rows(rows: list[list]) -> pd.DataFrame | None:
         return None
     width = max(len(row) for row in rows)
     padded = [row + [""] * (width - len(row)) for row in rows]
+    # `None`, not `0`: the old default conflated "row 0 is already data" with
+    # "no data row anywhere", and both fell through to the headerless frame.
     first_data = next(
-        (index for index, row in enumerate(padded) if _mostly_numbers(row)), 0
+        (index for index, row in enumerate(padded) if _mostly_numbers(row)), None
     )
-    if not first_data:
+    if not first_data:  # no numbers at all, or numbers from the very first row
         return _clean(pd.DataFrame(padded))
     header = [
         " ".join(part for part in column if part).strip() or f"sutun {index + 1}"
@@ -450,12 +509,19 @@ def _frame_from_rows(rows: list[list]) -> pd.DataFrame | None:
 
 
 def _mostly_numbers(row: list[str]) -> bool:
-    """A data row: over half of its filled cells read as numbers."""
+    """A data row: at least half of its filled cells read as numbers.
+
+    Half, not over half. A two-column (label, value) table -- the commonest
+    printed shape there is -- has exactly one number in two cells, and a
+    strict majority called it a header row. With no data row found, the whole
+    table came back headerless and the header row itself became data, which
+    left every value as text nothing could sum (measured).
+    """
     filled = [cell for cell in row if cell]
     if len(filled) < 2:
         return False
     numeric = sum(1 for cell in filled if _NUMBER.fullmatch(cell.replace(" ", "")))
-    return numeric * 2 > len(filled)
+    return numeric * 2 >= len(filled)
 
 
 def _unique(names: list[str]) -> list[str]:

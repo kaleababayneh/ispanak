@@ -9,13 +9,17 @@ Rules all three follow, and why:
 * **The model sees a preview, never the table** (contracts.py `ToolResult`).
   First and last rows, plus a summary that already states what the model
   would otherwise be tempted to compute.
-* **Tables are monthly.** `get_series` aligns everything to months, by each
-  series' kind (a balance takes the month's last value, a rate its average,
-  a flow its sum), because the scenario's questions are monthly and a mixed
-  weekly/monthly table has almost no row where both are filled. Going the
-  other way would invent data (CLAUDE.md #4), so a quarterly or yearly series
-  is refused rather than spread over months. Every conversion is written into
-  the column's lineage and into `warnings`, which reach the answer.
+* **One table, one frequency.** `get_series` aligns every series it fetches
+  to the requested `freq` (monthly by default, because the scenario's
+  questions are), using each series' own `agg_method` from the catalog. A
+  mixed weekly/monthly table has almost no row where both are filled, which
+  is what the alignment is for. Only ever finer to coarser: spreading a
+  coarse series over finer periods invents data (CLAUDE.md #4), so a series
+  coarser than the target is refused. Every conversion is written into the
+  column's lineage and into `warnings`, which reach the answer.
+* **Periods are named at the table's own frequency.** `top` and `mark` call
+  a row "2024-Q2" or "2024-03-15" as the table requires, never always by its
+  month; the answer quotes whatever they print.
 * **Existing columns are never touched.** Both "add to the table" paths add
   columns and refuse a name that is already taken: `merge` would rename the
   old column to `_x`, and the loop's "existing columns came back unchanged"
@@ -847,7 +851,21 @@ def make_transform_table() -> ToolSpec:
             # the one operation that must work on a table with no period --
             # a document read from a URL is often a printed table whose rows
             # are named ("Ocak / January"), not dated.
-            return _top(args, frame, ref)
+            return _top(args, frame, ref, ctx)
+        if "period" not in frame.columns:
+            # Refused, not crashed. Every operation below this line is defined
+            # over periods, and this branch makes period-less tables
+            # first-class (a printed table read from a URL), so the model can
+            # and does arrive here: it used to get a bare `KeyError: 'period'`
+            # through the loop's catch-all, which says nothing it can act on.
+            return ToolResult(
+                ok=False,
+                summary=(
+                    f"'{ref}' tablosunda donem (period) sutunu yok; '{args.op}' "
+                    "donemler uzerinde calisir. Bu tabloda top kullanilabilir, ya "
+                    "da tarih sutunu olan bir tablo secin."
+                ),
+            )
         # Computed on a copy with a datetime period; `frame` itself only ever
         # gains the new column, so no existing column can change underneath
         # the loop's "existing columns came back unchanged" check.
@@ -971,8 +989,11 @@ def make_transform_table() -> ToolSpec:
         description_tr=(
             "Tabloya turetilmis YENI bir sutun ekler; mevcut sutunlara dokunmaz. "
             "Fark, yuzde degisim, yillik degisim, baz aya gore degisim, endeks, "
-            "oran, enflasyondan arindirma ve kosula gore donem isaretleme yapar. "
-            "Kullanicinin istemedigi bir donusumu yapma."
+            "oran, enflasyondan arindirma, yilbasindan bu yana toplam ve kosula "
+            "gore donem isaretleme yapar. Ayrica op='top' ile bir sutunun en "
+            "yuksek (ya da ascending=true ile en dusuk) n donemini adlariyla "
+            "listeler; bu tek islem sutun eklemez ve donem sutunu olmayan "
+            "tablolarda da calisir. Kullanicinin istemedigi bir donusumu yapma."
         ),
         args_model=TransformArgs,
         fn=run,
@@ -1054,7 +1075,9 @@ def _unit_of(entry: ColumnInfo | None) -> str | None:
     return entry.unit if entry is not None else None
 
 
-def _top(args: TransformArgs, frame: pd.DataFrame, ref: str) -> ToolResult:
+def _top(
+    args: TransformArgs, frame: pd.DataFrame, ref: str, ctx: ToolContext | None = None
+) -> ToolResult:
     """The rows where a column is highest (or lowest), named and listed.
 
     "Which month was the highest?" is a counting question, and the model may
@@ -1063,12 +1086,13 @@ def _top(args: TransformArgs, frame: pd.DataFrame, ref: str) -> ToolResult:
     (agent/verifier.py).
     """
     column = args.column
-    # `arithmetic=False`: `top` sorts and names rows, it never divides or
-    # subtracts, so a flag column is degenerate rather than fatal here -- the
-    # stricter reading belongs to the operations that compute with the values.
+    # `arithmetic=True`: ranking a `mark` column answers nothing -- its "top"
+    # rows are simply the flagged ones, which `mark` already listed -- and it
+    # puts bare 1/0 into the tool output as figures the verifier will then
+    # accept in an answer. `mark` is the op for flags.
     if not column or column not in frame.columns:
         usable = [
-            str(c) for c in frame.columns if _is_numeric(frame, c, arithmetic=False)
+            str(c) for c in frame.columns if _is_numeric(frame, c, arithmetic=True)
         ]
         return ToolResult(
             ok=False,
@@ -1077,13 +1101,17 @@ def _top(args: TransformArgs, frame: pd.DataFrame, ref: str) -> ToolResult:
                 f"Kullanilabilir sutunlar: {', '.join(usable) or 'yok'}."
             ),
         )
-    if not _is_numeric(frame, column, arithmetic=False):
+    if not _is_numeric(frame, column, arithmetic=True):
         return ToolResult(
-            ok=False, summary=f"{column!r} sayisal bir sutun degil; top uygulanamaz."
+            ok=False,
+            summary=(
+                f"{column!r} sayisal bir deger sutunu degil; top uygulanamaz. "
+                "Isaret sutunlarinin isaretli donemlerini mark zaten listeler."
+            ),
         )
 
     values = pd.to_numeric(frame[column], errors="coerce")
-    labels = _row_labels(frame)
+    labels = _row_labels(frame, _label_freq(frame, ref, ctx))
     order = values.sort_values(ascending=args.ascending, na_position="last").dropna()
     chosen = order.head(args.n)
     listed = ", ".join(
@@ -1105,11 +1133,43 @@ def _top(args: TransformArgs, frame: pd.DataFrame, ref: str) -> ToolResult:
     )
 
 
-def _row_labels(frame: pd.DataFrame) -> dict[Any, str]:
+def _label_freq(frame: pd.DataFrame, ref: str, ctx: ToolContext | None) -> str:
+    """The table's own frequency, for labelling its rows.
+
+    From the columns' lineage first, because that is where `get_series`
+    recorded it; otherwise inferred from the gap between the first two
+    periods. "M" only as a last resort, which is what every caller used to
+    assume unconditionally.
+    """
+    if ctx is not None:
+        for name in frame.columns:
+            entry = ctx.lineage.get(f"{ref}.{name}")
+            if entry is not None and entry.freq:
+                return entry.freq
+    if "period" in frame.columns and len(frame) > 1:
+        periods = pd.to_datetime(frame["period"], errors="coerce").dropna()
+        if len(periods) > 1:
+            days = (periods.iloc[1] - periods.iloc[0]).days
+            for limit, freq in ((2, "D"), (10, "W"), (45, "M"), (135, "Q")):
+                if days <= limit:
+                    return freq
+            return "A"
+    return "M"
+
+
+def _row_labels(frame: pd.DataFrame, freq: str = "M") -> dict[Any, str]:
     """What to call each row: its period, else its first text column, else
-    its position."""
+    its position.
+
+    The period is rendered at the table's own frequency. Every row used to be
+    named by its month whatever the table was, so a daily table gave four
+    different days the same label, a quarterly one printed Q2 as "2024-04"
+    and a yearly one printed 2024 as "2024-01" (measured). Planner rules 1
+    and 13 send every "which period" question through `top` and `mark`, so
+    the wrong label is what the answer quotes.
+    """
     if "period" in frame.columns:
-        return {index: _month(value) for index, value in frame["period"].items()}
+        return {index: _label(value, freq) for index, value in frame["period"].items()}
     for name in frame.columns:
         # `arithmetic=False`: the question here is "is this text?", and a flag
         # column is a value, not a label for one.
@@ -1442,30 +1502,34 @@ def _op_mark(
     lineage: dict[str, ColumnInfo | None],
     ctx: ToolContext,
 ) -> _Outcome:
-    """Flag the months where every condition holds, and name them.
+    """Flag the periods where every condition holds, and name them.
 
     Naming them in the summary is the point: "which months?" is answered by
     the tool, not by the model reading two columns and counting (planner
-    rule 1).
+    rule 1). Named at the table's own frequency, and called by that period's
+    word: a quarterly table's Q2 is "2024-Q2", not "2024-04".
     """
     series = {c.column: _single(frame, c.column) for c in args.conditions}
     conditions = [(c.column, c.op, c.value) for c in args.conditions]
     result, formula = transforms.mark_periods(series, conditions)
     values = _by_period(result)
 
+    ref = args.table_ref or ctx.active_table or ""
+    freq = _label_freq(frame, ref, ctx)
+    word = _PERIOD_WORD.get(freq, "ay")
     # By value, not `is True`: the cells are numpy booleans, and numpy 2 even
     # names that type "bool", which is how an identity check found no month.
-    flagged = [_month(p) for p in values.index[values.eq(True).fillna(False)]]
+    flagged = [_label(p, freq) for p in values.index[values.eq(True).fillna(False)]]
     unknown = int(values.isna().sum())
     if flagged:
         listed = ", ".join(flagged[:MARKED_LISTED])
         more = len(flagged) - MARKED_LISTED
-        summary = f"{len(flagged)} ay kosullarin hepsini sagliyor: {listed}"
-        summary += f" ve {more} ay daha." if more > 0 else "."
+        summary = f"{len(flagged)} {word} kosullarin hepsini sagliyor: {listed}"
+        summary += f" ve {more} {word} daha." if more > 0 else "."
     else:
-        summary = "Kosullarin hepsini saglayan ay yok."
+        summary = f"Kosullarin hepsini saglayan {word} yok."
     if unknown:
-        summary += f" {unknown} ay eksik veri yuzunden degerlendirilemedi."
+        summary += f" {unknown} {word} eksik veri yuzunden degerlendirilemedi."
     return _Outcome(
         name=args.name or "isaret",
         values=values,

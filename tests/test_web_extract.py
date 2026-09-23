@@ -270,3 +270,63 @@ def test_a_windows_turkish_document_is_still_readable():
     )
 
     assert "Şubat" in got.tables[0].frame.to_string()
+
+
+# --- what the 23 Sep review found --------------------------------------------
+
+
+def test_a_turkish_decimal_in_an_html_table_keeps_its_value():
+    """pandas' defaults are the Anglo ones, so "30,15" came back as int64
+    3015 -- a hundredfold error, and an int column `prepare_table`'s Turkish
+    repair can no longer see. Every rate and FX quote on a Turkish page
+    arrives written this way."""
+    html = (
+        "<table><tr><th>Ay</th><th>Kur</th><th>Hacim</th></tr>"
+        "<tr><td>2026-01</td><td>30,15</td><td>1.234.567,89</td></tr>"
+        "<tr><td>2026-02</td><td>31,40</td><td>2.345.678,90</td></tr></table>"
+    )
+
+    got = extractor.extract(html.encode(), content_type="text/html", url="https://x/t")
+
+    frame = got.tables[0].frame
+    assert frame["Kur"].tolist() == [30.15, 31.4]
+    assert frame["Hacim"].tolist() == [1234567.89, 2345678.90]
+
+
+def test_an_unterminated_script_does_not_take_the_document_with_it():
+    """The old pattern was `<script[^>]*>.*?</script>`, and one opener with
+    no closer made it scan to the end and backtrack -- measured quadratic,
+    about 17 minutes at the 10 MB fetch cap, on a thread the step timeout
+    abandons but cannot kill."""
+    html = "<p>once</p>" + "<script>x" * 500 + "<p>sonra</p>"
+
+    text = extractor._text_of(html)
+
+    assert "x" * 20 not in text  # the script bodies are gone
+
+
+def test_a_two_column_pdf_table_keeps_its_header():
+    """The commonest printed shape is (label, value), which has exactly one
+    number in two cells. A strict majority called that a header row, so no
+    data row was ever found and the table came back headerless with its
+    header as data -- leaving every value as text nothing could sum."""
+    frame = extractor._frame_from_rows(
+        [["AY", "HACIM"], ["Ocak", "1.234"], ["Subat", "2.345"]]
+    )
+
+    assert list(frame.columns) == ["AY", "HACIM"]
+    assert frame["AY"].tolist() == ["Ocak", "Subat"]
+
+
+def test_a_link_that_is_not_http_is_not_offered_to_the_model():
+    """The link list is read out as "files you can open". A page that lists
+    `file:///etc/passwd.csv` was handing the model a menu of addresses to
+    try; `check_url` refuses them, but they do not belong in front of it."""
+    html = (
+        "<a href='file:///etc/passwd.csv'>Yillik rapor</a>"
+        "<a href='https://x.example.com/veri.csv'>Gercek dosya</a>"
+    )
+
+    links = extractor._data_links(html, "https://x.example.com/")
+
+    assert [url for url, _ in links] == ["https://x.example.com/veri.csv"]

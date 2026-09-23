@@ -110,6 +110,21 @@ def _embed_documents_cached(texts: list[str]) -> np.ndarray:
     return vectors
 
 
+def _configured_embed_model() -> str:
+    """The embedding model this process would query with, "" if unreadable.
+
+    Read once per adapter and compared with the one the index recorded. No
+    key in the environment is not a reason to fail; it just means there is
+    nothing to compare and the check stays quiet.
+    """
+    try:
+        from lakehouse_agent.config import get_agent_settings
+
+        return str(get_agent_settings().mia_embed_model)
+    except Exception:  # noqa: BLE001 - a missing key is a normal test state
+        return ""
+
+
 def _embed_query(query: str) -> np.ndarray:
     from lakehouse_agent.lake import catalog
 
@@ -143,6 +158,7 @@ class LakeAdapter:
         self._doc_vectors: np.ndarray | None = None
         self._embed_down_until: float | None = None
         self._coverage_cache: dict[str, tuple[str, str]] | None = None
+        self._embed_model = _configured_embed_model()
 
     # -- catalog -----------------------------------------------------------
 
@@ -294,7 +310,8 @@ class LakeAdapter:
                     "Havuz arama indeksi kurulmamis; seriler kelime eslesmesiyle "
                     "bulundu, siralama daha kaba olabilir."
                 )
-                return self._keyword_hits(query, catalog_df, index, k), notes
+                hits, more = self._keyword_hits(query, catalog_df, index, k)
+                return hits, [*notes, *more]
         except Exception as exc:  # noqa: BLE001 - any embedding failure falls back
             logger.warning(
                 "search: anlamsal arama yapilamadi (%s: %s), kelime eslesmesi",
@@ -302,7 +319,8 @@ class LakeAdapter:
                 exc,
             )
             notes.append(KEYWORD_FALLBACK_NOTE)
-            return self._keyword_hits(query, catalog_df, index, k), notes
+            hits, more = self._keyword_hits(query, catalog_df, index, k)
+            return hits, [*notes, *more]
 
         chosen = [
             (position, score) for position, score in scored if score >= MIN_SIMILARITY
@@ -320,10 +338,34 @@ class LakeAdapter:
         return hits, notes
 
     def _catalog_texts(self) -> list[str]:
-        """Every catalog row's search text, built once per adapter."""
+        """Every catalog row's search text, built once per adapter.
+
+        The datagroup name is included when the index recorded one, so this
+        matches `pool_index.catalog_texts` exactly. It did not: the index was
+        built with the table's own name in the text and the fallback scored
+        without it, which is what `search_text`'s docstring warns about --
+        "Genel Endeks" is only findable as the CPI through its datagroup
+        name. So the keyword fallback and the small-pool semantic path were
+        both matching on strictly weaker text than the index they stand in
+        for.
+        """
         if self._texts is None:
+            catalog = self._series_catalog()
+            index = self._pool_index() if len(catalog) > self._in_memory_limit else None
+            tables: dict[str, str] = {}
+            if index is not None and index.meta is not None:
+                meta = index.meta
+                if "table" in meta.columns:
+                    tables = {
+                        sid: name
+                        for sid, name in zip(
+                            meta["series_id"], meta["table"], strict=True
+                        )
+                        if isinstance(name, str) and name
+                    }
             self._texts = [
-                search_text(row) for _, row in self._series_catalog().iterrows()
+                search_text(row, table=tables.get(row["series_id"]))
+                for _, row in catalog.iterrows()
             ]
         return self._texts
 
@@ -340,6 +382,18 @@ class LakeAdapter:
                     self._index_notes.append(
                         f"Arama indeksi guncel degil: {uncovered} havuz serisi "
                         "indekste yok, bunlar anlamsal aramada cikmaz."
+                    )
+                # An index built by one embedding model and queried by another
+                # of the same width returns cosine numbers that mean nothing,
+                # and nothing else would notice (a different width at least
+                # raises). Older indexes carry no model name; those are left
+                # alone rather than called stale.
+                built_with = str(self._index.manifest.get("embed_model") or "")
+                if built_with and built_with != self._embed_model:
+                    self._index_notes.append(
+                        f"Arama indeksi baska bir embedding modeliyle kurulmus "
+                        f"({built_with}); skorlar karsilastirilabilir degil, "
+                        "indeksi yeniden kurun."
                     )
         return self._index
 
@@ -376,7 +430,7 @@ class LakeAdapter:
         catalog_df: pd.DataFrame,
         index: PoolIndex | None,
         k: int,
-    ) -> list[CatalogHit]:
+    ) -> tuple[list[CatalogHit], list[str]]:
         """The coarse fallback: share of the query's words each text holds.
 
         On a large pool the index's full-text search picks the candidates
@@ -407,16 +461,28 @@ class LakeAdapter:
         ]
         scored = [(i, score) for i, score in scored if score >= MIN_LEXICAL_SCORE]
         scored.sort(key=lambda pair: (-pair[1], by_index.get(pair[0], 0)))
+        standing: dict[str, int] = {}
         if index is not None:
-            ordered, _standing = pool_index.rank(
+            ordered, standing = pool_index.rank(
                 query, [(ids.iloc[i], score) for i, score in scored], index.meta
             )
             places = {sid: i for i, sid in enumerate(ids)}
             scored = [(places[sid], score) for sid, score in ordered]
-        return [
+        hits = [
             self._hit(catalog_df.iloc[i], score, match="keyword")
             for i, score in scored[:k]
         ]
+        # The same note the semantic path emits. It was dropped here, which is
+        # exactly where the model most needs it: a degraded search that folds
+        # 81 provinces behind one candidate and says nothing looks like a pool
+        # that holds one province.
+        notes = [
+            f"{hit.name_tr}: ayni kalemin {standing[hit.series_id]} baska "
+            "il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle."
+            for hit in hits
+            if standing.get(hit.series_id)
+        ]
+        return hits, notes
 
     def _check_embedding_cooldown(self) -> None:
         if (

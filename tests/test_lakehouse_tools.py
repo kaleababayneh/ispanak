@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from lakehouse_agent.agent.context import ToolContext
 from lakehouse_agent.config import AgentSettings
-from lakehouse_agent.contracts import ToolResult
+from lakehouse_agent.contracts import ColumnInfo, ToolResult
 from lakehouse_agent.testing.fake_lake import (
     CPI_SERIES,
     CREDIT_SERIES,
@@ -828,7 +828,7 @@ def test_ytd_is_refused_for_a_balance(scenario):
 # --- transform_table: top ----------------------------------------------------
 
 
-def _top_context(frame, ref="t01_read_url"):
+def _top_context(frame, ref="t01_read_url", lineage=None):
     return ToolContext(
         session_id="s1",
         step_no=1,
@@ -837,7 +837,74 @@ def _top_context(frame, ref="t01_read_url"):
         settings=AgentSettings(MIA_API_KEY="test-only"),
         active_table=ref,
         _tables={ref: frame},
+        lineage=lineage or {},
     )
+
+
+@pytest.mark.parametrize(
+    ("freq", "periods", "expected"),
+    [
+        ("D", ["2024-01-01", "2024-01-02", "2024-01-03"], "2024-01-03"),
+        ("Q", ["2024-01-01", "2024-04-01", "2024-07-01"], "2024-Q3"),
+        ("A", ["2024-01-01", "2025-01-01", "2026-01-01"], "2026"),
+    ],
+)
+def test_top_names_the_period_at_the_tables_own_frequency(freq, periods, expected):
+    """Every row used to be named by its month whatever the table was: a
+    daily table gave three different days the same label, a quarterly one
+    printed Q3 as "2024-07" and a yearly one printed 2026 as "2026-01"."""
+    frame = pd.DataFrame({"period": pd.to_datetime(periods), "hacim": [1.0, 2.0, 3.0]})
+    context = _top_context(
+        frame,
+        lineage={
+            "t01_read_url.hacim": ColumnInfo(
+                name="hacim", freq=freq, tool="get_series", step_no=1
+            )
+        },
+    )
+
+    result = make_transform_table().fn(
+        TransformArgs(op="top", column="hacim", n=1, table_ref="t01_read_url"),
+        context,
+    )
+
+    assert result.ok
+    assert expected in result.summary
+
+
+def test_top_refuses_a_flag_column():
+    """Its "highest" rows are just the flagged ones, which `mark` already
+    listed, and ranking them puts bare 1/0 into the tool output as figures an
+    answer could then quote."""
+    frame = pd.DataFrame(
+        {
+            "period": pd.to_datetime(["2026-01-01", "2026-02-01"]),
+            "isaret": pd.array([True, False], dtype="boolean"),
+        }
+    )
+
+    result = make_transform_table().fn(
+        TransformArgs(op="top", column="isaret", table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert not result.ok
+    assert "mark zaten listeler" in result.summary
+
+
+def test_an_operation_that_needs_periods_refuses_a_table_without_them():
+    """A printed table read from a URL has named rows, not dated ones. This
+    used to escape as a bare `KeyError: 'period'`."""
+    frame = pd.DataFrame({"ay": ["Ocak", "Subat"], "hacim": [1.0, 2.0]})
+
+    result = make_transform_table().fn(
+        TransformArgs(op="diff", column="hacim", table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert not result.ok
+    assert "donem (period) sutunu yok" in result.summary
+    assert "top kullanilabilir" in result.summary
 
 
 def test_top_names_the_rows_where_a_column_is_highest():

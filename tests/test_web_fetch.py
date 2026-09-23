@@ -8,6 +8,7 @@ name to 127.0.0.1 for real would depend on the developer's DNS.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import requests
@@ -18,6 +19,7 @@ from lakehouse_agent.web.fetch import (
     cache_path,
     check_url,
     fetch,
+    redact_url,
 )
 
 
@@ -240,3 +242,87 @@ def test_two_addresses_never_share_a_cache_file(tmp_path):
 
     assert first != second
     assert first.suffix == ".pdf" and query.suffix == ""
+
+
+# --- what the 23 Sep review found --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "100.64.1.1",  # carrier-grade NAT: the default pod network on EKS
+        "100.127.255.254",
+        "192.0.0.1",  # IETF protocol assignments
+        "198.18.0.1",  # benchmarking range
+    ],
+)
+def test_addresses_that_are_not_globally_routable_are_refused(address):
+    """The guard used to be five separate predicates (private, loopback,
+    link-local, reserved, multicast). Every one of them returns False for
+    100.64.1.1, so carrier-grade NAT went straight through. `is_global` is
+    the property that actually means "on the public internet"."""
+    with pytest.raises(WebFetchError, match="ic aga"):
+        check_url(f"http://{address}/x.csv", resolve=_resolve_to(address))
+
+
+def test_a_host_that_resolves_to_nothing_is_refused():
+    """An empty answer skipped the loop body entirely and returned the host
+    as checked."""
+
+    def resolve(host, port, *args, **kwargs):  # noqa: ANN001, ARG001
+        return []
+
+    with pytest.raises(WebFetchError, match="hicbir adrese cozulmedi"):
+        check_url("http://bos.example.com/x.csv", resolve=resolve)
+
+
+def test_a_connection_that_lands_somewhere_else_is_refused_before_the_body():
+    """DNS rebinding: the guard resolves the name, then hands the *name* to
+    the HTTP client, which resolves it again. A record that changes between
+    the two defeats the pre-flight check entirely, so the socket's actual
+    peer is checked once more before a byte of the body is read."""
+
+    class _Sock:
+        def getpeername(self):
+            return ("169.254.169.254", 80)
+
+    class _Raw:
+        _connection = type("c", (), {"sock": _Sock()})()
+
+    response = _Response(body=b"secret")
+    response.raw = _Raw()
+
+    with pytest.raises(WebFetchError, match="ic aga"):
+        fetch(
+            "http://rebind.example.com/x.csv",
+            root=Path("/nonexistent"),
+            session=_Session(response),
+            resolve=_resolve_to("93.184.216.34"),
+        )
+
+
+def test_a_key_in_the_address_is_redacted_everywhere_it_is_stored(tmp_path):
+    """CLAUDE.md: an address that is logged or stored has its key removed.
+    `read_url` takes its address from a prompt, so a key-bearing one is the
+    plausible case, and the record sits in the repo tree."""
+    url = "https://veri.example.com/rapor.csv?key=SUPERSECRET&yil=2026"
+    document = fetch(
+        url,
+        root=tmp_path,
+        session=_Session(_Response(body=b"a,b\n1,2\n")),
+        resolve=_resolve_to("93.184.216.34"),
+    )
+
+    record = json.loads(
+        document.path.with_suffix(document.path.suffix + ".json").read_text()
+    )
+    assert "SUPERSECRET" not in json.dumps(record)
+    assert record["url"].endswith("key=***&yil=2026")
+    # The raw address is still what was fetched, and still what is cached.
+    assert document.url == url
+
+
+def test_redaction_leaves_ordinary_parameters_alone():
+    assert redact_url("https://x/y?yil=2026") == "https://x/y?yil=2026"
+    assert redact_url("https://x/y") == "https://x/y"
+    assert redact_url("https://x/y?token=abc&a=1") == "https://x/y?token=***&a=1"

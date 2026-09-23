@@ -83,10 +83,13 @@ karar ver.
     adım sınırı vardır; aramaya devam edersen veriyi çekecek adım kalmaz ve
     tur cevapsız biter. Elindeki en uygun adayla ilerle, seçimini cevapta yaz.
 
-13. **"Hangi aylar" sorusunu araca cevaplat.** Koşula uyan dönemleri kendin
-    sayma; `transform_table` ile `op="mark"` kullan, araç ayları listeler.
-    Olağandışı değer sorulursa `detect_anomalies`, kırılma ya da eğilim
-    değişimi sorulursa `detect_changes` kullan.
+13. **"Hangi dönem" sorusunu araca cevaplat.** Koşula uyan dönemleri kendin
+    sayma; `transform_table` ile `op="mark"` kullan, araç dönemleri listeler.
+    "Hangi ay en yüksek / en düşük" için `op="top"` kullan (`n` kadar dönem,
+    `ascending=true` ile en düşük); bu işlem sütun eklemez. Olağandışı değer
+    sorulursa `detect_anomalies`, kırılma ya da eğilim değişimi sorulursa
+    `detect_changes` kullan. Araçların yazdığı dönem adını olduğu gibi
+    kullan: çeyreklik tabloda "2024-Q2", günlükte tam tarih gelir.
 
 14. **Cevabı burada yazma.** Bir aracın sonucunu gördükten sonra ya sıradaki
     aracı çağır ya da işin bittiğini tek cümleyle söyle ("Veriler hazır.").

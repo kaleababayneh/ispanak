@@ -11,7 +11,11 @@ guards here are not decoration:
   link-local address (169.254.169.254 is the cloud metadata service) is
   refused rather than fetched from inside our own network;
 * the body is read in chunks against a byte cap, so a 2 GB file cannot take
-  the process down, and the whole call is held to one deadline.
+  the process down. The timeouts are requests' own (connect, then per-read);
+  they are not a deadline on the whole call, so a server that trickles bytes
+  can outlast the step that started it. The step timeout is what ends the
+  turn; it does not stop the thread (`loop.py`), which is why the byte cap
+  matters more than the clock here.
 
 What comes back is stored under `data/adhoc/url/` with the request beside it
 (url, status, content type, time) -- bronze discipline for demo-time data: the
@@ -29,7 +33,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import requests
 
@@ -77,6 +81,58 @@ class Fetched:
         return Path(urlparse(self.final_url).path).name
 
 
+#: Query parameters whose value is a secret. A person pasting an address into
+#: the prompt may well paste one with a key in it, and this module stores the
+#: address next to the bytes and hands it to the model as a source.
+_SECRET_PARAMS = frozenset(
+    {
+        "key",
+        "apikey",
+        "api_key",
+        "token",
+        "access_token",
+        "auth",
+        "password",
+        "secret",
+        "signature",
+        "sig",
+    }
+)
+
+
+def redact_url(url: str) -> str:
+    """`?key=abc123` -> `?key=***`, for anything stored, logged or shown.
+
+    CLAUDE.md's rule is written for `fetch_log`, but it is about what lands on
+    disk and in front of a person, and this module does both. The raw address
+    is still used to make the request and to resolve relative links; only the
+    copies leave redacted.
+    """
+    parsed = urlparse(url)
+    if not parsed.query:
+        return url
+    parts = []
+    for piece in parsed.query.split("&"):
+        name, sep, _value = piece.partition("=")
+        parts.append(f"{name}=***" if sep and name.lower() in _SECRET_PARAMS else piece)
+    return urlunparse(parsed._replace(query="&".join(parts)))
+
+
+def _refuse_if_internal(address: str, host: str) -> None:
+    """Raise unless `address` is a public, routable one.
+
+    `not is_global` rather than a list of `is_private`/`is_loopback`/...:
+    those five miss carrier-grade NAT (100.64.0.0/10, measured -- every one of
+    them returns False for 100.64.1.1), which is the default pod network on
+    several container platforms, and they would miss whatever range comes
+    next. `is_global` is the property that means "routable on the public
+    internet", which is the only thing this tool has any business reaching.
+    """
+    parsed = ipaddress.ip_address(address)
+    if not parsed.is_global:
+        raise WebFetchError(f"{host} ic aga ({parsed}) cozuluyor; bu adres okunmaz.")
+
+
 def check_url(url: str, *, resolve=socket.getaddrinfo) -> str:
     """Return the host, or raise `WebFetchError`. See the module docstring."""
     parsed = urlparse(url.strip())
@@ -92,19 +148,33 @@ def check_url(url: str, *, resolve=socket.getaddrinfo) -> str:
         infos = resolve(host, parsed.port or (443 if parsed.scheme == "https" else 80))
     except OSError as exc:
         raise WebFetchError(f"Alan adi cozulemedi: {host}") from exc
+    if not infos:
+        raise WebFetchError(f"Alan adi hicbir adrese cozulmedi: {host}")
     for info in infos:
-        address = ipaddress.ip_address(info[4][0])
-        if (
-            address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_reserved
-            or address.is_multicast
-        ):
-            raise WebFetchError(
-                f"{host} ic aga ({address}) cozuluyor; bu adres okunmaz."
-            )
+        try:
+            _refuse_if_internal(info[4][0], host)
+        except ValueError as exc:  # not an IP literal at all
+            raise WebFetchError(f"{host} icin gecersiz adres dondu.") from exc
     return host
+
+
+def _peer_address(response: requests.Response) -> str | None:
+    """The address the socket actually connected to, if it can be read.
+
+    `check_url` resolves the name itself and then hands the *name* to the HTTP
+    client, which resolves it again. A DNS answer that changes between the two
+    lookups defeats the guard entirely (classic rebinding), so the connection
+    is checked once more here, before a single byte of the body is read.
+    Best effort: with a stubbed session, or a urllib3 that keeps its socket
+    elsewhere, there is nothing to read and the pre-flight check stands alone.
+    """
+    connection = getattr(getattr(response, "raw", None), "_connection", None)
+    sock = getattr(connection, "sock", None)
+    try:
+        peer = sock.getpeername() if sock is not None else None
+    except OSError:  # pragma: no cover - closed between reading and asking
+        return None
+    return str(peer[0]) if peer else None
 
 
 def cache_path(url: str, *, root: Path = ADHOC_ROOT) -> Path:
@@ -175,14 +245,19 @@ def fetch(
             raise WebFetchError("Istek yapilamadi.")
         if response.status_code != 200:
             raise WebFetchError(
-                f"Adres {response.status_code} dondurdu: {current}",
+                f"Adres {response.status_code} dondurdu: {redact_url(current)}",
             )
+        peer = _peer_address(response)
+        if peer is not None:
+            _refuse_if_internal(peer, urlparse(current).hostname or current)
         body = _read_capped(response)
         content_type = (
             (response.headers.get("Content-Type") or "").split(";")[0].strip()
         )
     except requests.RequestException as exc:
-        raise WebFetchError(f"Adres okunamadi ({type(exc).__name__}): {url}") from exc
+        raise WebFetchError(
+            f"Adres okunamadi ({type(exc).__name__}): {redact_url(url)}"
+        ) from exc
     finally:
         if response is not None:
             response.close()
@@ -193,9 +268,11 @@ def fetch(
     record_path.write_text(
         json.dumps(
             {
-                "url": url,
-                "final_url": current,
-                "http_status": 200,
+                # Redacted on the way to disk: this file sits in the repo tree
+                # and a pasted address can carry a key.
+                "url": redact_url(url),
+                "final_url": redact_url(current),
+                "http_status": response.status_code,
                 "content_type": content_type,
                 "fetched_at": fetched_at,
                 "bytes": len(body),
@@ -204,7 +281,12 @@ def fetch(
         ),
         encoding="utf-8",
     )
-    logger.info("web: %s okundu (%d bayt, %s)", url, len(body), content_type or "?")
+    logger.info(
+        "web: %s okundu (%d bayt, %s)",
+        redact_url(url),
+        len(body),
+        content_type or "?",
+    )
     return Fetched(
         url=url,
         final_url=current,

@@ -62,7 +62,7 @@ jobs:
       - name: Testler
         run: uv run pytest --junit-xml=junit.xml
 
-      # 21 test gerçek gold verisi olmadığında atlanıyor (gold repoda olduğu
+      # 39 test gerçek gold verisi olmadığında atlanıyor (gold repoda olduğu
       # için normalde hiçbiri atlanmaz). Biri o atlama koşulunu bozarsa BÜTÜN
       # testler atlanır ve bu iş yine yeşil yanar -- yani koruma sessizce
       # kaybolur. Aşağıdaki taban onu görünür kılıyor.
@@ -76,7 +76,7 @@ jobs:
           uv run python - <<'PY'
           import sys, xml.etree.ElementTree as ET
 
-          MIN_RUN = 500
+          MIN_RUN = 850
           suite = ET.parse("junit.xml").getroot().find("testsuite")
           total = int(suite.get("tests"))
           skipped = int(suite.get("skipped"))

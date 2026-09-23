@@ -430,11 +430,22 @@ def build(
     db = lancedb.connect(str(path))
     table = db.create_table(TABLE_NAME, frame, mode="overwrite")
     table.create_index("text", config=FTS())
+    from lakehouse_agent.config import get_agent_settings
+
+    try:
+        model = get_agent_settings().mia_embed_model
+    except Exception:  # noqa: BLE001 - no key here is not a reason not to build
+        model = ""
     manifest = {
         "digest": digest(list(catalog["series_id"]), texts),
         "rows": len(frame),
         "failed": len(failed),
         "dim": int(vectors.shape[1]) if len(vectors) else 0,
+        # Which model wrote these vectors. Without it, an index built by one
+        # embedding model and queried by another of the same width returns
+        # cosine numbers that mean nothing at all, and nothing anywhere says
+        # so; a different width at least raises. `LakeAdapter` compares it.
+        "embed_model": model,
         "built_at": datetime.now(UTC).isoformat(),
     }
     meta[meta["series_id"].isin(set(frame["series_id"]))].to_parquet(
@@ -466,10 +477,15 @@ class PoolIndex:
             table = lancedb.connect(str(path)).open_table(TABLE_NAME)
             stored = pd.read_parquet(path / IDS_NAME)
             ids = frozenset(stored["series_id"])
+            # Inside the guard with the rest: the manifest is written last and
+            # not atomically, so a build killed at that moment leaves a file
+            # that parses as nothing. Read outside, it raised out of every
+            # later search instead of degrading to the keyword match this
+            # handler exists for.
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 - a broken index is a missing one
             logger.warning("havuz indeksi acilamadi (%s): %s", type(exc).__name__, exc)
             return None
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         meta = stored if "family" in stored.columns else None
         return cls(table=table, manifest=manifest, ids=ids, meta=meta)
 

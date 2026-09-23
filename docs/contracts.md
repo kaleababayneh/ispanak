@@ -218,12 +218,14 @@ girmiyor: `approval_wait_s` yalnız onay kartının açık kaldığı süreyi tu
 adımın çalışma süresinden düşülüyor. Jüri kartı okurken tur düşmesin diye.
 
 Aktif tablo kuralı: `get_series(into="new")`, `run_sql`, `ingest` ve `read_url`
-aktif tabloyu değiştirir; analiz sonucu tabloları değiştirmez. Bunlardan
-**bugün üretim kaydında yalnızca `get_series` var** (`tools/toolset.py`:
-search_catalog, get_series, transform_table, detect_anomalies,
-detect_changes); `run_sql`, `ingest` ve `read_url` henüz yalnızca sahte
-araçlarda ya da ileriki adımlarda. Kural yazıldığı gibi kalıyor, sıraları
-geldiğinde uyacakları kural bu.
+aktif tabloyu değiştirir; analiz sonucu tabloları değiştirmez. Üretim kaydı
+(`tools/toolset.py`): search_catalog, get_series, transform_table,
+detect_anomalies, detect_changes, **read_url**. `run_sql` ve `ingest` henüz
+yalnızca sahte araçlarda; kural sıraları geldiğinde uyacakları kural.
+
+`read_url` aktif tabloyu devraldığında bunu **uyarıda söyler** ve önceki
+tablonun adını verir: analizin ortasında okunan bir adres, sonraki her
+`into='active'` çağrısını sessizce başka tabloya yönlendiriyordu.
 
 ---
 

@@ -1051,3 +1051,103 @@ Bilerek değiştirilmedi (gerekçesiyle):
         - **Kullanılmayan `VerificationFlag` türleri** (`unit_mix`,
           `model_contradiction`) ve `NullVerifier`. İleriye dönük; kaldırmak
           sonraki dallarla çakışma riski taşıyor.
+
+## 23 Eylül incelemesi, ikinci tur (havuz genişletme dalı)
+Bağlam: `feat/pool-expansion` dört ayrı incelemeden geçti. Aşağıdakilerin
+        hepsi ölçülerek doğrulandı ve testle sabitlendi.
+Karar:  Web katmanı (demo günü prompt'tan adres geliyor, tehdit modeli bu):
+        - **Türkçe ondalık.** `pd.read_html` Anglo varsayılanlarıyla okuyordu:
+          "30,15" değeri `int64` 3015 olarak geliyordu, yani yüz kat hata, ve
+          sütun tamsayı geldiği için `prepare_table`'ın Türkçe onarımı da
+          göremiyordu. `thousands="."`, `decimal=","` verildi.
+        - **URL redaksiyonu.** CLAUDE.md kuralı yalnızca `fetch_log` için
+          yazılmıştı ama asıl mesele diske ve insanın önüne ne düştüğü.
+          `web/fetch.py::redact_url` eklendi; önbellek kaydı, log, hata
+          mesajları ve `Source` redakte ediliyor. İstek hâlâ ham adrese
+          gidiyor, göreli bağlantılar ham adresten çözülüyor.
+        - **CGNAT.** Beş ayrı yüklem (private/loopback/link-local/reserved/
+          multicast) 100.64.0.0/10 için hepsi False dönüyor, ölçüldü. Tek
+          yüklem `not is_global` oldu: "internette yönlendirilebilir mi"
+          sorusu zaten bu aracın sorması gereken tek soru.
+        - **DNS yeniden bağlama.** Kontrol adı kendi çözüp adresi HTTP
+          istemcisine *isim* olarak veriyordu; istemci yeniden çözüyordu. İki
+          çözüm arasında değişen kayıt korumayı tamamen atlatıyordu. Gövdeden
+          tek bayt okunmadan soketin gerçek karşı ucu yeniden kontrol ediliyor.
+          Elden geldiğince: saplama oturumda okunacak soket yok, o zaman ön
+          kontrol tek başına kalır.
+        - **Karesel regex.** `<script[^>]*>.*?</script>` bir kapanışsız açılışta
+          belgenin sonuna kadar tarayıp geri izliyordu; ölçülen 16 sn / 1,3 MB,
+          10 MB sınırında ~17 dakika, hem de adım zaman aşımının bırakıp
+          öldüremediği bir iş parçacığında. `str.find` ile tek geçişe çevrildi.
+          `<a>` etiketinin metni de 300 karakterle sınırlandı.
+        - **İki sütunlu PDF tablosu.** (etiket, değer) en yaygın basılı biçim
+          ve iki hücrede tam bir sayı içeriyor; kesin çoğunluk kuralı bunu
+          başlık satırı sayıyordu, dolayısıyla veri satırı hiç bulunmuyor ve
+          tablo başlıksız dönüyordu. Eşik "yarısı" oldu.
+        - **Bağlantı listesi.** Yalnızca http(s). Sayfa `file:///etc/passwd.csv`
+          listelediğinde modele denenecek adres menüsü veriyorduk; `check_url`
+          zaten reddediyor ama liste modelin önüne hiç gelmemeli.
+        - **Güvenilmez metin sınırı.** Sayfa metni ve bağlantı etiketleri artık
+          `>>> sayfa metni (guvenilmez) >>>` ... `<<<` arasında. Sınır olmadan
+          bir sayfa harness'ın kendi `Uyarilar:` / `Kalite:` satırlarını taklit
+          edebiliyordu, ve doğrulayıcı araç mesajlarını kanıtlanmış saydığı
+          için uydurma bir sayı cevapta bayrak yemeden geçebiliyordu.
+        - **Onay kartı.** Araç `adres`/`amac` gönderiyor, kart `source`/`detail`
+          okuyor: kart "dis kaynak uzerinden veri cekilsin mi?" diyor ve insan
+          hiç görmediği adresi onaylıyordu. İki anahtar da veriliyor.
+        - **Aktif tablo.** `read_url` en büyük tabloyu aktif yapmaya devam
+          ediyor ama artık uyarıda söylüyor ve önceki tablonun adını veriyor.
+        Havuz ve araçlar:
+        - **Yükseltme (CLAUDE.md #4 ihlali).** `wide()`'ın docstring'i hep
+          "daha seyrek seri kendi dönemlerinde bırakılır" diyordu; koruma
+          yalnızca `LakeAdapter.to_freq`'te vardı ve üretim yolu `gold.wide`
+          üzerinden onu atlıyordu. Ölçüldü: 4 satırlık çeyreklik FinTürk serisi
+          10 satırlık aylık tabloya dönüşüyor ve her değer yanlış aya
+          etiketleniyordu. `wide()` artık kendi kontrolünü yapıyor.
+        - **Dönem etiketleri.** `top` ve `mark` her satırı ay olarak
+          adlandırıyordu: günlük tabloda dört ayrı gün aynı etiketi alıyor,
+          çeyreklikte Q2 "2024-04", yıllıkta 2024 "2024-01" oluyordu. Doğru
+          biçimlendirici (`_label`) zaten vardı; tablonun frekansı soyağacından
+          okunup ona veriliyor. `mark` dönem kelimesini de (`ay`/`ceyrek`/`yil`)
+          frekansa göre yazıyor.
+        - **`top` ve bayrak sütunu.** Rebase'te `arithmetic=False` seçilmişti;
+          bir `mark` sütununu sıralamak hiçbir şey cevaplamıyor (işaretli
+          dönemleri `mark` zaten listeliyor) ve araç çıktısına çıplak 1/0
+          sokuyor. `top` artık reddediyor; `_row_labels` için seçim doğruydu,
+          orada soru "bu metin mi".
+        - **`period` olmayan tablo.** `transform_table` çıplak `KeyError`
+          veriyordu. Bu dal dönemsiz tabloları birinci sınıf yaptığı için
+          model oraya ulaşabiliyor; anlaşılır bir ret dönüyor.
+        - **Arama metni hizası.** İndeks veri grubunun adını metne katarak
+          kuruluyordu, yedek arama katmadan puanlıyordu; `search_text`'in kendi
+          belgesi "Genel Endeks" ancak grup adıyla TÜFE olarak bulunabilir
+          diyor. Yedek artık aynı metinle puanlıyor.
+        - **Yer ailesi uyarısı.** Kelime yedeği `rank`'ın `standing` bilgisini
+          atıyordu; 81 ili tek adayın arkasına katlayıp bunu söylememek, havuz
+          tek il tutuyormuş gibi görünmesine yol açıyordu. Yedek de uyarıyor.
+        - **İndeks sağlamlığı.** `manifest.json` okuması `try` dışındaydı;
+          dosya atomik yazılmadığı için yarıda kesilen bir kurulum her aramayı
+          düşürüyordu. İçeri alındı. Manifest artık embedding modelinin adını
+          da tutuyor: aynı boyutta başka bir modelle kurulmuş indeks anlamsız
+          kosinüs döndürüyor ve hiçbir şey uyarmıyordu.
+        Belgeler: `contracts.md` §5 `read_url`'ü üretim kaydında gösteriyor;
+        CI'ın atlama sayacı 21'den 39'a, alt sınır 500'den 850'ye çıktı
+        (885 testin %43'ünü kaybetsek koruma uyarmıyordu); `docs/licenses.md`
+        dört yeni bağımlılık ve bağımlılıkları için yeniden üretildi (66 paket,
+        hepsi permissive).
+Uygulanmadı (gerekçesiyle):
+        - **FinTürk `obs_date` çeyreğin ilk ayı.** Sözleşme "kaynağın verdiği
+          tarih" diyor, bronze "2021-12" diyor, gold 2021-10 yazıyor. Düzeltmek
+          gold'u yeniden üretmeyi gerektirir (33 MB parquet, yeniden ingest);
+          veri üretimi ayrı bir iş ve pencere sınırı bugünkü aralıkta güvenli.
+        - **BDDK etiket yeniden numaralandırması** ("(2 den 24'e)" →
+          "(2 den 26'ya)") bir kalemi iki seriye bölüyor; gold'da şu an 6 kalem
+          böyle. Çözümü `label_key`'in düzyazı numaralandırmayı da soğurması ve
+          ardından yeniden ingest; aynı sebeple ertelendi.
+        - **`to_freq`'in `last`'i NaN atlıyor** (11.287 ay kovası, %1,86): ay
+          sonu gözlemi eksikse bir önceki değer "ay sonu bakiyesi" diye
+          sunuluyor. Düzeltmek havuzdan türeyen her sayıyı değiştirir; ölçüp
+          ayrı bir adımda ele almak doğru.
+        - **Seri seçim kapısının 0,9 oranı** 45 binde yeniden ölçülmedi.
+        - **`_recent_rate`** hâlâ istem okuma süresini token hızına katıyor;
+          doğrusu akış (streaming) istiyor.
