@@ -1,4 +1,4 @@
-# Sözleşmeler — v0.4
+# Sözleşmeler — v0.5
 
 İki şerit aynı anda geliştirip sonra birleştiriyor. Bu belge, "benim modülüm
 seninkine nasıl bağlanır" sorusunun yazılı cevabı. Amacı tam bir spesifikasyon
@@ -19,14 +19,27 @@ onaylar, sürüm numarası artar.
 A'nın `CLAUDE.md`'sindeki kararlar geçerli, burada tekrar edilmiyor. Özet:
 
 - `data/gold/observations.parquet` sütunları, tam olarak ve bu sırada:
-  `series_id, period, freq, value, unit, source, fetched_at`
+  `series_id, period, freq, value, unit, source, fetched_at, obs_date`
+  (`obs_date` 22 Eyl 2026, v0.5: kaynağın değere verdiği tarih. Haftalık seride
+  gözlem günü (Cuma, tatil haftasında başka gün), günlükte günün kendisi;
+  aylık/üç aylık/yıllıkta kaynak gün vermediği için `period`.)
 - `data/gold/series_catalog.parquet` sütunları (15):
   `series_id, name_tr, name_en, source, freq, unit, kind, agg_method, cum_type,
   start_date, end_date, topic, tags, metadata_url, notes`
 - `series_id` önekli: `evds:TP.KTF12`, `bddk:aylik:tuketici:konut:TL:sektor`
 - `period` = dönemin ilk günü. Aylık ayın 1'i, haftalık Pazartesi.
-- `kind ∈ stock | flow | rate | index` — hem hesabı hem cevabın dilini belirler
-- `cum_type ∈ none | ytd | since_start`
+- `kind ∈ stock | flow | rate | index` — cevabın dilini belirler (fark yüzde
+  puan mı, enflasyondan arındırılabilir mi). Kurallar hiçbir türe yerleştiremediği
+  seride boş (`lake/classify.py`, `docs/kind_review.md`). v0.5'ten beri hesabı
+  belirlemiyor: bkz. `agg_method`.
+- `agg_method ∈ last | sum | avg | first | min | max` — daha seyrek frekansa
+  çevirirken ne alınacağı. EVDS'de kaynağın kendi önerisi (`DEFAULT_AGG_METHOD`),
+  BDDK'da tablo tanımı (`ingest/bddk_tables.yaml`). `to_freq` bunu kullanır.
+- `cum_type ∈ none | ytd | since_start` — **ham verinin** kümülatifliği. `ytd`
+  seri (BDDK kâr-zarar) silver'da aylık akıma çevrilir; gold'daki değer akımdır.
+- Pencere gözlem tarihine göre: `2021-01-01 <= obs_date <= 2026-06-30`
+  (`lake/gold.py` `GOLD_SINCE`/`GOLD_UNTIL`). `get(start, end)` de `obs_date`'e
+  göre süzer.
 - TÜFE = `evds:TP.TUKFIY2025.GENEL`, 2025=100. **Zincirleme yok**,
   `evds:TUFE_ZINCIR` hiçbir yerde geçmiyor.
 
@@ -53,23 +66,30 @@ sahte katman olur, agent kodu değil.
 
 ```python
 def get(series_ids: list[str], start: str, end: str) -> pd.DataFrame
-    # long biçim; sütunlar TAM OLARAK: series_id, period, freq, value, unit, source, fetched_at
+    # long biçim; sütunlar TAM OLARAK: series_id, period, freq, value, unit, source,
+    # fetched_at, obs_date. Pencere obs_date'e göre.
 
 def wide(series_ids: list[str], start: str, end: str, freq: str = "M") -> pd.DataFrame
-    # 'period' + her series_id için bir sütun
+    # 'period' + her series_id için bir sütun; her seri kendi agg_method'uyla
 
-def to_freq(df, kind: str, freq: str) -> tuple[pd.DataFrame, str]
-    # stock -> son değer, flow -> toplam, rate/index -> ortalama
+def to_freq(df, kind: str | None, freq: str, *, agg_method: str | None = None)
+        -> tuple[pd.DataFrame, str]
+    # yöntem: agg_method verilirse o, yoksa kind'ın varsayılanı (stock -> son,
+    # flow -> toplam, rate/index -> ortalama). v0.4'te kaldırılan agg_method
+    # v0.5'te geri geldi: bitiş değeri yayımlanan bir oran kind'a göre
+    # ortalanıyordu.
+    # değer, obs_date'i (yoksa period'u) hangi döneme düşüyorsa oraya sayılır:
+    # 4 Nisan Cuma'lı hafta Nisan'ındır.
     # yalnızca yüksek frekanstan düşüğe; tersi veri icat etmektir
-    # ikinci dönüş değeri uygulanan formül (plan 4.1: her dönüşüm ne yaptığını
-    # söyler, sütunun soyağacına o metin girer)
-    # agg_method parametresi KALDIRILDI: kind zaten yöntemi belirliyor ve
-    # gerçek analysis/transforms.to_freq onu almıyor
+    # ikinci dönüş değeri uygulanan formül (plan 4.1)
 
 def search(query: str, k: int = 20) -> list[CatalogHit]
     # havuzun kendi kataloğunda (gold series_catalog) arar; havuzda olmayanı döndürmez
     # LakeAdapter ayrıca search_detailed(query, k) -> (hits, notlar) sunar:
-    # embedding yapılamadığında kelime eşleşmesine düşüldüğünü not düşer
+    # embedding yapılamadığında, büyük havuzda indeks kurulmamışsa ya da indeks
+    # eski katalogdan kurulmuşsa bunu not düşer. Büyük havuz (> 2000 seri)
+    # data/pool_index (LanceDB) üzerinden aranır; kurulum:
+    # python -m lakehouse_agent.lake.pool_index
 
 def catalog_lookup(series_ids: list[str]) -> pd.DataFrame     # 15 katalog sütunu
 
@@ -90,6 +110,15 @@ Embedding yapılamazsa kelime eşleşme oranı (0–1; Türkçe harfler ASCII'ye
 katlanır, alt çizgi kelime ayırır). 0,40'ın altındaki aday hiç önerilmez;
 eşiğin ölçümü `docs/decisions.md`'de.
 
+**Sıra skorla aynı şey değil** (22 Eyl, 45 bin serilik havuz): skor kosinüs
+benzerliği olarak kalır, ama adaylar `lake/pool_index.rank` sırasına göre
+sunulur. Kaynağın seri hakkında söylediğine bakar: sorgu yer adı söylemiyorsa
+il/bölge serileri ulusal serilerden sonra gelir ve aynı kalemin il kırılımları
+tek adayda toplanır (aday kaç seriyi temsil ettiğini nota yazar); EVDS'in
+"(Arşiv)" işaretlediği seri güncelden sonra gelir; sorgu bir veri grubunun adını
+söylüyorsa o grubun ana serisi öne gelir. Ölçüm: `docs/decisions.md`, "Havuz
+araması: sıralama kuralları".
+
 `CatalogHit.match` adayın nasıl bulunduğunu söyler: `code` | `semantic` |
 `keyword`. `search_catalog` bunu modele `eslesme: kod | anlam | kelime` olarak
 gösterir. Kelime eşleşmesiyle hiç aday çıkmazsa araç "havuzda yok" demez:
@@ -97,7 +126,9 @@ kaba arama bir şey bulamadı diye veri yok sayılmaz. Embedding hatası 180 sn
 hatırlanır; o sürede aramalar doğrudan kelime eşleşmesine geçer.
 
 `start_date`/`end_date` havuzun **gerçek kapsamı** (değer içeren ilk ve son ay,
-`YYYY-MM`), katalogdaki kaynak yayın aralığı değil.
+`YYYY-MM`, `obs_date`'e göre), katalogdaki kaynak yayın aralığı değil. Kapsam
+`lake/gold.py::coverage()` ile okunur; modele açık `run_sql`'in zorunlu
+`LIMIT 1000`'i havuzun tamamını kesiyordu.
 
 "Belirsiz seri" onayı **yalnızca oranla** ölçülüyor (`top2 >= top1 × 0.9`).
 Eski EVDS indeksinde skor sıradan türetildiği için (1/(61+sıra)) bu oran her
@@ -187,12 +218,14 @@ girmiyor: `approval_wait_s` yalnız onay kartının açık kaldığı süreyi tu
 adımın çalışma süresinden düşülüyor. Jüri kartı okurken tur düşmesin diye.
 
 Aktif tablo kuralı: `get_series(into="new")`, `run_sql`, `ingest` ve `read_url`
-aktif tabloyu değiştirir; analiz sonucu tabloları değiştirmez. Bunlardan
-**bugün üretim kaydında yalnızca `get_series` var** (`tools/toolset.py`:
-search_catalog, get_series, transform_table, detect_anomalies,
-detect_changes); `run_sql`, `ingest` ve `read_url` henüz yalnızca sahte
-araçlarda ya da ileriki adımlarda. Kural yazıldığı gibi kalıyor, sıraları
-geldiğinde uyacakları kural bu.
+aktif tabloyu değiştirir; analiz sonucu tabloları değiştirmez. Üretim kaydı
+(`tools/toolset.py`): search_catalog, get_series, transform_table,
+detect_anomalies, detect_changes, **read_url**. `run_sql` ve `ingest` henüz
+yalnızca sahte araçlarda; kural sıraları geldiğinde uyacakları kural.
+
+`read_url` aktif tabloyu devraldığında bunu **uyarıda söyler** ve önceki
+tablonun adını verir: analizin ortasında okunan bir adres, sonraki her
+`into='active'` çağrısını sessizce başka tabloya yönlendiriyordu.
 
 ---
 
@@ -285,6 +318,36 @@ Kullanım logu `data/logs/llm_usage.jsonl`, her mantıksal çağrı için tek sa
 
 ---
 
+## 7.1 Adres okuma (`read_url`, 22 Eyl)
+
+Demo günü prompt'ta URL verilecek (gereksinim: PDF, Excel, resim, metin).
+`tools/web_url.py` bunu okur; `web/fetch.py` indirir, `web/extract.py` ayrıştırır
+(ağ yalnızca ilkinde, bu yüzden ayrıştırma tamamen ağsız test edilir).
+
+- **Sınırlar:** yalnız `http(s)`; alan adı çözülür ve localhost/özel/link-local
+  adresler reddedilir (her yönlendirmede yeniden); 10 MB ve 50 sn; en çok 5
+  yönlendirme. Kimlik bilgisi gönderilmez.
+- **Önbellek:** indirilen dosya `data/adhoc/url/<hash>` ve yanında istek kaydı
+  (`url, final_url, http_status, content_type, fetched_at, bytes`). İkinci okuma
+  çağrı yapmaz. Havuza (gold) hiçbir şey yazılmaz.
+- **Çıkan her veri tablosu** oturuma ayrı tablo olarak girer (`t..._read_url`),
+  en büyüğü aktif tablo olur ve kalite kartı onun içindir. En çok 10 tablo;
+  fazlası sayılır ve söylenir. Yerleşim tabloları ve boş kabuklar elenir
+  (en az 2 sütun; sayfada bulunmuşsa en az 2 satır).
+- **Tablo çıkmazsa** sayfanın bağlandığı veri dosyaları (PDF/Excel/CSV)
+  adlarıyla listelenir — gereksinimin ilk hedefi tam olarak böyle bir sayfa.
+- `prepare_table` (lake adaptörü) her tabloyu temizler: adı ne olursa olsun
+  tarih sütunu `period` olur, Türkçe biçimli sayılar sayıya çevrilir, ne
+  yapıldığı kalite kartına yazılır.
+
+`transform_table`'a `top` işlemi eklendi: bir sütuna göre en yüksek (ya da
+`ascending` ile en düşük) satırları sıralar ve değerleriyle listeler. Tabloya
+sütun eklemez ve `period` sütunu olmayan tablolarda da çalışır — basılı bir
+tablonun satırları tarihli değil adlıdır ("Ocak / January"). "Hangi ay en
+yüksek" sorusunun cevabı böylece araçtan gelir, modelin saymasından değil.
+
+---
+
 ## 8. Onay noktaları
 
 Üç tane, fazlası değil. Kararı döngü verir, araçlar değil.
@@ -292,7 +355,7 @@ Kullanım logu `data/logs/llm_usage.jsonl`, her mantıksal çağrı için tek sa
 | Tür | Ne zaman | Seçenekler |
 |---|---|---|
 | `series_choice` | ilk iki adayın skor oranı eşiği aşarsa (sorguda koduyla geçen seriler hariç) | aday `series_id`'leri |
-| `fetch` | havuzda olmayan veri çekilmeden önce | `approve`, `cancel` |
+| `fetch` | havuzda olmayan veri çekilmeden önce (bugün: `read_url`) | `approve`, `cancel` |
 | `quality` | eksik oranı eşiği aşarsa, tekrar varsa, birim bilinmiyorsa | `continue`, `change_assumption`, `cancel` |
 
 Kimlikler İngilizce çünkü kodda karşılaştırılıyor; etiketler Türkçe çünkü
@@ -348,7 +411,7 @@ testinin diğer yarısı (`tests/test_lake_contract_parity.py`).
 |---|---|---|---|
 | 1 | `get()`, `wide(freq="M")` | `lake/gold.py` | A |
 | 2 | `to_freq()` | `analysis/transforms.py`, adapter sarıyor | A |
-| 3 | `search()` | `tools/lake_adapter.py::search_detailed` (22 Eyl'den beri; gold `series_catalog` üzerinde kosinüs, kelime eşleşmesi yedeği). `lake/catalog.py::search_catalog` + LanceDB indeksi yalnızca havuz dışı keşifte. | A |
+| 3 | `search()` | `tools/lake_adapter.py::search_detailed`, havuzun kendi kataloğu üzerinde (`lake/pool_index.py`, `data/pool_index`; kelime eşleşmesi yedeğiyle). `lake/catalog.py::search_catalog` + `data/catalog.lance` yalnızca havuz dışı keşifte. | B |
 | 4 | `profile_table()` | `lake/quality.py` (`QualityReport` buradan import ediliyor) | A |
 | 5 | `catalog_lookup()`, `prepare_table()` | `tools/lake_adapter.py` | B |
 | 6 | anomali ve kırılma sarmalayıcıları | `tools/analysis.py` | A |
@@ -357,10 +420,13 @@ testinin diğer yarısı (`tests/test_lake_contract_parity.py`).
 **`lake/prepare.py` yazılmayacak.** `catalog_lookup` ve `prepare_table`
 adapter'da; dört yüzeyi tek lake arayüzünde toplayan yer orası.
 
-**Kapandı (22 Eylül):** `gold.wide(freq="M")` dönüşüm formülünü hâlâ atıyor;
-`tools/lakehouse.py::get_series` onu `catalog_lookup`'ın frekansı ve türünden
-türetiyor: sütunun soyağacına `op="to_freq"` ve Türkçe formül, `warnings`'e
-"haftalık yayımlanıyor; aylık değere ... alınarak çevrildi" giriyor.
+**Kapandı (22 Eylül):** `gold.wide(freq=...)` dönüşüm formülünü hâlâ atıyor;
+`tools/lakehouse.py::get_series` onu `catalog_lookup`'ın frekansı ve
+`agg_method`'undan türetiyor: sütunun soyağacına `op="to_freq"` ve Türkçe
+formül, `warnings`'e "haftalık yayımlanıyor; aylık değere ... alınarak
+çevrildi" giriyor. `get_series(freq=D|W|M|Q|A)`, varsayılan M; serinin kendi
+frekansından sık bir tablo istenirse reddeder, aktif tabloya başka frekansta
+sütun eklemeyi de reddeder.
 
 B'den A'ya tek teslim: `MiaLLM.embed()`, katalog gömme için. **Hazır**
 (`llm.py`, ölçülen boyut 4096).

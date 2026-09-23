@@ -106,6 +106,60 @@ def test_to_freq_accepts_contract_freq_values_and_returns_period_first_day():
         assert first_period.date() == date(2024, 1, 1), freq
 
 
+def test_to_freq_agg_method_decides_over_kind():
+    """A rate EVDS publishes as an end-of-period value is still a rate; its
+    month is its last value, not the average (the source's own agg_method)."""
+    df = _series(
+        [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)], [10.0, 20.0, 30.0]
+    )
+
+    result, formula = transforms.to_freq(df, "rate", "Q", agg_method="last")
+
+    assert list(result["value"]) == [30.0]
+    assert "last" in formula
+
+
+def test_to_freq_puts_a_week_in_the_month_it_was_observed():
+    """Silver names a week by its Monday; the value is the Friday's. The week
+    of Monday 31 March 2025 was observed on Friday 4 April: April's."""
+    df = pd.DataFrame(
+        {
+            "period": [date(2025, 3, 24), date(2025, 3, 31), date(2025, 4, 7)],
+            "obs_date": [date(2025, 3, 28), date(2025, 4, 4), date(2025, 4, 11)],
+            "value": [1.0, 2.0, 3.0],
+        }
+    )
+
+    result, formula = transforms.to_freq(df, "stock", "M")
+
+    by_month = dict(
+        zip(result["period"].dt.strftime("%Y-%m"), result["value"], strict=True)
+    )
+    assert by_month == {"2025-03": 1.0, "2025-04": 3.0}
+    assert "gözlem tarihine göre" in formula
+
+
+def test_to_freq_names_a_week_by_its_monday():
+    """pandas' W-MON resample labelled Tuesday..Monday by the closing Monday;
+    silver's weeks are Monday..Sunday named by the opening one."""
+    days = list(pd.date_range("2024-06-03", periods=14, freq="D").date)  # Monday
+    df = _series(days, [1.0] * 14)
+
+    result, _ = transforms.to_freq(df, "flow", "W")
+
+    assert list(result["period"].dt.date) == [date(2024, 6, 3), date(2024, 6, 10)]
+    assert list(result["value"]) == [7.0, 7.0]
+
+
+def test_to_freq_a_gap_is_a_nan_row_not_a_missing_one():
+    df = _series([date(2024, 1, 1), date(2024, 3, 1)], [1.0, 3.0])
+
+    result, _ = transforms.to_freq(df, "stock", "M")
+
+    assert len(result) == 3
+    assert math.isnan(result["value"].iloc[1])
+
+
 def test_to_freq_rejects_unknown_kind():
     df = _series([date(2024, 1, 1)], [1.0])
     try:
@@ -441,3 +495,47 @@ def test_mark_periods_is_false_when_one_condition_is_definitely_false():
 def test_mark_periods_refuses_what_it_cannot_evaluate(conditions, match):
     with pytest.raises(ValueError, match=match):
         transforms.mark_periods(_scenario_diffs(), conditions)
+
+
+# --- year-to-date cumulative items (BDDK profit and loss) -----------------
+
+
+def test_decumulate_ytd_turns_running_totals_into_monthly_flows():
+    """Hand-computed: 10, 25, 45 year-to-date are flows of 10, 15, 20; the
+    next January starts again at its own value."""
+    df = _series(
+        [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1), date(2025, 1, 1)],
+        [10.0, 25.0, 45.0, 7.0],
+    )
+
+    result, formula = transforms.decumulate_ytd(df)
+
+    assert list(result["value"]) == [10.0, 15.0, 20.0, 7.0]
+    assert "Ocak" in formula
+
+
+def test_decumulate_ytd_leaves_a_month_after_a_gap_unknown():
+    """March minus January is two months' flow, not March's: not guessed."""
+    df = _series([date(2024, 1, 1), date(2024, 3, 1)], [10.0, 45.0])
+
+    result, _ = transforms.decumulate_ytd(df)
+
+    assert result["value"].iloc[0] == 10.0
+    assert math.isnan(result["value"].iloc[1])
+
+
+def test_year_to_date_is_the_inverse_and_stops_at_a_missing_month():
+    df = _series(
+        [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1), date(2025, 1, 1)],
+        [10.0, 15.0, 20.0, 7.0],
+    )
+
+    result, _ = transforms.year_to_date(df)
+    assert list(result["value"]) == [10.0, 25.0, 45.0, 7.0]
+
+    gappy = _series(
+        [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)], [10.0, None, 20.0]
+    )
+    result, _ = transforms.year_to_date(gappy)
+    assert result["value"].iloc[0] == 10.0
+    assert result["value"].iloc[1:].isna().all()

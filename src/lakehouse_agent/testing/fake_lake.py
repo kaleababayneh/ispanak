@@ -132,18 +132,17 @@ _OBSERVATION_COLUMNS = [
     "unit",
     "source",
     "fetched_at",
+    "obs_date",
 ]
 
 _AGG_FOR_KIND = {"stock": "last", "flow": "sum", "rate": "mean", "index": "mean"}
-
-#: Same wording as `analysis/transforms.py`, because the string ends up in the
-#: column's lineage and the trust panel: two spellings of one operation read as
-#: two different operations to whoever is checking where a number came from.
-_KIND_TO_FORMULA = {
-    "stock": "value[period] = last(value[alt_dönem])",
-    "flow": "value[period] = sum(value[alt_dönem])",
-    "rate": "value[period] = mean(value[alt_dönem])",
-    "index": "value[period] = mean(value[alt_dönem])",
+_AGG_METHOD_TO_PANDAS = {
+    "last": "last",
+    "sum": "sum",
+    "avg": "mean",
+    "first": "first",
+    "min": "min",
+    "max": "max",
 }
 
 #: How coarse each frequency is. `to_freq` only ever moves up this scale.
@@ -297,7 +296,13 @@ def _weekly_from_monthly(monthly: pd.Series) -> pd.Series:
 
 
 def synthetic_observations() -> pd.DataFrame:
-    """The whole fake pool in long form: exactly the seven gold columns."""
+    """The whole fake pool in long form: exactly the gold columns.
+
+    `obs_date` equals `period` everywhere, the weekly rate included: the fake
+    observes its weeks on the Monday. The planted months are built from the
+    weeks whose Monday is in the month, and bucketing by observation date
+    must keep finding exactly those.
+    """
     frames: list[pd.DataFrame] = []
 
     def add(series_id: str, values: pd.Series) -> None:
@@ -325,6 +330,7 @@ def synthetic_observations() -> pd.DataFrame:
 
     out = pd.concat(frames, ignore_index=True)
     out["period"] = pd.to_datetime(out["period"])
+    out["obs_date"] = out["period"]
     return out[_OBSERVATION_COLUMNS]
 
 
@@ -362,7 +368,8 @@ class FakeLake:
     # -- reads -------------------------------------------------------------
 
     def get(self, series_ids: list[str], start: str, end: str) -> pd.DataFrame:
-        """Long form, exactly the seven gold columns, `period` as datetime64."""
+        """Long form, exactly the gold columns, `period` as datetime64, the
+        window applied to `obs_date` as the real lake applies it."""
         missing = [sid for sid in series_ids if sid not in SCENARIO_SERIES]
         if missing:
             raise SeriesNotFound(missing, "Once search_catalog ile arama yapin.")
@@ -371,8 +378,8 @@ class FakeLake:
         frame = self._observations
         mask = (
             frame["series_id"].isin(series_ids)
-            & (frame["period"] >= lo)
-            & (frame["period"] <= hi)
+            & (frame["obs_date"] >= lo)
+            & (frame["obs_date"] <= hi)
         )
         return frame.loc[mask].reset_index(drop=True)
 
@@ -396,10 +403,13 @@ class FakeLake:
         long = self.get(series_ids, start, end)
         columns: list[pd.DataFrame] = []
         for series_id in series_ids:
-            part = long[long["series_id"] == series_id][["period", "value"]]
+            part = long[long["series_id"] == series_id][["period", "obs_date", "value"]]
             meta = SCENARIO_SERIES[series_id]
             if meta["freq"] != freq:
-                part, _formula = self.to_freq(part, meta["kind"], freq)
+                part, _formula = self.to_freq(
+                    part, meta["kind"], freq, agg_method=meta["agg_method"]
+                )
+            part = part[["period", "value"]]
             columns.append(part.rename(columns={"value": series_id}))
 
         out = columns[0]
@@ -410,13 +420,18 @@ class FakeLake:
         return out
 
     def to_freq(
-        self, df: pd.DataFrame, kind: str, freq: str
+        self,
+        df: pd.DataFrame,
+        kind: str | None,
+        freq: str,
+        *,
+        agg_method: str | None = None,
     ) -> tuple[pd.DataFrame, str]:
-        """Aggregate to a lower frequency using the rule implied by `kind`.
-
-        Balances take the period's last value, flows sum, rates and indices
-        average. Going the other way (monthly to weekly) would be inventing
-        data and is not supported.
+        """Aggregate to a lower frequency: by `agg_method` when given (the
+        catalog's), else by the rule `kind` implies -- balances take the
+        period's last value, flows sum, rates and indices average. Going the
+        other way (monthly to weekly) would be inventing data and is not
+        supported. Values are bucketed by `obs_date` when the frame has it.
 
         Returns the frame *and* the formula it applied, matching
         `analysis/transforms.to_freq`. The string is not decoration: plan 4.1
@@ -427,9 +442,14 @@ class FakeLake:
         a divergence the contract test could not see, because it checked
         parameter names and not return shapes.
         """
-        if kind not in _AGG_FOR_KIND:
+        if agg_method is not None:
+            if agg_method not in _AGG_METHOD_TO_PANDAS:
+                raise ValueError(f"Bilinmeyen agg_method: {agg_method!r}")
+            how = _AGG_METHOD_TO_PANDAS[agg_method]
+        elif kind in _AGG_FOR_KIND:
+            how = _AGG_FOR_KIND[kind]
+        else:
             raise ValueError(f"Bilinmeyen kind: {kind!r}")
-        how = _AGG_FOR_KIND[kind]
         offsets = {"M": "MS", "W": "W-MON"}
         if freq not in offsets:
             # `Freq` also declares D, Q and A. Only the two the pool actually
@@ -454,7 +474,12 @@ class FakeLake:
             )
 
         offset = offsets[freq]
-        resampled = df.set_index("period")["value"].resample(offset)
+        when = "obs_date" if "obs_date" in df.columns else "period"
+        resampled = (
+            df.assign(_when=pd.to_datetime(df[when]))
+            .set_index("_when")["value"]
+            .resample(offset)
+        )
         if how == "sum":
             # min_count=1, because `.sum()` of an empty window is 0.0, not NaN.
             # A month with no observations would otherwise be reported as a
@@ -464,9 +489,15 @@ class FakeLake:
         else:
             aggregated = getattr(resampled, how)()
 
-        grouped = aggregated.dropna().reset_index()
+        grouped = aggregated.dropna().reset_index().rename(columns={"_when": "period"})
         grouped["period"] = pd.to_datetime(grouped["period"])
-        return grouped, _KIND_TO_FORMULA[kind]
+        # Same wording as `analysis/transforms.to_freq`: the string ends up in
+        # the column's lineage, and two spellings of one operation read as two
+        # operations to whoever checks where a number came from.
+        formula = f"value[period] = {how}(value[alt_dönem])"
+        if when == "obs_date":
+            formula += "; alt dönem gözlem tarihine göre"
+        return grouped, formula
 
     def catalog_lookup(self, series_ids: list[str]) -> pd.DataFrame:
         missing = [sid for sid in series_ids if sid not in SCENARIO_SERIES]

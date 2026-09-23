@@ -1,0 +1,42 @@
+# BDDK Aylık Bülten: tablolar ve her birinin ne ölçtüğü.
+#
+# Keşif 22 Eyl 2026: https://www.bddk.org.tr/BultenAylik/ sayfasındaki tabloNo
+# listesi 1..17. Her tablonun bütün satırları ve bütün değer sütunları havuza
+# girer (sektör toplamı, TL raporu). Birim tablo başlığından okunur
+# ("Bilanço (milyon TL)"); satır ya da sütun kendi birimini söylüyorsa
+# ("... (%)", "Müşteri Sayısı") o geçer. Kurallar kodda: lake/bddk.py.
+#
+# kind       : stock (bakiye) | flow (akım) | rate (oran)
+# agg_method : daha seyrek frekansa çevirirken ne alınır (last | sum)
+# cum_type   : ham verideki kümülatiflik. "ytd" olan tablo silver'da aylık
+#              akıma çevrilir (akım_t = küm_t - küm_t-1, Ocak'ta akım = küm).
+#              Kâr-zarar kalemleri yıl başından kümülatiftir; veriyle doğrulandı
+#              (docs/data_dictionary.md, "BDDK kümülatif kalemler").
+tables:
+  - {tablo_no: 1, key: bilanco, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 2, key: kar_zarar, kind: flow, agg_method: sum, cum_type: ytd}
+  - {tablo_no: 3, key: krediler, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 4, key: tuketici, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 5, key: sektorel_kredi, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 6, key: kobi, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 7, key: sendikasyon, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 8, key: menkul, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 9, key: mevduat_tur, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 10, key: mevduat_vade, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 11, key: likidite, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 12, key: sermaye, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 13, key: yp_pozisyon, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 14, key: bilanco_disi, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 15, key: rasyo, kind: rate, agg_method: last, cum_type: none}
+  - {tablo_no: 16, key: diger, kind: stock, agg_method: last, cum_type: none}
+  - {tablo_no: 17, key: yurtdisi_rasyo, kind: rate, agg_method: last, cum_type: none}
+
+# Senaryonun ve kayıtlı canlı cevapların kullandığı kimlikler (17 Eyl'den beri).
+# Aynı satır ve sütuna bağlanır; üretilen kimliğin yerini alır.
+aliases:
+  "bddk:aylik:tuketici:konut:TL:sektor":
+    {tablo_no: 4, satir: "Tüketici Kredileri - Konut", sutun: "TP"}
+  "bddk:aylik:tuketici:toplam:TL:sektor":
+    {tablo_no: 4, satir: "Tüketici Kredileri (2+3+4)", sutun: "TP"}
+  "bddk:aylik:tuketici:konut_takip:TL:sektor":
+    {tablo_no: 4, satir: "Takipteki Konut Kredileri", sutun: "TP"}

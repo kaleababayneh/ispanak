@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,8 @@ import pandas as pd
 
 from lakehouse_agent.analysis import transforms
 from lakehouse_agent.contracts import CatalogHit, QualityReport, SeriesNotFound
-from lakehouse_agent.lake import gold, quality
+from lakehouse_agent.lake import gold, pool_index, quality
+from lakehouse_agent.lake.pool_index import POOL_INDEX_PATH, PoolIndex, search_text
 from lakehouse_agent.tools.lakehouse import column_name
 
 logger = logging.getLogger(__name__)
@@ -66,26 +68,24 @@ MIN_LEXICAL_SCORE = 1e-9
 #: one turn's budget later it is worth trying again.
 EMBED_RETRY_AFTER_S = 180.0
 
+#: Up to this many pool series, a search without a built index embeds the
+#: catalog itself (tests, a small demo pool). Beyond it, that would mean
+#: embedding tens of thousands of texts inside one search call.
+IN_MEMORY_LIMIT = 2000
+
+#: How many nearest series a search over the pool index reads before
+#: `pool_index.rank` orders and groups them: 81 provinces of one figure must
+#: not use up the candidates a national series would have come from, and a
+#: table's own total can sit below hundreds of its rows (measured 22 Sep:
+#: "tüketici fiyat endeksi" puts TÜFE's "Genel Endeks" 232nd by cosine,
+#: behind its sub-indices). Reading 500 costs ~0.1 s of the search.
+SEARCH_DEPTH = 500
+
 #: The note a keyword-fallback search carries (see `search_detailed`).
 KEYWORD_FALLBACK_NOTE = (
     "Anlamsal arama yapilamadi; seriler kelime eslesmesiyle bulundu, "
     "siralama daha kaba olabilir."
 )
-
-_FREQ_LABEL_TR = {
-    "D": "günlük",
-    "W": "haftalık",
-    "M": "aylık",
-    "Q": "üç aylık",
-    "A": "yıllık",
-}
-_KIND_LABEL_TR = {
-    "stock": "stok (bakiye)",
-    "flow": "akım",
-    "rate": "oran",
-    "index": "endeks",
-}
-_SOURCE_LABEL_TR = {"EVDS": "TCMB EVDS", "BDDK-Aylik": "BDDK Aylık Bülten"}
 
 #: Short, frequent words that say nothing about which series is meant, in
 #: their folded spelling (see `_tokens`).
@@ -110,6 +110,21 @@ def _embed_documents_cached(texts: list[str]) -> np.ndarray:
     return vectors
 
 
+def _configured_embed_model() -> str:
+    """The embedding model this process would query with, "" if unreadable.
+
+    Read once per adapter and compared with the one the index recorded. No
+    key in the environment is not a reason to fail; it just means there is
+    nothing to compare and the check stays quiet.
+    """
+    try:
+        from lakehouse_agent.config import get_agent_settings
+
+        return str(get_agent_settings().mia_embed_model)
+    except Exception:  # noqa: BLE001 - a missing key is a normal test state
+        return ""
+
+
 def _embed_query(query: str) -> np.ndarray:
     from lakehouse_agent.lake import catalog
 
@@ -126,15 +141,24 @@ class LakeAdapter:
         embed_documents: EmbedDocuments | None = None,
         embed_query: EmbedQuery | None = None,
         clock: Callable[[], float] = time.monotonic,
+        index_path: Path | None = None,
+        in_memory_limit: int = IN_MEMORY_LIMIT,
     ) -> None:
         self._catalog_path = Path(catalog_path or gold.SERIES_CATALOG_PATH)
         self._catalog: pd.DataFrame | None = None
+        self._texts: list[str] | None = None
+        self._index_path = Path(index_path or POOL_INDEX_PATH)
+        self._index: PoolIndex | None = None
+        self._index_checked = False
+        self._index_notes: list[str] = []
+        self._in_memory_limit = in_memory_limit
         self._embed_documents = embed_documents or _embed_documents_cached
         self._embed_query = embed_query or _embed_query
         self._clock = clock
         self._doc_vectors: np.ndarray | None = None
         self._embed_down_until: float | None = None
         self._coverage_cache: dict[str, tuple[str, str]] | None = None
+        self._embed_model = _configured_embed_model()
 
     # -- catalog -----------------------------------------------------------
 
@@ -209,7 +233,12 @@ class LakeAdapter:
     # -- pure transforms ---------------------------------------------------
 
     def to_freq(
-        self, df: pd.DataFrame, kind: str, freq: str
+        self,
+        df: pd.DataFrame,
+        kind: str | None,
+        freq: str,
+        *,
+        agg_method: str | None = None,
     ) -> tuple[pd.DataFrame, str]:
         """Aggregate to a lower frequency, refusing to go the other way.
 
@@ -226,7 +255,7 @@ class LakeAdapter:
                 f"Yuksek frekansa cevirme desteklenmiyor: {source} -> {freq}. "
                 "Dusuk frekanstan yuksege gitmek veri icat etmektir."
             )
-        return transforms.to_freq(df, kind, freq)
+        return transforms.to_freq(df, kind, freq, agg_method=agg_method)
 
     # -- search ------------------------------------------------------------
 
@@ -249,12 +278,13 @@ class LakeAdapter:
         name the tools give it (`evds:TP.KTF12`, `TP.KTF12'nin`, `TP_KTF12`)
         -- is answered by those series alone (`match="code"`). Otherwise the
         score is the cosine similarity between the query and each series'
-        search text (`search_text`), an absolute value comparable across
-        queries. If the embedding call fails (no key, MIA down), a keyword
-        match stands in and `KEYWORD_FALLBACK_NOTE` says the ranking is
-        coarser -- and that an empty result proves nothing; failing the whole
-        search when the pool is nine rows of text would be the worse outcome.
-        A failure is remembered for `EMBED_RETRY_AFTER_S`, so the searches
+        search text (`lake.pool_index.search_text`), an absolute value
+        comparable across queries: read from the pool index when one is
+        built (`python -m lakehouse_agent.lake.pool_index`), computed here
+        for a small pool (IN_MEMORY_LIMIT). If the embedding call fails, or a
+        large pool has no index, a keyword match stands in and a note says
+        so -- and that an empty result then proves nothing. An embedding
+        failure is remembered for `EMBED_RETRY_AFTER_S`, so the searches
         after it do not each wait out the same dead endpoint.
         """
         catalog_df = self._series_catalog().reset_index(drop=True)
@@ -264,38 +294,202 @@ class LakeAdapter:
                 :k
             ], []
 
-        texts = [search_text(row) for _, row in catalog_df.iterrows()]
-        notes: list[str] = []
+        small = len(catalog_df) <= self._in_memory_limit
+        index = None if small else self._pool_index()
+        notes = [] if small else list(self._index_notes)
+        standing: dict[int, int] = {}
         try:
-            scores = self._semantic_scores(query, texts)
-            floor, match = MIN_SIMILARITY, "semantic"
+            if small:
+                scores = self._semantic_scores(query, self._catalog_texts())
+                order = np.argsort(-scores, kind="stable")
+                scored = [(int(i), float(scores[i])) for i in order]
+            elif index is not None:
+                scored, standing = self._index_scores(query, index, catalog_df, k)
+            else:
+                notes.append(
+                    "Havuz arama indeksi kurulmamis; seriler kelime eslesmesiyle "
+                    "bulundu, siralama daha kaba olabilir."
+                )
+                hits, more = self._keyword_hits(query, catalog_df, index, k)
+                return hits, [*notes, *more]
         except Exception as exc:  # noqa: BLE001 - any embedding failure falls back
             logger.warning(
                 "search: anlamsal arama yapilamadi (%s: %s), kelime eslesmesi",
                 type(exc).__name__,
                 exc,
             )
-            # The id joins the keyword text only: "toplam tuketici kredileri"
-            # can then find the BDDK row named "Tüketici Kredileri (2+3+4)".
-            # The embedded text is left as calibrated (MIN_SIMILARITY).
-            scores = np.array(
-                [
-                    lexical_score(query, f"{text} | {series_id}")
-                    for text, series_id in zip(
-                        texts, catalog_df["series_id"], strict=True
-                    )
-                ]
-            )
-            floor, match = MIN_LEXICAL_SCORE, "keyword"
             notes.append(KEYWORD_FALLBACK_NOTE)
+            hits, more = self._keyword_hits(query, catalog_df, index, k)
+            return hits, [*notes, *more]
 
-        order = np.argsort(-scores, kind="stable")
-        hits = [
-            self._hit(catalog_df.iloc[i], float(scores[i]), match=match)
-            for i in order
-            if scores[i] >= floor
+        chosen = [
+            (position, score) for position, score in scored if score >= MIN_SIMILARITY
         ]
-        return hits[:k], notes
+        hits = [
+            self._hit(catalog_df.iloc[position], score, match="semantic")
+            for position, score in chosen[:k]
+        ]
+        for (position, _score), hit in zip(chosen[:k], hits, strict=True):
+            if standing.get(position):
+                notes.append(
+                    f"{hit.name_tr}: ayni kalemin {standing[position]} baska il/bolge "
+                    "serisi de var; belirli bir yer icin aramaya yer adini ekle."
+                )
+        return hits, notes
+
+    def _catalog_texts(self) -> list[str]:
+        """Every catalog row's search text, built once per adapter.
+
+        The datagroup name is included when the index recorded one, so this
+        matches `pool_index.catalog_texts` exactly. It did not: the index was
+        built with the table's own name in the text and the fallback scored
+        without it, which is what `search_text`'s docstring warns about --
+        "Genel Endeks" is only findable as the CPI through its datagroup
+        name. So the keyword fallback and the small-pool semantic path were
+        both matching on strictly weaker text than the index they stand in
+        for.
+        """
+        if self._texts is None:
+            catalog = self._series_catalog()
+            index = self._pool_index() if len(catalog) > self._in_memory_limit else None
+            tables: dict[str, str] = {}
+            if index is not None and index.meta is not None:
+                meta = index.meta
+                if "table" in meta.columns:
+                    tables = {
+                        sid: name
+                        for sid, name in zip(
+                            meta["series_id"], meta["table"], strict=True
+                        )
+                        if isinstance(name, str) and name
+                    }
+            self._texts = [
+                search_text(row, table=tables.get(row["series_id"]))
+                for _, row in catalog.iterrows()
+            ]
+        return self._texts
+
+    def _pool_index(self) -> PoolIndex | None:
+        """The built index, opened once; with a note when it was built from
+        another catalog than the one being searched."""
+        if not self._index_checked:
+            self._index_checked = True
+            self._index = PoolIndex.open(self._index_path)
+            if self._index is not None:
+                ids = set(self._series_catalog()["series_id"])
+                uncovered = len(ids - self._index.ids)
+                if uncovered:
+                    self._index_notes.append(
+                        f"Arama indeksi guncel degil: {uncovered} havuz serisi "
+                        "indekste yok, bunlar anlamsal aramada cikmaz."
+                    )
+                # An index built by one embedding model and queried by another
+                # of the same width returns cosine numbers that mean nothing,
+                # and nothing else would notice (a different width at least
+                # raises). Older indexes carry no model name; those are left
+                # alone rather than called stale.
+                built_with = str(self._index.manifest.get("embed_model") or "")
+                if built_with and built_with != self._embed_model:
+                    self._index_notes.append(
+                        f"Arama indeksi baska bir embedding modeliyle kurulmus "
+                        f"({built_with}); skorlar karsilastirilabilir degil, "
+                        "indeksi yeniden kurun."
+                    )
+        return self._index
+
+    def _index_scores(
+        self, query: str, index: PoolIndex, catalog_df: pd.DataFrame, k: int
+    ) -> tuple[list[tuple[int, float]], dict[int, int]]:
+        """(catalog position, cosine similarity) from the pool index, in the
+        order `pool_index.rank` gives the nearest SEARCH_DEPTH above the
+        floor; ids the index knows but the catalog no longer has are dropped.
+        Also, per position standing for a family of places, how many it
+        hides."""
+        self._check_embedding_cooldown()
+        try:
+            vector = np.asarray(self._embed_query(query), dtype=np.float64).reshape(-1)
+        except Exception:
+            self._embed_down_until = self._clock() + EMBED_RETRY_AFTER_S
+            raise
+        self._embed_down_until = None
+        positions = {sid: i for i, sid in enumerate(catalog_df["series_id"])}
+        nearest = [
+            (series_id, score)
+            for series_id, score in index.nearest(vector, max(SEARCH_DEPTH, 4 * k))
+            if series_id in positions and score >= MIN_SIMILARITY
+        ]
+        ranked, standing = pool_index.rank(query, nearest, index.meta)
+        return (
+            [(positions[series_id], score) for series_id, score in ranked],
+            {positions[series_id]: n for series_id, n in standing.items()},
+        )
+
+    def _keyword_hits(
+        self,
+        query: str,
+        catalog_df: pd.DataFrame,
+        index: PoolIndex | None,
+        k: int,
+    ) -> tuple[list[CatalogHit], list[str]]:
+        """The coarse fallback: share of the query's words each text holds.
+
+        On a large pool the index's full-text search picks the candidates
+        first, so the scoring does not walk tens of thousands of rows -- and
+        its own (BM25) order breaks the ties, which the share alone cannot:
+        over 45k series hundreds of texts hold every word of a short query
+        and would otherwise be ordered by where they sit in the catalog.
+        `pool_index.rank` then applies the same rules as a semantic search.
+        """
+        texts = self._catalog_texts()
+        ids = catalog_df["series_id"]
+        positions = list(range(len(catalog_df)))
+        by_index: dict[int, int] = {}
+        if index is not None:
+            try:
+                ranked = index.keyword(query, SEARCH_DEPTH)
+                order = {sid: rank for rank, sid in enumerate(ranked)}
+                found = [i for i, sid in enumerate(ids) if sid in order]
+                if found:
+                    positions = found
+                    by_index = {i: order[ids.iloc[i]] for i in found}
+            except Exception as exc:  # noqa: BLE001 - fall back to scoring everything
+                logger.warning("search: tam metin indeksi kullanilamadi: %s", exc)
+        # The id joins the keyword text only: "toplam tuketici kredileri"
+        # can then find the BDDK row named "Tüketici Kredileri (2+3+4)".
+        scored = [
+            (i, lexical_score(query, f"{texts[i]} | {ids.iloc[i]}")) for i in positions
+        ]
+        scored = [(i, score) for i, score in scored if score >= MIN_LEXICAL_SCORE]
+        scored.sort(key=lambda pair: (-pair[1], by_index.get(pair[0], 0)))
+        standing: dict[str, int] = {}
+        if index is not None:
+            ordered, standing = pool_index.rank(
+                query, [(ids.iloc[i], score) for i, score in scored], index.meta
+            )
+            places = {sid: i for i, sid in enumerate(ids)}
+            scored = [(places[sid], score) for sid, score in ordered]
+        hits = [
+            self._hit(catalog_df.iloc[i], score, match="keyword")
+            for i, score in scored[:k]
+        ]
+        # The same note the semantic path emits. It was dropped here, which is
+        # exactly where the model most needs it: a degraded search that folds
+        # 81 provinces behind one candidate and says nothing looks like a pool
+        # that holds one province.
+        notes = [
+            f"{hit.name_tr}: ayni kalemin {standing[hit.series_id]} baska "
+            "il/bolge serisi de var; belirli bir yer icin aramaya yer adini ekle."
+            for hit in hits
+            if standing.get(hit.series_id)
+        ]
+        return hits, notes
+
+    def _check_embedding_cooldown(self) -> None:
+        if (
+            self._embed_down_until is not None
+            and self._clock() < self._embed_down_until
+        ):
+            raise RuntimeError("embedding kisa sure once basarisiz oldu")
 
     def _semantic_scores(self, query: str, texts: list[str]) -> np.ndarray:
         """Cosine similarity of the query to every pool series' text.
@@ -304,11 +498,7 @@ class LakeAdapter:
         read once too, so the two cannot drift apart. Raises while a recent
         failure is still cooling down, without calling the endpoint.
         """
-        if (
-            self._embed_down_until is not None
-            and self._clock() < self._embed_down_until
-        ):
-            raise RuntimeError("embedding kisa sure once basarisiz oldu")
+        self._check_embedding_cooldown()
         try:
             if self._doc_vectors is None:
                 self._doc_vectors = _unit_rows(self._embed_documents(texts))
@@ -356,13 +546,13 @@ class LakeAdapter:
         lake does not have. Empty (not an error) if gold cannot be read, and
         then not cached: one failed read (a rebuild holding the file, say)
         would otherwise blank the coverage for the adapter's whole life.
+
+        Read through `gold.coverage`, over the whole pool: the model-facing
+        `run_sql` would cap it at a thousand series.
         """
         if self._coverage_cache is None:
             try:
-                frame = gold.run_sql(
-                    "SELECT series_id, MIN(period) AS first, MAX(period) AS last "
-                    "FROM observations WHERE value IS NOT NULL GROUP BY series_id"
-                )
+                frame = gold.coverage()
             except Exception as exc:  # noqa: BLE001 - coverage is decoration
                 logger.warning("search: kapsam okunamadi (%s)", exc)
                 return {}
@@ -387,31 +577,52 @@ class LakeAdapter:
     def prepare_table(
         self, df: pd.DataFrame, hints: dict[str, Any] | None = None
     ) -> tuple[pd.DataFrame, QualityReport]:
-        """Minimal clean-up for a table that arrived from outside the pool.
+        """Clean-up for a table that arrived from outside the pool: a URL, a
+        file, anything the demo hands over.
 
-        Rows whose period cannot be parsed are dropped and the count goes on
-        the quality card: `profile_table` runs on the cleaned frame, so without
-        that line the card describes a table the caller never handed over, and
-        the human approving a quality gate never learns anything went missing.
+        Three things, each of which the analysis tools would otherwise trip
+        on. A date column whatever it is called becomes `period` -- the
+        column every transform reads -- and rows whose date will not parse are
+        dropped and counted on the quality card, because `profile_table` runs
+        on the cleaned frame and would otherwise describe a table the caller
+        never handed over. Numbers printed the Turkish way ("1.234.567,89",
+        which is how BDDK and Borsa İstanbul print them) become floats; a
+        column of those left as text turns every later sum into string
+        concatenation. What each step did goes on the card: a person
+        approving the table sees the column that was read as the date.
         """
         out = df.copy()
+        notes: list[str] = []
+
+        renamed = None
+        if "period" not in out.columns:
+            renamed = _date_column(out)
+            if renamed is not None:
+                out = out.rename(columns={renamed: "period"})
+                notes.append(f"'{renamed}' sutunu donem (period) olarak okundu.")
+
         dropped = 0
         if "period" in out.columns:
-            out["period"] = pd.to_datetime(out["period"], errors="coerce")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)  # see `_date_column`
+                out["period"] = pd.to_datetime(
+                    out["period"], errors="coerce", dayfirst=True
+                )
             dropped = int(out["period"].isna().sum())
             out = out.dropna(subset=["period"]).sort_values("period")
+
+        converted = _to_numbers(out)
+        if converted:
+            notes.append(
+                "Turkce sayi bicimi cevrildi: " + ", ".join(converted[:6]) + "."
+            )
         out = out.reset_index(drop=True)
 
         report = self.profile_table(out)
         if dropped:
-            report = report.model_copy(
-                update={
-                    "issues": [
-                        f"{dropped} satir tarihi okunamadigi icin dusuruldu.",
-                        *report.issues,
-                    ]
-                }
-            )
+            notes.insert(0, f"{dropped} satir tarihi okunamadigi icin dusuruldu.")
+        if notes:
+            report = report.model_copy(update={"issues": [*notes, *report.issues]})
         return out, report
 
     def profile_table(self, df: pd.DataFrame) -> QualityReport:
@@ -466,28 +677,6 @@ def _periods_as_dates(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["period"] = pd.to_datetime(out["period"], errors="coerce").dt.date
     return out
-
-
-def search_text(row: pd.Series) -> str:
-    """What a pool series is matched on.
-
-    Plan 2.5's fields -- name, topic, tags, unit, frequency, source -- plus
-    what kind of quantity it is. The last one carries weight for BDDK rows,
-    which have no topic or tags: "stok (bakiye)" is what lets "konut kredisi
-    bakiyesi" find "Tüketici Kredileri - Konut". Only labels for codes the
-    catalog already holds are added; no description is invented.
-    """
-    source = _clean(row.get("source"))
-    parts = [
-        _clean(row.get("name_tr")),
-        _clean(row.get("topic")),
-        _clean(row.get("tags")),
-        _clean(row.get("unit")),
-        _FREQ_LABEL_TR.get(_clean(row.get("freq"))),
-        _KIND_LABEL_TR.get(_clean(row.get("kind"))),
-        _SOURCE_LABEL_TR.get(source, source),
-    ]
-    return " | ".join(str(part).strip() for part in parts if part not in (None, ""))
 
 
 def _tokens(text: str) -> list[str]:
@@ -561,6 +750,50 @@ def _unit_rows(vectors: Any) -> np.ndarray:
     if not np.all(np.isfinite(norms)) or np.any(norms == 0):
         raise ValueError("gecersiz embedding vektoru (NaN veya sifir)")
     return matrix / norms
+
+
+#: A column is a date column when this share of its values parse as dates,
+#: and a number column when this share read as numbers. Not all of them: a
+#: printed table carries a total row, a footnote, a "-" for a month with no
+#: trade.
+_ENOUGH = 0.8
+#: Digits with Turkish grouping, the way BDDK and Borsa İstanbul print them.
+_TR_NUMBER = re.compile(r"^-?\(?\d{1,3}(?:\.\d{3})*(?:,\d+)?\)?$|^-?\d+(?:,\d+)?$")
+
+
+def _date_column(frame: pd.DataFrame) -> str | None:
+    """The column that holds the dates, whatever it is called. The first one
+    that parses -- a table has one date column, and taking the leftmost of
+    several is what a reader would do."""
+    for name in frame.columns:
+        column = frame[name]
+        if column.dtype.kind in "biufc" or column.isna().all():
+            continue
+        with warnings.catch_warnings():
+            # Probing a column that is not dates is the normal case here, and
+            # pandas warns about falling back to per-value parsing every time.
+            warnings.simplefilter("ignore", UserWarning)
+            parsed = pd.to_datetime(column, errors="coerce", dayfirst=True)
+        if parsed.notna().mean() >= _ENOUGH:
+            return name
+    return None
+
+
+def _to_numbers(frame: pd.DataFrame) -> list[str]:
+    """Turn text columns of Turkish-formatted numbers into floats, in place.
+    Returns the columns it converted."""
+    from lakehouse_agent.lake.silver import _to_float_bddk
+
+    converted: list[str] = []
+    for name in frame.columns:
+        if name == "period" or frame[name].dtype.kind in "biufcM":
+            continue
+        text = frame[name].dropna().astype(str).str.strip()
+        if text.empty or text.str.fullmatch(_TR_NUMBER).mean() < _ENOUGH:
+            continue
+        frame[name] = frame[name].map(_to_float_bddk)
+        converted.append(str(name))
+    return converted
 
 
 def _clean(value: Any) -> Any:

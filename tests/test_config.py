@@ -47,11 +47,13 @@ def test_agent_settings_requires_the_mia_key():
 
 
 def test_defaults_match_the_mia_guide(monkeypatch):
-    """These three model ids are copied verbatim from the MIA guide."""
+    """The model ids are copied verbatim from the MIA guide and Slack. The
+    chat model is DeepSeek since 22 Sep (docs/decisions.md); Qwen stays
+    reachable through MIA_CHAT_MODEL."""
     monkeypatch.setenv("MIA_API_KEY", "k")
     settings = AgentSettings()
     assert settings.mia_base_url == "https://mia.csp.kloudeks.com/v1"
-    assert settings.mia_chat_model == "kkbhackathon2026/Qwen3.8-27B"
+    assert settings.mia_chat_model == "deepseek-ai/DeepSeek-V4.1-Flash"
     assert settings.mia_embed_model == "kkbhackathon2026/Qwen3-Embedding-8B"
     assert settings.mia_ocr_model == "kkbhackathon2026/Unlimited-OCR"
 

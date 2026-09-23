@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from lakehouse_agent.agent.context import ToolContext
 from lakehouse_agent.config import AgentSettings
-from lakehouse_agent.contracts import ToolResult
+from lakehouse_agent.contracts import ColumnInfo, ToolResult
 from lakehouse_agent.testing.fake_lake import (
     CPI_SERIES,
     CREDIT_SERIES,
@@ -30,7 +30,12 @@ from lakehouse_agent.testing.fake_lake import (
 )
 from lakehouse_agent.testing.fake_llm import FakeLLM
 from lakehouse_agent.tools import lakehouse
-from lakehouse_agent.tools.lakehouse import TOOLS, column_name
+from lakehouse_agent.tools.lakehouse import (
+    TOOLS,
+    TransformArgs,
+    column_name,
+    make_transform_table,
+)
 from lakehouse_agent.tools.registry import ToolRegistry
 
 REGISTRY = ToolRegistry.of(TOOLS)
@@ -134,9 +139,9 @@ def test_a_weekly_rate_is_averaged_into_months_and_says_so(session):
     )
 
     assert any(RATE in w and "ortalamasi" in w for w in result.warnings)
-    # The month a week counts in is its Monday's, and that is said; "month-end
-    # balance" was a claim the data does not support.
-    assert any("Pazartesi" in w for w in result.warnings)
+    # The month a week counts in is the one it was observed in, and that is
+    # said: until 22 Sep it was silently its Monday's.
+    assert any("gozlendigi gunun" in w for w in result.warnings)
     column = result.columns[0]
     assert (column.freq, column.kind, column.op) == ("M", "rate", "to_freq")
     assert "ortalamasi" in column.formula
@@ -652,20 +657,51 @@ def test_real_count_of_houses_is_not_deflated(real):
     assert "parasal bir tutar degil" in result.summary
 
 
-def test_real_weekly_month_with_missing_weeks_is_pointed_out(real):
+def test_real_weekly_series_has_no_phantom_month_before_the_window(real):
     """Asked from 2020-12, the pool's single December week (Monday 28 Dec,
-    observed 1 Jan) came back as a "monthly average" with no word said."""
+    observed Friday 1 Jan) came back as a December "monthly average". By
+    observation date that week is January's, and there is no December."""
     result = real.run(
         "get_series", series_ids=["evds:TP.KTF12"], start="2020-12", end="2021-03"
     )
 
-    partial = [w for w in result.warnings if "eksik haftayla" in w]
-    assert partial and "2020-12 (1/4 hafta)" in partial[0]
+    months = list(real.table["period"].dt.strftime("%Y-%m"))
+    assert months == ["2021-01", "2021-02", "2021-03"]
+    assert not [w for w in result.warnings if "eksik haftayla" in w]
+    assert any("Istenen baslangic 2020-12" in w for w in result.warnings)
 
 
-def test_real_search_without_embeddings_does_not_claim_absence():
-    """ "enflasyon" shares no word with the CPI's catalog text; on the keyword
-    fallback, "the pool lacks it" was a false claim about the pool."""
+def test_a_month_with_fewer_weeks_than_fridays_is_pointed_out():
+    """January 2021 has five Fridays; a series with four of them makes a
+    monthly average from part of the month, which the table cannot show."""
+    from lakehouse_agent.tools.lakehouse import _partial_period_warnings
+
+    fridays = ["2021-01-01", "2021-01-08", "2021-01-15", "2021-01-29"]
+    long = pd.DataFrame(
+        {
+            "series_id": "evds:TP.X",
+            "obs_date": pd.to_datetime(fridays),
+            "value": 1.0,
+        }
+    )
+    info = {"evds:TP.X": pd.Series({"freq": "W"})}
+
+    warnings = _partial_period_warnings(
+        long, ["evds:TP.X"], {"evds:TP.X": "TP_X"}, info, "M"
+    )
+
+    assert warnings == [
+        "TP_X: su donemler eksik haftayla hesaplandi, deger donemin tamamini "
+        "yansitmiyor: 2021-01 (4/5 hafta)."
+    ]
+
+
+def test_real_search_without_embeddings_says_its_ranking_is_coarse():
+    """On the keyword fallback the model has to learn two things: these
+    candidates were not ranked by meaning, and an empty answer would prove
+    nothing about the pool (planner rule 5). Over 45k series a short query
+    now matches something whatever it asks -- what it must not do is look
+    like a semantic hit."""
     from lakehouse_agent.lake import gold
     from lakehouse_agent.tools.lake_adapter import LakeAdapter
 
@@ -678,9 +714,276 @@ def test_real_search_without_embeddings_does_not_claim_absence():
     session = Session(LakeAdapter(embed_documents=unavailable, embed_query=unavailable))
 
     result = session.run("search_catalog", query="enflasyon")
-    assert result.ok and result.preview == []
-    assert "gostermez" in result.summary
+    assert result.ok
+    assert any("kelime eslesmesiyle" in warning for warning in result.warnings)
+    assert all(hit["eslesme"] == "kelime" for hit in result.preview)
     assert "eslesen seri yok" not in result.summary
 
-    found = session.run("search_catalog", query="tufe")
-    assert "evds:TP.TUKFIY2025.GENEL" in [hit["series_id"] for hit in found.preview]
+    # What still works when the ranking is coarse: naming the series. A query
+    # carrying an id is answered by that series alone, whatever the search is
+    # able to do that day -- which is the escape hatch the model is told about.
+    named = session.run("search_catalog", query="evds:TP.TUKFIY2025.GENEL verisi")
+    assert [hit["series_id"] for hit in named.preview] == ["evds:TP.TUKFIY2025.GENEL"]
+    assert named.preview[0]["eslesme"] == "kod"
+
+
+def test_real_weekly_series_can_come_back_weekly(real):
+    """ "Haftalik goster": the table keeps the weeks, and nothing is
+    converted, so nothing is said about a conversion."""
+    result = real.run(
+        "get_series",
+        series_ids=["evds:TP.KTF12"],
+        start="2021-01",
+        end="2021-02",
+        freq="W",
+    )
+
+    assert result.ok, result.summary
+    assert len(real.table) == 9  # Fridays 1 Jan .. 26 Feb 2021, by their Mondays
+    assert result.columns[0].freq == "W"
+    assert not any("cevrildi" in w for w in result.warnings)
+    assert "hafta" in result.summary
+
+
+def test_a_monthly_series_is_not_put_in_a_weekly_table(real):
+    """Each week would repeat the month's value: data made up (CLAUDE.md #4)."""
+    result = real.run(
+        "get_series",
+        series_ids=["bddk:aylik:tuketici:konut:TL:sektor"],
+        start="2021-01",
+        end="2021-03",
+        freq="W",
+    )
+
+    assert not result.ok
+    assert "veri uydurmak" in result.summary
+
+
+def test_a_quarterly_table_takes_the_quarters_last_balance(real):
+    from lakehouse_agent.lake import gold
+
+    result = real.run(
+        "get_series",
+        series_ids=["bddk:aylik:tuketici:konut:TL:sektor"],
+        start="2021-01",
+        end="2021-06",
+        freq="Q",
+    )
+
+    monthly = gold.get(["bddk:aylik:tuketici:konut:TL:sektor"], "2021-01", "2021-06")
+    assert list(real.table.iloc[:, 1]) == [
+        monthly["value"].iloc[2],
+        monthly["value"].iloc[5],
+    ]
+    assert any("ceyregin son degeri" in w for w in result.warnings)
+    assert "2021-Q1 - 2021-Q2" in result.summary
+
+
+def test_into_active_refuses_another_frequency(real):
+    real.run(
+        "get_series",
+        series_ids=["bddk:aylik:tuketici:konut:TL:sektor"],
+        start="2021-01",
+        end="2021-06",
+    )
+
+    result = real.run(
+        "get_series",
+        series_ids=["evds:TP.KTF12"],
+        start="2021-01",
+        end="2021-06",
+        freq="W",
+        into="active",
+    )
+
+    assert not result.ok
+    assert "freq='M'" in result.summary
+
+
+def test_ytd_rebuilds_the_running_total_of_a_monthly_flow(real):
+    """House sales are a monthly flow: January's total is January's sales,
+    February's is January plus February."""
+    real.run(
+        "get_series",
+        series_ids=["evds:TP.AKONUTSAT1.KTRTOPLAM"],
+        start="2024-01",
+        end="2024-03",
+    )
+
+    result = real.run("transform_table", op="ytd", column="TP_AKONUTSAT1_KTRTOPLAM")
+
+    sales = list(real.table["TP_AKONUTSAT1_KTRTOPLAM"])
+    totals = list(real.table["TP_AKONUTSAT1_KTRTOPLAM_yilbasi"])
+    assert result.ok
+    assert totals == [sales[0], sales[0] + sales[1], sum(sales)]
+
+
+def test_ytd_is_refused_for_a_balance(scenario):
+    result = scenario.run("transform_table", op="ytd", column=CREDIT)
+
+    assert not result.ok
+    assert "aylik bir akim degil" in result.summary
+
+
+# --- transform_table: top ----------------------------------------------------
+
+
+def _top_context(frame, ref="t01_read_url", lineage=None):
+    return ToolContext(
+        session_id="s1",
+        step_no=1,
+        llm=FakeLLM([]),
+        lake=None,
+        settings=AgentSettings(MIA_API_KEY="test-only"),
+        active_table=ref,
+        _tables={ref: frame},
+        lineage=lineage or {},
+    )
+
+
+@pytest.mark.parametrize(
+    ("freq", "periods", "expected"),
+    [
+        ("D", ["2024-01-01", "2024-01-02", "2024-01-03"], "2024-01-03"),
+        ("Q", ["2024-01-01", "2024-04-01", "2024-07-01"], "2024-Q3"),
+        ("A", ["2024-01-01", "2025-01-01", "2026-01-01"], "2026"),
+    ],
+)
+def test_top_names_the_period_at_the_tables_own_frequency(freq, periods, expected):
+    """Every row used to be named by its month whatever the table was: a
+    daily table gave three different days the same label, a quarterly one
+    printed Q3 as "2024-07" and a yearly one printed 2026 as "2026-01"."""
+    frame = pd.DataFrame({"period": pd.to_datetime(periods), "hacim": [1.0, 2.0, 3.0]})
+    context = _top_context(
+        frame,
+        lineage={
+            "t01_read_url.hacim": ColumnInfo(
+                name="hacim", freq=freq, tool="get_series", step_no=1
+            )
+        },
+    )
+
+    result = make_transform_table().fn(
+        TransformArgs(op="top", column="hacim", n=1, table_ref="t01_read_url"),
+        context,
+    )
+
+    assert result.ok
+    assert expected in result.summary
+
+
+def test_top_refuses_a_flag_column():
+    """Its "highest" rows are just the flagged ones, which `mark` already
+    listed, and ranking them puts bare 1/0 into the tool output as figures an
+    answer could then quote."""
+    frame = pd.DataFrame(
+        {
+            "period": pd.to_datetime(["2026-01-01", "2026-02-01"]),
+            "isaret": pd.array([True, False], dtype="boolean"),
+        }
+    )
+
+    result = make_transform_table().fn(
+        TransformArgs(op="top", column="isaret", table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert not result.ok
+    assert "mark zaten listeler" in result.summary
+
+
+def test_an_operation_that_needs_periods_refuses_a_table_without_them():
+    """A printed table read from a URL has named rows, not dated ones. This
+    used to escape as a bare `KeyError: 'period'`."""
+    frame = pd.DataFrame({"ay": ["Ocak", "Subat"], "hacim": [1.0, 2.0]})
+
+    result = make_transform_table().fn(
+        TransformArgs(op="diff", column="hacim", table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert not result.ok
+    assert "donem (period) sutunu yok" in result.summary
+    assert "top kullanilabilir" in result.summary
+
+
+def test_top_names_the_rows_where_a_column_is_highest():
+    """ "Which month was the highest?" is counting, and the model may not
+    count (planner rule 1). The rows are named and their values returned, so
+    the answer can quote them."""
+    frame = pd.DataFrame(
+        {
+            "period": pd.to_datetime(["2026-01-01", "2026-02-01", "2026-03-01"]),
+            "hacim": [93824682381.0, 90534914196.0, 151349741320.0],
+        }
+    )
+    spec = make_transform_table()
+
+    result = spec.fn(
+        TransformArgs(op="top", column="hacim", n=2, table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert result.ok
+    assert "2026-03" in result.summary and "151349741320" in result.summary
+    assert "2026-02" not in result.summary  # only the two asked for
+    assert [row["satir"] for row in result.preview] == ["2026-03", "2026-01"]
+
+
+def test_top_works_on_a_table_that_has_no_period_column():
+    """A document read from a URL is often a printed table whose rows are
+    named, not dated; every other operation needs a period and this one
+    cannot."""
+    frame = pd.DataFrame(
+        {"AY": ["Ocak", "Subat", "Mart"], "hacim": [93.0, 90.0, 151.0]}
+    )
+    spec = make_transform_table()
+
+    result = spec.fn(
+        TransformArgs(op="top", column="hacim", n=1, table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert result.ok and "Mart: 151" in result.summary
+
+
+def test_top_can_ask_for_the_lowest_and_says_what_it_could_not_rank():
+    frame = pd.DataFrame(
+        {"AY": ["Ocak", "Subat", "Mart"], "hacim": [93.0, float("nan"), 151.0]}
+    )
+    spec = make_transform_table()
+
+    result = spec.fn(
+        TransformArgs(
+            op="top", column="hacim", n=2, ascending=True, table_ref="t01_read_url"
+        ),
+        _top_context(frame),
+    )
+
+    assert "en dusuk" in result.summary
+    assert result.preview[0]["satir"] == "Ocak"
+    assert "1 satir bos deger" in result.summary
+
+
+def test_top_refuses_a_column_that_is_not_numbers():
+    frame = pd.DataFrame({"AY": ["Ocak", "Subat"], "hacim": [1.0, 2.0]})
+    spec = make_transform_table()
+
+    result = spec.fn(
+        TransformArgs(op="top", column="AY", table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert result.ok is False and "sayisal" in result.summary
+
+
+def test_top_adds_no_column():
+    """It reports; it does not change the table a person is looking at."""
+    frame = pd.DataFrame({"AY": ["Ocak", "Subat"], "hacim": [1.0, 2.0]})
+    ctx = _top_context(frame)
+
+    make_transform_table().fn(
+        TransformArgs(op="top", column="hacim", table_ref="t01_read_url"), ctx
+    )
+
+    assert ctx.written == {}

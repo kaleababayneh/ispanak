@@ -43,7 +43,15 @@ class AgentSettings(BaseSettings):
 
     mia_api_key: SecretStr = Field(alias="MIA_API_KEY")
     mia_base_url: str = Field("https://mia.csp.kloudeks.com/v1", alias="MIA_BASE_URL")
-    mia_chat_model: str = Field("kkbhackathon2026/Qwen3.8-27B", alias="MIA_CHAT_MODEL")
+    #: DeepSeek since 22 Sep (docs/decisions.md). Measured on the scenario's
+    #: three questions over the 45k-series pool: Qwen3.8-27B took 78 s on the
+    #: first turn and returned an empty answer, and misstated a unit on the
+    #: second; DeepSeek finished all three (first turn 15 s, answers 2-3 s)
+    #: with the right months and units. Qwen is still one env var away:
+    #: MIA_CHAT_MODEL=kkbhackathon2026/Qwen3.8-27B.
+    mia_chat_model: str = Field(
+        "deepseek-ai/DeepSeek-V4.1-Flash", alias="MIA_CHAT_MODEL"
+    )
     mia_embed_model: str = Field(
         "kkbhackathon2026/Qwen3-Embedding-8B", alias="MIA_EMBED_MODEL"
     )

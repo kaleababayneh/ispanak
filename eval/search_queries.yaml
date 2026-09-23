@@ -1,0 +1,43 @@
+# Havuz araması ölçümü (plan 2.5): her sorgu için doğru sayılan seriler.
+# `beklenen` listesindeki herhangi biri ilk 5 adayda çıkarsa sorgu isabetli.
+# Kimlikler 22 Eyl 2026'da havuz kataloğunda doğrulandı. `ilgisiz` sorgular
+# havuzda karşılığı olmayan konular: eşiğin (MIN_SIMILARITY) alt sınırını onlar
+# gösterir. Çalıştırma: uv run python -m lakehouse_agent.lake.search_eval
+sorgular:
+  - {soru: "konut kredisi faiz oranı", beklenen: ["evds:TP.KTF12"]}
+  - {soru: "ihtiyaç kredisi faizi", beklenen: ["evds:TP.KTF10", "evds:TP.KTF101"]}
+  - {soru: "konut fiyat endeksi", beklenen: ["evds:TP.KFE.TR"]}
+  - {soru: "tüketici fiyat endeksi", beklenen: ["evds:TP.TUKFIY2025.GENEL"]}
+  - {soru: "enflasyon", beklenen: ["evds:TP.TUKFIY2025.GENEL"]}
+  - {soru: "konut kredisi bakiyesi", beklenen: ["bddk:aylik:tuketici:konut:TL:sektor"]}
+  - {soru: "toplam konut satışları", beklenen: ["evds:TP.AKONUTSAT1.KTRTOPLAM"]}
+  - {soru: "ipotekli konut satışları", beklenen: ["evds:TP.AKONUTSAT2.KTRTOPLAM"]}
+  - {soru: "dolar kuru", beklenen: ["evds:TP.DK.USD.A.YTL", "evds:TP.DK.USD.A.EF.YTL"]}
+  - {soru: "BIST 100 endeksi", beklenen: ["evds:TP.MK.F.BILESIK"]}
+  - {soru: "BIST Tüm endeksi XTUMY", beklenen: ["evds:TP.MK.F.BILESIK.TUM"]}
+  - {soru: "işsizlik oranı", beklenen: ["evds:TP.YISGUCU2.G8", "evds:TP.TIG08"]}
+  - {soru: "sanayi üretim endeksi", beklenen: ["evds:TP.TSANAYMT2021.BCD"]}
+  - {soru: "cari işlemler dengesi", beklenen: ["evds:TP.ODANA6.Q01", "evds:TP.HARICCARIACIK.K1"]}
+  - {soru: "mevduat faiz oranı", beklenen: ["evds:TP.TRY.MT01.S", "evds:TP.TRY.MT02.S", "evds:TP.TRY.MT03.S", "evds:TP.TRY.MT04.S", "evds:TP.TRY.MT05.S"]}
+  - {soru: "bankacılık sektörü dönem net kârı", beklenen: ["bddk:aylik:kar_zarar:donem_net_kari_zarari:toplam:sektor"]}
+  - {soru: "takipteki alacakların toplam kredilere oranı", beklenen_desen: "^bddk:aylik:rasyo:takipteki_alacaklar_brut_toplam_nakdi_krediler"}
+  - {soru: "sermaye yeterliliği rasyosu", beklenen_desen: "^bddk:aylik:sermaye:sermaye_yeterliligi_standart_rasyosu"}
+  - {soru: "İstanbul konut kredisi", beklenen: ["bddk:finturk:bireysel:istanbul:konut_kredisi:sektor"]}
+  - {soru: "haftalık konut kredisi", beklenen_desen: "^bddk:haftalik:krediler:tuketici_kredileri_a_konut"}
+  - {soru: "banka şube sayısı", beklenen_desen: "^bddk:aylik:diger:yurt_ici_sube_sayisi"}
+  # Ayrık sorgular: sıralama kuralları (pool_index.rank) yukarıdakilerin 22 Eyl
+  # hatalarından tasarlandı; bunlar o tasarımda kullanılmadı, beklenenleri
+  # arama sonucuna bakmadan katalogdan seçildi. Kuralların genelleşip
+  # genelleşmediğini bunlar gösterir.
+  - {soru: "euro kuru", ayrik: true, beklenen: ["evds:TP.DK.EUR.A.YTL", "evds:TP.DK.EUR.S.YTL", "evds:TP.DK.EUR.A.EF.YTL", "evds:TP.DK.EUR.S.EF.YTL"]}
+  - {soru: "Ankara konut fiyat endeksi", ayrik: true, beklenen: ["evds:TP.KFE.TR51"]}
+  - {soru: "Ankara kira endeksi", ayrik: true, beklenen: ["evds:TP.YKKE.TR51"]}
+  - {soru: "bireysel kredi kartı borçları", ayrik: true, beklenen_desen: "^bddk:aylik:tuketici:bireysel_kredi_kartlari:"}
+  - {soru: "İzmir toplam mevduat", ayrik: true, beklenen: ["bddk:finturk:mevduat:izmir:toplam_mevduat:sektor"]}
+  - {soru: "haftalık toplam krediler", ayrik: true, beklenen_desen: "^bddk:haftalik:krediler:toplam_krediler:"}
+ilgisiz:
+  - "futbol maç sonuçları"
+  - "hava durumu tahmini"
+  - "sinema gişe hasılatı"
+  - "üniversite giriş sınavı puanları"
+  - "otomobil yakıt tüketimi"

@@ -1,7 +1,7 @@
 ---
 name: answer
-version: 1
-changed: 2026-09-15
+version: 2
+changed: 2026-09-23
 ---
 
 Araçlar çalıştı, sonuçlar elinde. Şimdi kullanıcıya cevabı yaz.
@@ -37,6 +37,14 @@ ekranında görüyor, sen onu tekrar etmiyorsun; ne anlama geldiğini söylüyor
 
 8. **Eksik kaldıysan dürüst ol.** Aşağıda bir kesinti sebebi varsa cevabının ilk
    cümlesi bunu söylesin; eksik bir analizi tam gibi sunma.
+
+9. **Sistemin neyi yapıp yapamadığı hakkında iddiada bulunma.** Bu adımda
+   araç listesi elinde yok, dolayısıyla "böyle bir aracım yok" diyemezsin.
+   Bir hesap yapılmadıysa yapılmadığını söyle: "yüzde değişim hesaplanmadı,
+   tabloda yalnızca endeks düzeyi var." Kullanıcı isterse yeni bir turda
+   hesaplanabileceğini ekleyebilirsin. (Ölçüldü 23 Eylül: cevap "yüzde
+   değişim üretecek bir hesaplama aracı elimde yok" dedi; `transform_table`
+   bunu `pct_change` ile yapıyor.)
 
 ## Elindekiler
 

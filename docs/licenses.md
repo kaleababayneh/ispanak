@@ -18,6 +18,7 @@ Tüm üçüncü taraf bağımlılıklar permissive açık kaynak lisanslıdır
 | openai                         | 3.16.2      | Apache-2.0                                         |
 | pyarrow                        | 25.0.1      | Apache-2.0                                         |
 | packaging                      | 26.3        | Apache-2.0 OR BSD-2-Clause                         |
+| cryptography                   | 50.0.1      | Apache-2.0 OR BSD-3-Clause                         |
 | nodeenv                        | 1.10.0      | BSD License                                        |
 | pandas                         | 3.0.5       | BSD License                                        |
 | patsy                          | 1.0.3       | BSD License                                        |
@@ -28,9 +29,12 @@ Tüm üçüncü taraf bağımlılıklar permissive açık kaynak lisanslıdır
 | httpcore2                      | 2.13.0      | BSD-3-Clause                                       |
 | httpx2                         | 2.13.0      | BSD-3-Clause                                       |
 | idna                           | 3.19        | BSD-3-Clause                                       |
+| lxml                           | 6.1.3       | BSD-3-Clause                                       |
+| pycparser                      | 3.0         | BSD-3-Clause                                       |
 | python-dotenv                  | 1.2.3       | BSD-3-Clause                                       |
 | statsmodels                    | 0.15.0      | BSD-3-Clause                                       |
 | numpy                          | 2.5.3       | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 |
+| pypdfium2                      | 5.13.0      | BSD-3-Clause, Apache-2.0, dependency licenses      |
 | annotated-types                | 0.8.0       | MIT                                                |
 | anyio                          | 4.15.1      | MIT                                                |
 | cfgv                           | 3.5.0       | MIT                                                |
@@ -43,6 +47,7 @@ Tüm üçüncü taraf bağımlılıklar permissive açık kaynak lisanslıdır
 | jiter                          | 0.17.0      | MIT                                                |
 | lakehouse-agent                | 0.1.0       | MIT                                                |
 | narwhals                       | 2.26.0      | MIT                                                |
+| pdfminer.six                   | 20260107    | MIT                                                |
 | platformdirs                   | 4.11.8      | MIT                                                |
 | pre_commit                     | 4.6.2       | MIT                                                |
 | pydantic                       | 2.13.5      | MIT                                                |
@@ -56,10 +61,15 @@ Tüm üçüncü taraf bağımlılıklar permissive açık kaynak lisanslıdır
 | virtualenv                     | 21.7.9      | MIT                                                |
 | PyYAML                         | 6.0.3       | MIT License                                        |
 | duckdb                         | 1.5.5       | MIT License                                        |
+| et_xmlfile                     | 2.0.0       | MIT License                                        |
 | h11                            | 0.16.0      | MIT License                                        |
+| openpyxl                       | 3.1.5       | MIT License                                        |
+| pdfplumber                     | 0.11.10     | MIT License                                        |
 | pluggy                         | 1.6.0       | MIT License                                        |
 | python-discovery               | 1.6.0       | MIT License                                        |
 | six                            | 1.17.0      | MIT License                                        |
+| cffi                           | 2.1.1       | MIT-0                                              |
+| pillow                         | 12.3.0      | MIT-CMU                                            |
 | tqdm                           | 4.70.1      | MPL-2.0 AND MIT                                    |
 | certifi                        | 2026.7.22   | Mozilla Public License 2.0 (MPL 2.0)               |
 | typing_extensions              | 4.16.0      | PSF-2.0                                            |

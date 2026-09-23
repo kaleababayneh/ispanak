@@ -24,32 +24,41 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from lakehouse_agent.analysis import transforms
-from lakehouse_agent.ingest import bddk_monthly
 from lakehouse_agent.ingest.evds import CATALOG_PATH
-from lakehouse_agent.lake.silver import (
-    BDDK_SOURCE,
-    build_bddk_silver_observations,
-    build_silver_observations,
-    map_freq,
-)
+from lakehouse_agent.lake import bddk
+from lakehouse_agent.lake.classify import EVDS_AGG_METHODS, evds_kind, evds_unit
+from lakehouse_agent.lake.silver import iter_evds_silver, map_freq
 
 logger = logging.getLogger(__name__)
-
-BDDK_METADATA_URL = "https://www.bddk.org.tr/BultenAylik/"
 
 GOLD_ROOT = Path("data/gold")
 OBSERVATIONS_PATH = GOLD_ROOT / "observations.parquet"
 SERIES_CATALOG_PATH = GOLD_ROOT / "series_catalog.parquet"
 GOLD_DB_PATH = GOLD_ROOT / "catalog.duckdb"
 DEDUP_STATS_PATH = GOLD_ROOT / "dedup_stats.json"
+#: Why each series has the kind and unit it has (lake/classify.py): the
+#: audit trail behind docs/kind_review.md. Not part of the data contract.
+CLASSIFICATION_PATH = GOLD_ROOT / "classification.parquet"
 
 # Project scope ends here (CLAUDE.md: 2021-01 -- 2026-06). EVDS ingest
 # fetches whole calendar years, so the 2026 chunk carries every month
 # published so far, while BDDK already stops at --until. The cut happens in
 # gold, never in bronze: bronze keeps whatever the source returned.
 GOLD_UNTIL = "2026-06"
+GOLD_SINCE = "2021-01"
+
+#: EVDS frequencies the contract has no letter for (22 Sep decision): 224
+#: semi-monthly and 65 semi-annual series, left out of the pool and listed
+#: in docs/data_dictionary.md. Bronze keeps them.
+EXCLUDED_FREQUENCY_STRS = frozenset({"AYDA İKİ KEZ", "ALTI AYLIK"})
+
+#: Fine to coarse. `wide()` only ever converts downwards; the other direction
+#: is inventing data (CLAUDE.md #4).
+_FREQ_RANK = {"D": 0, "W": 1, "M": 2, "Q": 3, "A": 4}
 
 OBSERVATIONS_COLUMNS = [
     "series_id",
@@ -59,7 +68,25 @@ OBSERVATIONS_COLUMNS = [
     "unit",
     "source",
     "fetched_at",
+    "obs_date",
 ]
+
+#: The observations file's physical schema. Written in pieces (the pool is
+#: millions of rows), so it is fixed up front rather than inferred per piece:
+#: a group whose units are all empty would otherwise make `unit` a null
+#: column in one piece and a string column in the next.
+OBSERVATIONS_SCHEMA = pa.schema(
+    [
+        ("series_id", pa.string()),
+        ("period", pa.date32()),
+        ("freq", pa.string()),
+        ("value", pa.float64()),
+        ("unit", pa.string()),
+        ("source", pa.string()),
+        ("fetched_at", pa.string()),
+        ("obs_date", pa.date32()),
+    ]
+)
 SERIES_CATALOG_COLUMNS = [
     "series_id",
     "name_tr",
@@ -78,9 +105,10 @@ SERIES_CATALOG_COLUMNS = [
     "notes",
 ]
 
-# Senaryo serileri (16 Eylül entegrasyon) -- kind/cum_type EVDS katalogunda
-# yok, burada elle eşlenir. Şema değişikliği gerekirse docs/contracts.md
-# güncellenir.
+# Senaryo serileri (16 Eylül entegrasyon), elle eşlenmiş. Havuzun geri kalanı
+# lake/classify.py kurallarıyla sınıflanıyor; buradaki değerler kuralların
+# önüne geçer ve kuralların bu seriler için aynı sonucu verdiği test ediliyor
+# (tests/test_classify.py).
 SCENARIO_SERIES: dict[str, dict] = {
     "evds:TP.KTF12": {"kind": "rate", "agg_method": "avg", "cum_type": "none"},
     "evds:TP.KFE.TR": {"kind": "index", "agg_method": "avg", "cum_type": "none"},
@@ -103,93 +131,102 @@ SCENARIO_SERIES: dict[str, dict] = {
 }
 
 
+def evds_catalog_rows(series_ids: Iterable[str] | None = None) -> pd.DataFrame:
+    """Bronze catalog rows for the EVDS pool, classified.
+
+    Every series whose frequency the contract can name (see
+    EXCLUDED_FREQUENCY_STRS), or only `series_ids` when given ("evds:"
+    prefixed). Adds `unit`/`unit_source`, `kind`/`kind_reason`, `agg_method`
+    and `cum_type`: the rules of lake/classify.py, with SCENARIO_SERIES
+    taking precedence. EVDS series are never year-to-date cumulative
+    ("KÜMÜLATİF" is EVDS's aggregation hint, docs/data_dictionary.md), so
+    `cum_type` is "none".
+    """
+    catalog = pd.read_parquet(CATALOG_PATH)
+    catalog = catalog[~catalog["FREQUENCY_STR"].isin(EXCLUDED_FREQUENCY_STRS)]
+    if series_ids is not None:
+        wanted = {sid.split(":", 1)[1] for sid in series_ids if sid.startswith("evds:")}
+        catalog = catalog[catalog["SERIE_CODE"].isin(wanted)]
+    catalog = catalog.drop_duplicates("SERIE_CODE").reset_index(drop=True)
+
+    units = [
+        evds_unit(birimi, name)
+        for birimi, name in zip(
+            catalog.get("BIRIMI", pd.Series(None, index=catalog.index)),
+            catalog.get("SERIE_NAME", pd.Series(None, index=catalog.index)),
+            strict=True,
+        )
+    ]
+    catalog["unit"] = [unit for unit, _ in units]
+    catalog["unit_source"] = [source for _, source in units]
+    agg = catalog.get("DEFAULT_AGG_METHOD", pd.Series(None, index=catalog.index))
+    catalog["agg_method"] = [a if a in EVDS_AGG_METHODS else None for a in agg]
+
+    kinds = [
+        evds_kind(unit, name, method)
+        for unit, name, method in zip(
+            catalog["unit"],
+            catalog.get("SERIE_NAME", pd.Series(None, index=catalog.index)),
+            catalog["agg_method"],
+            strict=True,
+        )
+    ]
+    catalog["kind"] = [kind for kind, _ in kinds]
+    catalog["kind_reason"] = [reason for _, reason in kinds]
+    catalog["cum_type"] = "none"
+
+    for position, code in enumerate(catalog["SERIE_CODE"]):
+        override = SCENARIO_SERIES.get(f"evds:{code}")
+        if override is None:
+            continue
+        for column in ("kind", "agg_method", "cum_type"):
+            catalog.at[position, column] = override[column]
+        catalog.at[position, "kind_reason"] = "elle eslendi (SCENARIO_SERIES)"
+    return catalog
+
+
 def build_series_catalog(
     series_ids: Iterable[str], *, source: str = "evds"
 ) -> pd.DataFrame:
-    """series_catalog.parquet rows for the given series_ids, joined against
-    the EVDS bronze catalog for name/freq/unit/dates/topic/tags, with
-    kind/agg_method/cum_type filled in from SCENARIO_SERIES (not an EVDS
-    catalog field).
+    """series_catalog.parquet rows for the given EVDS series_ids: names,
+    frequency, dates, topic and tags from the EVDS bronze catalog; unit,
+    kind, agg_method and cum_type from `evds_catalog_rows`.
     """
-    prefix = f"{source}:"
-    raw_codes = {sid[len(prefix) :] for sid in series_ids if sid.startswith(prefix)}
-    bronze_catalog = pd.read_parquet(CATALOG_PATH)
-    bronze_catalog = bronze_catalog[bronze_catalog["SERIE_CODE"].isin(raw_codes)]
-
-    rows = []
-    for _, row in bronze_catalog.iterrows():
-        series_id = f"{source}:{row['SERIE_CODE']}"
-        mapping = SCENARIO_SERIES.get(series_id)
-        if mapping is None:
-            raise KeyError(
-                f"{series_id} için kind/cum_type eşlemesi yok (SCENARIO_SERIES)"
-            )
-        rows.append(
-            {
-                "series_id": series_id,
-                "name_tr": row.get("SERIE_NAME"),
-                "name_en": row.get("SERIE_NAME_ENG"),
-                "source": source.upper(),
-                "freq": map_freq(row.get("FREQUENCY_STR")),
-                "unit": row.get("BIRIMI"),
-                "kind": mapping["kind"],
-                "agg_method": mapping["agg_method"],
-                "cum_type": mapping["cum_type"],
-                "start_date": row.get("START_DATE"),
-                "end_date": row.get("END_DATE"),
-                "topic": row.get("TOPIC_TITLE_TR"),
-                "tags": row.get("TAG"),
-                "metadata_url": row.get("METADATA_LINK"),
-                "notes": row.get("NOTE"),
-            }
-        )
-    return pd.DataFrame(rows, columns=SERIES_CATALOG_COLUMNS)
+    return _catalog_frame(evds_catalog_rows(list(series_ids)), source=source)
 
 
-def build_bddk_series_catalog(series_ids: Iterable[str]) -> pd.DataFrame:
-    """series_catalog.parquet rows for BDDK series_ids, sourced directly from
-    ingest/bddk_rows.yaml -- there is no BDDK equivalent of the EVDS bronze
-    catalog to join against, the yaml mapping IS the metadata.
-    """
-    wanted = {sid for sid in series_ids if sid.startswith("bddk:")}
-    row_defs = {rd.series_id: rd for rd in bddk_monthly.load_row_definitions()}
+def _catalog_frame(rows: pd.DataFrame, *, source: str = "evds") -> pd.DataFrame:
+    def column(name: str) -> pd.Series:
+        return rows[name] if name in rows.columns else pd.Series(None, index=rows.index)
 
-    rows = []
-    for series_id in wanted:
-        row_def = row_defs.get(series_id)
-        if row_def is None:
-            raise KeyError(f"{series_id} için ingest/bddk_rows.yaml'da eşleme yok")
-        rows.append(
-            {
-                "series_id": series_id,
-                "name_tr": row_def.satir_etiketi,
-                "name_en": None,
-                "source": BDDK_SOURCE,
-                "freq": map_freq("AYLIK"),
-                "unit": row_def.unit,
-                "kind": row_def.kind,
-                "agg_method": "last" if row_def.kind == "stock" else None,
-                "cum_type": row_def.cum_type,
-                "start_date": None,
-                "end_date": None,
-                "topic": None,
-                "tags": None,
-                "metadata_url": BDDK_METADATA_URL,
-                "notes": None,
-            }
-        )
-    return pd.DataFrame(rows, columns=SERIES_CATALOG_COLUMNS)
+    frame = pd.DataFrame(
+        {
+            "series_id": f"{source}:" + rows["SERIE_CODE"],
+            "name_tr": column("SERIE_NAME"),
+            "name_en": column("SERIE_NAME_ENG"),
+            "source": source.upper(),
+            "freq": column("FREQUENCY_STR").map(map_freq),
+            "unit": rows["unit"],
+            "kind": rows["kind"],
+            "agg_method": rows["agg_method"],
+            "cum_type": rows["cum_type"],
+            "start_date": column("START_DATE"),
+            "end_date": column("END_DATE"),
+            "topic": column("TOPIC_TITLE_TR"),
+            "tags": column("TAG"),
+            "metadata_url": column("METADATA_LINK"),
+            "notes": column("NOTE"),
+        }
+    )
+    return frame[SERIES_CATALOG_COLUMNS].reset_index(drop=True)
 
 
 def default_series_ids() -> list[str]:
-    """Full known series universe: every EVDS SCENARIO_SERIES key + every
-    BDDK bddk_rows.yaml row. Used by the `python -m lakehouse_agent.lake.gold`
-    (and `.silver`) CLI convenience entrypoints so both process EVDS and
-    BDDK together instead of silently defaulting to EVDS-only.
-    """
-    return list(SCENARIO_SERIES.keys()) + [
-        row_def.series_id for row_def in bddk_monthly.load_row_definitions()
-    ]
+    """The scenario's series: the EVDS SCENARIO_SERIES and the BDDK ids the
+    scenario has used since 17 Sep (ingest/bddk_tables.yaml aliases).
+    `build_gold` with no ids builds the whole pool instead."""
+    _tables, aliases = bddk.load_tables()
+    return list(SCENARIO_SERIES) + sorted(set(aliases.values()))
 
 
 def _validate_columns(df: pd.DataFrame, expected: list[str], *, label: str) -> None:
@@ -211,72 +248,126 @@ def _validate_columns(df: pd.DataFrame, expected: list[str], *, label: str) -> N
         raise ValueError(f"{label}: şema uyuşmazlığı -- {', '.join(parts)}")
 
 
-def _clip_until(observations: pd.DataFrame, until: str) -> pd.DataFrame:
-    """Drop rows whose period starts after `until` ("YYYY-MM" or "YYYY-MM-DD").
+def _clip_window(
+    observations: pd.DataFrame, since: str | None, until: str | None
+) -> pd.DataFrame:
+    """Keep rows observed inside [since, until] ("YYYY-MM" or "YYYY-MM-DD").
 
-    Same bound as `get(end=...)`: a bare month keeps that whole month, so a
-    weekly period starting on the month's last Monday stays even though its
-    Friday observation date falls in the next month. The period column is
-    filtered, not converted -- it keeps the contract's DATE values.
+    On `obs_date`, the date the source gave the value: the project's window
+    is 2021-01 - 2026-06 of observations. A week whose Monday is 29 June 2026
+    but whose Friday is 3 July is July's, and goes; the week of Monday 28
+    December 2020, observed on 1 January 2021, is January's, and stays.
+    The period column is filtered, not converted.
     """
-    cutoff = pd.Timestamp(_normalize_end(until))
-    keep = pd.to_datetime(observations["period"]) <= cutoff
-    dropped = int((~keep).sum())
-    if dropped:
-        logger.info("gold: %s sonrası %d gözlem kesildi", until, dropped)
+    observed = pd.to_datetime(observations["obs_date"])
+    keep = pd.Series(True, index=observations.index)
+    if since is not None:
+        keep &= observed >= pd.Timestamp(_normalize_start(since))
+    if until is not None:
+        keep &= observed <= pd.Timestamp(_normalize_end(until))
     return observations[keep].reset_index(drop=True)
 
 
+def _with_values(observations: pd.DataFrame) -> pd.DataFrame:
+    """Only the series with at least one value in the window: an all-empty
+    series is a catalog row promising data the pool does not have."""
+    has_value = observations.groupby("series_id")["value"].transform(
+        lambda values: values.notna().any()
+    )
+    return observations[has_value.astype(bool)]
+
+
 def build_gold(
-    series_ids: Iterable[str], *, until: str | None = GOLD_UNTIL
+    series_ids: Iterable[str] | None = None,
+    *,
+    since: str | None = GOLD_SINCE,
+    until: str | None = GOLD_UNTIL,
 ) -> tuple[Path, Path]:
     """Assemble silver -> observations.parquet + series_catalog.parquet.
 
-    series_ids may mix "evds:" and "bddk:" prefixes -- each source's silver
-    + catalog builder runs independently and the results are concatenated.
-    Observations after `until` are dropped (see GOLD_UNTIL); None keeps
-    everything. series_catalog's start_date/end_date are left alone: they
-    describe the source series' own coverage, not what gold holds.
+    With no `series_ids`, the whole pool: every EVDS series the bronze
+    catalog lists in a contract frequency, and every series of the BDDK
+    monthly and weekly bulletins and of FinTürk (lake/bddk.py).
+    Given ids may mix "evds:" and "bddk:" prefixes. Observations outside
+    [since, until] (by observation date, see `_clip_window`) are dropped,
+    and so is a series left with no value at all; None disables a bound.
+
+    Written one EVDS datagroup at a time with a fixed schema, zstd
+    compressed: the pool is millions of rows. Each piece is checked against
+    the contract columns before it is written. series_catalog's
+    start_date/end_date are left alone: they describe the source series' own
+    coverage, not what gold holds (the tools read that from observations).
     """
-    series_ids = list(series_ids)
+    ids = None if series_ids is None else list(series_ids)
     GOLD_ROOT.mkdir(parents=True, exist_ok=True)
 
-    evds_ids = [sid for sid in series_ids if sid.startswith("evds:")]
-    bddk_ids = [sid for sid in series_ids if sid.startswith("bddk:")]
+    evds_rows = evds_catalog_rows(ids)
+    if ids is not None and not any(sid.startswith("evds:") for sid in ids):
+        evds_rows = evds_rows.iloc[0:0]
+    wanted_bddk = (
+        None if ids is None else {sid for sid in ids if sid.startswith("bddk:")}
+    )
 
-    obs_frames = []
-    catalog_frames = []
+    written: set[str] = set()
     dropped_duplicates = 0
-    if evds_ids:
-        obs, dropped = build_silver_observations(evds_ids, source="evds")
-        obs_frames.append(obs)
-        dropped_duplicates += dropped
-        catalog_frames.append(build_series_catalog(evds_ids, source="evds"))
-    if bddk_ids:
-        obs, dropped = build_bddk_silver_observations(bddk_ids)
-        obs_frames.append(obs)
-        dropped_duplicates += dropped
-        catalog_frames.append(build_bddk_series_catalog(bddk_ids))
+    partial = OBSERVATIONS_PATH.with_suffix(".parquet.partial")
+    writer = pq.ParquetWriter(partial, OBSERVATIONS_SCHEMA, compression="zstd")
+    try:
 
-    observations = (
-        pd.concat(obs_frames, ignore_index=True)
-        if obs_frames
-        else pd.DataFrame(columns=OBSERVATIONS_COLUMNS)
-    )
-    _validate_columns(observations, OBSERVATIONS_COLUMNS, label="observations")
-    observations = observations[OBSERVATIONS_COLUMNS]
-    if until is not None:
-        observations = _clip_until(observations, until)
-    observations.to_parquet(OBSERVATIONS_PATH, index=False)
+        def write(frame: pd.DataFrame) -> None:
+            _validate_columns(frame, OBSERVATIONS_COLUMNS, label="observations")
+            frame = _with_values(
+                _clip_window(frame[OBSERVATIONS_COLUMNS], since, until)
+            )
+            if frame.empty:
+                return
+            written.update(frame["series_id"].unique())
+            writer.write_table(
+                pa.Table.from_pandas(
+                    frame, schema=OBSERVATIONS_SCHEMA, preserve_index=False
+                )
+            )
 
-    catalog = (
-        pd.concat(catalog_frames, ignore_index=True)
-        if catalog_frames
-        else pd.DataFrame(columns=SERIES_CATALOG_COLUMNS)
-    )
+        units = dict(zip(evds_rows["SERIE_CODE"], evds_rows["unit"], strict=True))
+        for frame, dropped in iter_evds_silver(evds_rows, units=units):
+            dropped_duplicates += dropped
+            write(frame)
+        bddk_catalogs = []
+        if wanted_bddk is None or wanted_bddk:
+            for build in (bddk.build_monthly, bddk.build_weekly, bddk.build_finturk):
+                frame, catalog_part, dropped = build()
+                dropped_duplicates += dropped
+                if wanted_bddk is not None:
+                    frame = frame[frame["series_id"].isin(wanted_bddk)]
+                if not frame.empty:
+                    write(frame)
+                    bddk_catalogs.append(catalog_part)
+    finally:
+        writer.close()
+    partial.replace(OBSERVATIONS_PATH)
+
+    evds_catalog = _catalog_frame(evds_rows)
+    frames = [evds_catalog[evds_catalog["series_id"].isin(written)]]
+    for bddk_catalog in bddk_catalogs:
+        frames.append(bddk_catalog[bddk_catalog["series_id"].isin(written)])
+    catalog = pd.concat(frames, ignore_index=True)
     _validate_columns(catalog, SERIES_CATALOG_COLUMNS, label="series_catalog")
-    catalog = catalog[SERIES_CATALOG_COLUMNS]
+    catalog = catalog[SERIES_CATALOG_COLUMNS].sort_values("series_id")
     catalog.to_parquet(SERIES_CATALOG_PATH, index=False)
+
+    classification = pd.DataFrame(
+        {
+            "series_id": "evds:" + evds_rows["SERIE_CODE"],
+            "datagroup": evds_rows.get("DATAGROUP_CODE"),
+            "kind": evds_rows["kind"],
+            "kind_reason": evds_rows["kind_reason"],
+            "unit": evds_rows["unit"],
+            "unit_source": evds_rows["unit_source"],
+            "agg_method": evds_rows["agg_method"],
+        }
+    )
+    classification = classification[classification["series_id"].isin(written)]
+    classification.to_parquet(CLASSIFICATION_PATH, index=False)
 
     DEDUP_STATS_PATH.write_text(
         json.dumps({"dropped_duplicates": dropped_duplicates}), encoding="utf-8"
@@ -390,7 +481,10 @@ def get(
     series_ids: Iterable[str], start: str | None = None, end: str | None = None
 ) -> pd.DataFrame:
     """Long observations for series_ids, optionally restricted to [start, end]
-    (period). `start`/`end` accept "YYYY-MM" (docs/contracts.md's signature)
+    by observation date (`obs_date`): "2025-04" is what was observed in
+    April, so the week of Monday 31 March, observed Friday 4 April, is in
+    it. For every series but a weekly one `obs_date` equals `period`.
+    `start`/`end` accept "YYYY-MM" (docs/contracts.md's signature)
     as well as "YYYY-MM-DD" -- a bare month is normalized to that month's
     first/last day respectively before hitting DuckDB, which otherwise
     parses "YYYY-MM" as day 1 and (for `end`) silently drops the rest of
@@ -404,10 +498,10 @@ def get(
     clauses = [f"series_id IN ({placeholders})"]
     params: list = list(ids)
     if start is not None:
-        clauses.append("period >= ?")
+        clauses.append("obs_date >= ?")
         params.append(_normalize_start(start))
     if end is not None:
-        clauses.append("period <= ?")
+        clauses.append("obs_date <= ?")
         params.append(_normalize_end(end))
     where_sql = " AND ".join(clauses)
 
@@ -439,22 +533,23 @@ def _series_freqs(series_ids: list[str]) -> dict[str, str]:
     return dict(rows)
 
 
-def _series_kinds(series_ids: list[str]) -> dict[str, str]:
-    """kind per series_id from series_catalog, for wide()'s per-series
-    to_freq aggregation choice (stock->last, flow->sum, rate->avg,
-    index->avg). Empty dict if series_ids is empty."""
+def _series_methods(series_ids: list[str]) -> dict[str, tuple[str | None, str | None]]:
+    """(kind, agg_method) per series_id from series_catalog, for wide()'s
+    per-series to_freq aggregation: agg_method decides, kind is the
+    fallback. Empty dict if series_ids is empty."""
     if not series_ids:
         return {}
     placeholders = ", ".join(["?"] * len(series_ids))
     con = connect()
     try:
         rows = con.execute(
-            f"SELECT series_id, kind FROM series_catalog WHERE series_id IN ({placeholders})",
+            "SELECT series_id, kind, agg_method FROM series_catalog "
+            f"WHERE series_id IN ({placeholders})",
             list(series_ids),
         ).fetchall()
     finally:
         con.close()
-    return dict(rows)
+    return {sid: (kind, agg) for sid, kind, agg in rows}
 
 
 def _pivot_raw(long: pd.DataFrame) -> pd.DataFrame:
@@ -508,10 +603,12 @@ def wide(
 
     `freq` (gold contract Freq: D|W|M|Q|A, default "M") aligns every
     requested series to that common frequency first, via
-    `analysis.transforms.to_freq` with each series' own `kind` from
-    series_catalog (stock->last, flow->sum, rate->avg, index->avg) --
-    resolving the mismatched-frequency problem below by construction
-    instead of merely reporting it. `freq=None` skips alignment entirely
+    `analysis.transforms.to_freq` with each series' own `agg_method` from
+    series_catalog (its `kind` when there is none), bucketing by
+    observation date -- resolving the mismatched-frequency problem below by
+    construction instead of merely reporting it. It never goes finer: a
+    series coarser than `freq` is left at its own periods (the tools refuse
+    that request before it gets here). `freq=None` skips alignment entirely
     and pivots on exact period match (legacy behavior, kept for backward
     compatibility) -- see `_pivot_raw` for why that silently produces a
     mostly-empty table when series have different native frequencies.
@@ -524,29 +621,70 @@ def wide(
     if freq is None:
         return _pivot_raw(long)
 
-    kinds = _series_kinds(ids)
+    methods = _series_methods(ids)
+    freqs = _series_freqs(ids)
     aligned: dict[str, pd.DataFrame] = {}
     for sid in ids:
-        sub = long.loc[long["series_id"] == sid, ["period", "value"]]
+        sub = long.loc[long["series_id"] == sid, ["period", "obs_date", "value"]]
         if sub.empty:
             continue
-        kind = kinds.get(sid)
-        if kind is None:
+        native = freqs.get(sid)
+        if native and _FREQ_RANK.get(native, 0) > _FREQ_RANK.get(freq, 0):
+            # Coarser than the target: leave it on its own periods. The
+            # docstring always claimed this happened; it did not. `to_freq`
+            # reindexes onto a date_range, so a quarterly series became 10
+            # monthly rows with 4 values -- each one relabelled to the wrong
+            # month (measured on a FinTürk series, and all 6.200 of them are
+            # quarterly). Spreading a coarse series over finer periods is
+            # inventing data, which CLAUDE.md #4 forbids.
             logger.warning(
-                "wide(): %s için series_catalog'da kind bulunamadı, "
+                "wide(): %s %s yayimlaniyor, %s'e yukseltilmedi; kendi "
+                "donemlerinde birakildi",
+                sid,
+                native,
+                freq,
+            )
+            aligned[sid] = sub[["period", "value"]]
+            continue
+        kind, agg_method = methods.get(sid, (None, None))
+        if kind is None and agg_method is None:
+            logger.warning(
+                "wide(): %s için series_catalog'da kind/agg_method yok, "
                 "%s frekansına hizalanmadı",
                 sid,
                 freq,
             )
-            aligned[sid] = sub
+            aligned[sid] = sub[["period", "value"]]
             continue
-        aligned[sid], _formula = transforms.to_freq(sub, kind, freq)
+        aligned[sid], _formula = transforms.to_freq(
+            sub, kind, freq, agg_method=agg_method
+        )
 
     if not aligned:
         return pd.DataFrame(columns=["period", *ids])
 
     result, _formula = transforms.align_join(aligned, how="outer")
     return result
+
+
+def coverage() -> pd.DataFrame:
+    """(series_id, first, last): the first and last observation date holding
+    a value, per pool series.
+
+    Not `run_sql`: that is the model's door and always wraps a query in
+    `LIMIT 1000`, which silently cut this aggregate to the first thousand
+    series -- every candidate past them was then offered with no coverage at
+    all (measured 22 Sep, 45k series). The guard stays where it belongs; the
+    lake's own reads go through named queries like this one.
+    """
+    con = connect()
+    try:
+        return con.execute(
+            "SELECT series_id, MIN(obs_date) AS first, MAX(obs_date) AS last "
+            "FROM observations WHERE value IS NOT NULL GROUP BY series_id"
+        ).df()
+    finally:
+        con.close()
 
 
 def run_sql(
@@ -583,13 +721,20 @@ def run_sql(
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    ids = default_series_ids()
-    obs_path, catalog_path = build_gold(ids)
+    from lakehouse_agent.lake.classify import render_kind_review
+
+    obs_path, catalog_path = build_gold()
+    catalog = pd.read_parquet(catalog_path)
+    review = Path("docs/kind_review.md")
+    review.write_text(
+        render_kind_review(pd.read_parquet(CLASSIFICATION_PATH), catalog),
+        encoding="utf-8",
+    )
     logger.info(
-        "gold yazıldı: %s, %s (%d seri: evds=%d bddk=%d)",
+        "gold yazıldı: %s (%.1f MB), %s (%d seri: %s)",
         obs_path,
+        obs_path.stat().st_size / 1e6,
         catalog_path,
-        len(ids),
-        sum(1 for i in ids if i.startswith("evds:")),
-        sum(1 for i in ids if i.startswith("bddk:")),
+        len(catalog),
+        catalog["source"].value_counts().to_dict(),
     )

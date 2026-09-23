@@ -6,14 +6,14 @@ Uzun açıklamalar `docs/` altına, buraya sadece **kural** yaz.
 ## Proje
 
 KKB Hackathon 2026. EVDS + BDDK verisini (2021-01 – 2026-06) bronze→silver→gold
-katmanlarına indiren, DuckDB üzerinden sorgulanabilir hale getiren ve bir
+katmanlarına indiren, DuckDB + LanceDB üzerinden sorgulanabilir hale getiren ve bir
 kendi agent döngüsüne (LangGraph değil, `docs/decisions.md`) araç olarak sunan
 Python projesi. Teslim tarihi 20 Eylül'den ertelendi.
 
-Agent'ın **arama** aracı havuzun kendi kataloğunda (gold `series_catalog`)
-çalışıyor, LanceDB indeksinde değil (22 Eyl, `docs/decisions.md`). LanceDB
-indeksi (`build_index.py`, `data/catalog.lance`) havuz dışı EVDS keşfi için
-duruyor; agent yolunda kullanılmıyor.
+**İki ayrı LanceDB indeksi var, karıştırma.** Agent'ın araması `data/pool_index`
+üzerinde çalışıyor: havuzun kendi kataloğu (`lake/pool_index.py`). `build_index.py`
+ve `data/catalog.lance` ham EVDS kataloğunu indeksliyor ve yalnızca havuz **dışı**
+keşif için duruyor; agent yolunda değil.
 
 ## Geliştirici ve sahiplik (ÖNEMLİ)
 
@@ -25,7 +25,7 @@ duruyor; agent yolunda kullanılmıyor.
 ## Sözleşmeler (değiştirilemez — agent ve araçlar bunlara göre yazıldı)
 
 `data/gold/observations.parquet` sütunları, tam olarak:
-`series_id, period, freq, value, unit, source, fetched_at`
+`series_id, period, freq, value, unit, source, fetched_at, obs_date`
 
 `data/gold/series_catalog.parquet` sütunları:
 `series_id, name_tr, name_en, source, freq, unit, kind, agg_method, cum_type,
@@ -33,8 +33,12 @@ start_date, end_date, topic, tags, metadata_url, notes`
 
 - `series_id` önekli: `evds:TP.KTF12`, `bddk:aylik:tuketici:konut:TL:sektor`
 - `period` = dönemin İLK günü (aylık → ayın 1'i, haftalık → Pazartesi). DATE, saat yok.
-- `kind` ∈ stock | flow | rate | index → frekans dönüşümünü ve yorumu belirler
-- `cum_type` ∈ none | ytd | since_start
+- `obs_date` = kaynağın değere verdiği tarih (haftalıkta Cuma); dönüşüm ve
+  pencere (`2021-01-01 .. 2026-06-30`) buna göre.
+- `kind` ∈ stock | flow | rate | index → yorumu belirler; kurala uymayan seride boş
+- `agg_method` → frekans dönüşümünü belirler (EVDS'nin kendi önerisi)
+- `cum_type` ∈ none | ytd | since_start → ham verinin kümülatifliği; `ytd`
+  silver'da aylık akıma çevrilir
 - Şema değişikliği gerekiyorsa önce `docs/contracts.md` güncellenir, bana sor.
 
 ## Komutlar
@@ -45,13 +49,14 @@ uv run pytest -q             # testler (ağ ERİŞİMİ OLMADAN geçmeli)
 uv run ruff check --fix .
 uv run ruff format .         # CI `--check` ile koşuyor, format da kırar
 # --source evds için --datagroups ya da --all ZORUNLU; ikisi de yoksa çıkar.
-uv run python -m lakehouse_agent.ingest.run --source evds \
-  --datagroups bie_kt100h,bie_kfe,bie_tukfiy2025,bie_akonutsat1,bie_akonutsat2,bie_hpbitablo6 \
-  --since 2021-01 --until 2026-06
+uv run python -m lakehouse_agent.ingest.run --source evds --all --since 2021-01 --until 2026-06
 uv run python -m lakehouse_agent.ingest.run --source bddk --since 2021-01 --until 2026-06
-uv run python -m lakehouse_agent.lake.gold        # bronze+silver -> data/gold
-uv run python -m lakehouse_agent.lake.quality     # docs/data_quality.md
-uv run python build_index.py                      # havuz DIŞI EVDS keşif indeksi
+#   (bddk_haftalik, bddk_finturk de aynı biçimde)
+uv run python -m lakehouse_agent.lake.gold         # bütün havuz -> data/gold + docs/kind_review.md
+uv run python -m lakehouse_agent.lake.quality      # docs/data_quality.md
+uv run python -m lakehouse_agent.lake.pool_index   # arama indeksi (MIA embedding, uzun sürer)
+uv run python -m lakehouse_agent.lake.search_eval  # arama ölçümü -> eval/results/
+uv run python build_index.py                       # havuz DIŞI EVDS keşif indeksi (ayrı)
 # Agent: üç mod. --real demoda koşan moddur.
 uv run python -m lakehouse_agent.agent.loop --fake --question "..."
 uv run python -m lakehouse_agent.agent.loop --real --question "..." --question "..."

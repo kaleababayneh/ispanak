@@ -69,6 +69,7 @@ OBSERVATION_COLUMNS = [
     "unit",
     "source",
     "fetched_at",
+    "obs_date",
 ]
 
 #: `freq` is a code, not a label. `contracts.Freq` allows exactly these.
@@ -177,7 +178,7 @@ def test_get_accepts_the_contracted_year_month_format(lake):
     assert isinstance(lake.get([SHARED_SERIES], "2021-01", "2021-06"), pd.DataFrame)
 
 
-def test_get_returns_the_seven_gold_columns_in_order(lake):
+def test_get_returns_the_gold_columns_in_order(lake):
     frame = lake.get([SHARED_SERIES], "2021-01", "2021-06")
     assert list(frame.columns) == OBSERVATION_COLUMNS
 

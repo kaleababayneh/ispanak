@@ -12,7 +12,7 @@ import duckdb
 import pandas as pd
 import pytest
 
-from lakehouse_agent.ingest import bddk_monthly, evds
+from lakehouse_agent.ingest import evds
 from lakehouse_agent.lake import gold
 
 
@@ -79,7 +79,48 @@ def test_build_series_catalog_maps_scenario_kind_and_agg_method(monkeypatch, tmp
     assert row["name_tr"] == "Konut Fiyat Endeksi (KFE)"
 
 
-def test_build_series_catalog_raises_for_series_without_scenario_mapping(
+def test_a_series_outside_the_scenario_is_classified_by_the_rules(
+    monkeypatch, tmp_path
+):
+    """It used to raise: a hand mapping per series does not scale to the
+    pool. The rules (lake/classify.py) decide; a series they cannot place
+    gets no kind rather than a guessed one."""
+    monkeypatch.chdir(tmp_path)
+    evds.CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "SERIE_CODE": "TP.POLITIKA",
+                "DATAGROUP_CODE": "bie_x",
+                "SERIE_NAME": "Politika Faizi",
+                "FREQUENCY_STR": "AYLIK",
+                "DEFAULT_AGG_METHOD": "last",
+                "BIRIMI": "Yüzde",
+            },
+            {
+                "SERIE_CODE": "TP.M2FIYAT",
+                "DATAGROUP_CODE": "bie_x",
+                "SERIE_NAME": "Konut Birim Fiyatı",
+                "FREQUENCY_STR": "AYLIK",
+                "DEFAULT_AGG_METHOD": "avg",
+                "BIRIMI": "TL/m2",
+            },
+        ]
+    ).to_parquet(evds.CATALOG_PATH, index=False)
+
+    catalog = gold.build_series_catalog(["evds:TP.POLITIKA", "evds:TP.M2FIYAT"])
+
+    rows = catalog.set_index("series_id")
+    assert rows.loc["evds:TP.POLITIKA", ["kind", "agg_method", "unit"]].tolist() == [
+        "rate",
+        "last",
+        "Yüzde",
+    ]
+    assert pd.isna(rows.loc["evds:TP.M2FIYAT", "kind"])
+    assert rows.loc["evds:TP.M2FIYAT", "agg_method"] == "avg"
+
+
+def test_a_frequency_the_contract_cannot_name_stays_out_of_the_pool(
     monkeypatch, tmp_path
 ):
     monkeypatch.chdir(tmp_path)
@@ -87,84 +128,30 @@ def test_build_series_catalog_raises_for_series_without_scenario_mapping(
     pd.DataFrame(
         [
             {
-                "SERIE_CODE": "TP.UNMAPPED",
-                "DATAGROUP_CODE": "bie_x",
-                "FREQUENCY_STR": "AYLIK",
+                "SERIE_CODE": "TP.YARIM",
+                "DATAGROUP_CODE": "bie_y",
+                "FREQUENCY_STR": "ALTI AYLIK",
             }
         ]
     ).to_parquet(evds.CATALOG_PATH, index=False)
 
-    with pytest.raises(KeyError):
-        gold.build_series_catalog(["evds:TP.UNMAPPED"])
+    assert gold.evds_catalog_rows().empty
 
 
-def _write_bddk_fixture(tmp_path):
-    rows_yaml = tmp_path / "ingest" / "bddk_rows.yaml"
-    rows_yaml.parent.mkdir(parents=True)
-    rows_yaml.write_text(
-        "- tablo_no: 4\n"
-        '  satir_etiketi: "Tüketici Kredileri - Konut"\n'
-        '  series_id: "bddk:aylik:tuketici:konut:TL:sektor"\n'
-        "  cell_index: 4\n"
-        "  kind: stock\n"
-        '  unit: "milyon TL"\n'
-        "  cum_type: none\n",
-        encoding="utf-8",
+def _write_bddk_fixture(write):
+    write(
+        4,
+        2024,
+        1,
+        "Tüketici Kredileri (milyon TL), Dönem:2024/1",
+        ["TP", "YP", "Toplam"],
+        [("Tüketici Kredileri - Konut", "", 594545, 62, 594607)],
     )
 
-    bronze_dir = tmp_path / "data" / "bronze" / "bddk_aylik"
-    bronze_dir.mkdir(parents=True)
-    pd.DataFrame(
-        [
-            {
-                "yil": 2024,
-                "ay": 1,
-                "tablo_no": 4,
-                "satir_etiketi": "Tüketici Kredileri - Konut",
-                "series_id": "bddk:aylik:tuketici:konut:TL:sektor",
-                "cell_json": json.dumps(
-                    ["Sektör", 2, "Tüketici Kredileri - Konut", "", 594545, 62, 594607]
-                ),
-                "url": bddk_monthly.BASE_URL,
-                "http_status": 200,
-                "fetched_at": "2026-09-17T00:00:00+00:00",
-            }
-        ]
-    ).to_parquet(bronze_dir / "2024-01.parquet", index=False)
 
-
-def test_build_bddk_series_catalog_maps_yaml_fields(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    _write_bddk_fixture(tmp_path)
-
-    catalog = gold.build_bddk_series_catalog(["bddk:aylik:tuketici:konut:TL:sektor"])
-
-    assert list(catalog.columns) == gold.SERIES_CATALOG_COLUMNS
-    row = catalog.iloc[0]
-    assert row["name_tr"] == "Tüketici Kredileri - Konut"
-    assert row["source"] == "BDDK-Aylik"
-    assert row["freq"] == "M"
-    assert row["unit"] == "milyon TL"
-    assert row["kind"] == "stock"
-    assert row["agg_method"] == "last"
-    assert row["cum_type"] == "none"
-    assert row["metadata_url"] == "https://www.bddk.org.tr/BultenAylik/"
-
-
-def test_build_bddk_series_catalog_raises_for_series_without_yaml_mapping(
-    monkeypatch, tmp_path
-):
-    monkeypatch.chdir(tmp_path)
-    _write_bddk_fixture(tmp_path)
-
-    with pytest.raises(KeyError):
-        gold.build_bddk_series_catalog(["bddk:aylik:hayali"])
-
-
-def test_build_gold_mixes_evds_and_bddk_sources(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+def test_build_gold_mixes_evds_and_bddk_sources(bddk_bronze, tmp_path):
     _write_bronze_catalog_and_year(tmp_path)
-    _write_bddk_fixture(tmp_path)
+    _write_bddk_fixture(bddk_bronze)
 
     obs_path, catalog_path = gold.build_gold(
         ["evds:TP.KFE.TR", "bddk:aylik:tuketici:konut:TL:sektor"]
@@ -184,12 +171,11 @@ def test_build_gold_mixes_evds_and_bddk_sources(monkeypatch, tmp_path):
     }
 
 
-def test_build_gold_freq_values_match_contracts_freq_literal(monkeypatch, tmp_path):
+def test_build_gold_freq_values_match_contracts_freq_literal(bddk_bronze, tmp_path):
     """B'nin Pydantic Freq Literal'i D|W|M|Q|A (contracts.py) -- build_gold()
     çıktısı hiçbir zaman ham EVDS/BDDK dizgesi ("AYLIK" gibi) taşımamalı."""
-    monkeypatch.chdir(tmp_path)
     _write_bronze_catalog_and_year(tmp_path)
-    _write_bddk_fixture(tmp_path)
+    _write_bddk_fixture(bddk_bronze)
 
     obs_path, catalog_path = gold.build_gold(
         ["evds:TP.KFE.TR", "bddk:aylik:tuketici:konut:TL:sektor"]
@@ -235,15 +221,11 @@ def test_build_gold_raises_on_schema_mismatch_instead_of_silent_nan_column(
 
     from lakehouse_agent.lake import silver as silver_module
 
-    def broken_build_silver_observations(series_ids, *, source="evds"):
-        real, dropped = silver_module.build_silver_observations(
-            series_ids, source=source
-        )
-        return real.rename(columns={"freq": "frekans"}), dropped
+    def broken_iter_evds_silver(catalog, **kwargs):
+        for real, dropped in silver_module.iter_evds_silver(catalog, **kwargs):
+            yield real.rename(columns={"freq": "frekans"}), dropped
 
-    monkeypatch.setattr(
-        gold, "build_silver_observations", broken_build_silver_observations
-    )
+    monkeypatch.setattr(gold, "iter_evds_silver", broken_iter_evds_silver)
 
     with pytest.raises(ValueError, match="freq"):
         gold.build_gold(["evds:TP.KFE.TR"])
@@ -277,13 +259,11 @@ def test_build_gold_writes_dedup_stats_with_real_dropped_count(monkeypatch, tmp_
     assert stats["dropped_duplicates"] == 1
 
 
-def test_build_gold_drops_periods_after_until_but_keeps_whole_last_month(
-    monkeypatch, tmp_path
-):
+def test_build_gold_cuts_the_window_by_observation_date(monkeypatch, tmp_path):
     """EVDS ingest fetches whole calendar years, so the current year's chunk
-    carries months past the project scope. build_gold cuts on period with
-    get(end=...)'s rule: the week starting Monday 2024-12-30 is December's
-    even though its Friday observation (03-01-2025) is January's."""
+    carries months past the project scope. build_gold cuts by the date the
+    value was observed: the week of Monday 2024-12-30 was observed on Friday
+    03-01-2025, so it is January's and goes with January."""
     monkeypatch.chdir(tmp_path)
     evds.CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
@@ -313,21 +293,48 @@ def test_build_gold_drops_periods_after_until_but_keeps_whole_last_month(
     pd.DataFrame(
         {
             "Tarih": [
-                "03-01-2025",  # -> Monday 2024-12-30, kept
-                "10-01-2025",  # -> Monday 2025-01-06, dropped
+                "03-01-2025",  # Monday 2024-12-30, observed in January
+                "10-01-2025",  # Monday 2025-01-06
             ],
             "TP_KTF12": ["2", "3"],
         }
     ).to_parquet(year_dir / "2025.parquet", index=False)
 
-    obs_path, _ = gold.build_gold(["evds:TP.KTF12"], until="2024-12")
+    obs_path, _ = gold.build_gold(["evds:TP.KTF12"], since=None, until="2024-12")
 
     observations = pd.read_parquet(obs_path)
-    assert list(observations["period"]) == [date(2024, 12, 16), date(2024, 12, 30)]
+    assert list(observations["period"]) == [date(2024, 12, 16)]
+    assert list(observations["obs_date"]) == [date(2024, 12, 20)]
 
-    obs_path, _ = gold.build_gold(["evds:TP.KTF12"], until=None)
+    obs_path, _ = gold.build_gold(["evds:TP.KTF12"], since="2025-01", until=None)
 
-    assert len(pd.read_parquet(obs_path)) == 3
+    observations = pd.read_parquet(obs_path)
+    # The first week of 2025 starts on a 2024 Monday and is still January's.
+    assert list(observations["period"]) == [date(2024, 12, 30), date(2025, 1, 6)]
+
+
+def test_a_series_with_no_value_in_the_window_is_not_in_the_pool(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _write_bronze_catalog_and_year(tmp_path)
+    pd.DataFrame({"Tarih": ["2024-1"], "TP_KFE_TR": ["-"]}).to_parquet(
+        evds.DATAGROUPS_DATA_ROOT / "bie_kfe" / "2024.parquet", index=False
+    )
+
+    obs_path, catalog_path = gold.build_gold(["evds:TP.KFE.TR"])
+
+    assert pd.read_parquet(obs_path).empty
+    assert pd.read_parquet(catalog_path).empty
+
+
+def test_every_pool_series_has_its_classification_on_record(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _write_bronze_catalog_and_year(tmp_path)
+
+    gold.build_gold(["evds:TP.KFE.TR"])
+
+    record = pd.read_parquet(gold.CLASSIFICATION_PATH).set_index("series_id")
+    assert record.loc["evds:TP.KFE.TR", "kind"] == "index"
+    assert record.loc["evds:TP.KFE.TR", "kind_reason"].startswith("elle")
 
 
 def test_get_accepts_year_month_bounds_and_keeps_whole_end_month(monkeypatch, tmp_path):
@@ -620,3 +627,24 @@ def test_reading_parquet_directly_yields_different_period_dtype_than_get(
 
     assert not pd.api.types.is_datetime64_any_dtype(from_parquet["period"])
     assert pd.api.types.is_datetime64_any_dtype(from_get["period"])
+
+
+@pytest.mark.skipif(
+    not gold.OBSERVATIONS_PATH.exists(), reason="gerçek gold verisi yok"
+)
+def test_wide_leaves_a_coarser_series_on_its_own_periods():
+    """CLAUDE.md #4. `wide`'s docstring always claimed a series coarser than
+    the target was left alone; it was not. `to_freq` reindexes onto a
+    date_range, so a quarterly series became ten monthly rows with four
+    values, each relabelled to the wrong month -- and all 6.200 FinTürk
+    series are quarterly."""
+    gold.GOLD_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    sid = "bddk:finturk:bireysel:istanbul:konut_kredisi:sektor"
+
+    quarterly = gold.get([sid], "2021-01", "2021-12")
+    result = gold.wide([sid], "2021-01", "2021-12")
+
+    assert len(quarterly) == 4
+    assert len(result) == 4  # not ten, and no month it never reported
+    assert list(pd.to_datetime(result["period"]).dt.month) == [1, 4, 7, 10]
+    assert result[sid].notna().all()
