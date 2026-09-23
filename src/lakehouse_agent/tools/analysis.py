@@ -31,6 +31,7 @@ from lakehouse_agent.analysis.anomaly import (
     IQR_FALLBACK_NOTE,
     detect_anomalies,
 )
+from lakehouse_agent.analysis.causality import NotEnoughData, lead_lag
 from lakehouse_agent.analysis.change import detect_changes
 
 try:
@@ -296,6 +297,159 @@ def make_detect_changes() -> ToolSpec:
     )
 
 
+# --- causality --------------------------------------------------------------
+
+#: Lags a pair is tested over by default: half a year of monthly data, which
+#: is where a credit or price reaction is looked for. Twelve is the most the
+#: tool accepts -- every extra lag costs observations and widens the
+#: correction that keeps the result honest.
+DEFAULT_MAX_LAG = 6
+MAX_MAX_LAG = 12
+
+#: Quantities whose change is read as a growth rate, so differencing happens
+#: in logs. A rate or an index is differenced as it is: a percentage point is
+#: already a change.
+_LOG_KINDS = frozenset({"stock", "flow"})
+
+
+class TestCausalityArgs(BaseModel):
+    table_ref: TableRef | None = Field(
+        None,
+        description="Analiz edilecek tablo; boş bırakılırsa aktif tablo kullanılır.",
+        examples=["t01_get_series"],
+    )
+    column: str = Field(
+        ...,
+        description=(
+            "Öncül olup olmadığı sınanan sütun (X). Önceki araç çıktısından "
+            "birebir kopyalayın."
+        ),
+        examples=["TP_KFE_TR"],
+    )
+    against: str = Field(
+        ...,
+        description=(
+            "Diğer sütun (Y). Araç iki yönü de sınar: X, Y'nin önünde mi, "
+            "yoksa Y, X'in önünde mi."
+        ),
+        examples=["aylik_tuketici_konut_TL_sektor"],
+    )
+    max_lag: int = Field(
+        DEFAULT_MAX_LAG,
+        ge=1,
+        le=MAX_MAX_LAG,
+        description=(
+            f"Kaç döneme kadar gecikme sınanacak (varsayılan {DEFAULT_MAX_LAG}). "
+            "Seri kısaysa araç bunu kendiliğinden düşürür ve söyler."
+        ),
+    )
+
+
+def _is_level(ctx: ToolContext, table_ref: TableRef | None, column: str) -> bool:
+    """Whether this column is a level (a balance or a flow), read from the
+    lineage the tools recorded. Unknown counts as not a level: differencing
+    the log of something that turns out to be a rate would be wrong, while
+    differencing a level without logs is merely coarser."""
+    entry = _lineage_entry(ctx, table_ref, column)
+    return bool(entry and entry.kind in _LOG_KINDS)
+
+
+def make_test_causality() -> ToolSpec:
+    """Granger lead-lag test plus lagged correlation (analysis/causality.py)."""
+
+    def run(args: TestCausalityArgs, ctx: ToolContext) -> ToolResult:
+        frame = ctx.table(args.table_ref)
+        missing = [
+            name for name in (args.column, args.against) if name not in frame.columns
+        ]
+        if missing:
+            return ToolResult(
+                ok=False,
+                summary=(
+                    f"{', '.join(repr(name) for name in missing)} sütunu tabloda yok. "
+                    f"Mevcut sütunlar: {', '.join(map(str, frame.columns))}."
+                ),
+            )
+        if args.column == args.against:
+            return ToolResult(
+                ok=False,
+                summary="Aynı sütun iki kez verildi; iki farklı sütun gerekiyor.",
+            )
+
+        try:
+            result, correlation, summary = lead_lag(
+                frame,
+                args.column,
+                args.against,
+                max_lag=args.max_lag,
+                log_x=_is_level(ctx, args.table_ref, args.column),
+                log_y=_is_level(ctx, args.table_ref, args.against),
+            )
+        except NotEnoughData as exc:
+            return ToolResult(ok=False, summary=f"Öncüllük sınanamadı: {exc}")
+        except Exception as exc:  # noqa: BLE001 - reported, never raised at the loop
+            return ToolResult(
+                ok=False, summary=f"test_causality çalıştırılamadı: {exc}"
+            )
+
+        ref = ctx.new_table_ref("causality")
+        ctx.put_table(ref, result)
+        lag_ref = ctx.new_table_ref("lag_corr")
+        ctx.put_table(lag_ref, correlation)
+
+        sources = sorted(
+            {
+                series
+                for column in (args.column, args.against)
+                for series in _upstream_source_series(ctx, args.table_ref, column)
+            }
+        )
+        formulas = {
+            "yon": "sınanan yön: X -> Y, 'X'in geçmişi Y'yi öngörüyor mu'",
+            "en_iyi_gecikme": "p değeri en küçük olan gecikme (dönem)",
+            "p_degeri": "Granger F testinin p değeri (ssr_ftest)",
+            "anlamli": "p < 0,05 / denenen gecikme sayısı (Bonferroni)",
+            "gozlem": "durağanlaştırma sonrası ortak gözlem sayısı",
+            "donusum": "durağanlık için uygulanan dönüşüm: yok | fark | log-fark",
+        }
+        columns = [
+            ColumnInfo(
+                name=name,
+                op="test_causality",
+                formula=formulas.get(name),
+                inputs=[args.column, args.against],
+                source_series=sources,
+                tool="test_causality",
+                step_no=ctx.step_no,
+            )
+            for name in result.columns
+        ]
+
+        return ToolResult(
+            ok=True,
+            summary=(
+                f"{summary} Gecikmeli korelasyon tablosu: {lag_ref} "
+                f"({len(correlation)} satır)."
+            ),
+            table_ref=ref,
+            preview=_preview_rows(result),
+            columns=columns,
+        )
+
+    return ToolSpec(
+        name="test_causality",
+        description_tr=(
+            "İki sütun arasında öncüllük sınar: Granger testi (iki yönde, "
+            "durağanlaştırma ve çoklu test düzeltmesiyle) ve gecikmeli "
+            "korelasyon. Nedensellik kanıtlamaz, hangi serinin önde gittiğini "
+            "ölçer."
+        ),
+        args_model=TestCausalityArgs,
+        fn=run,
+        brief_name="Causality",
+    )
+
+
 #: `tools.toolset.make_registry` wires these into the production registry --
 #: this module only builds the specs, it never registers itself.
-TOOLS = [make_detect_anomalies(), make_detect_changes()]
+TOOLS = [make_detect_anomalies(), make_detect_changes(), make_test_causality()]

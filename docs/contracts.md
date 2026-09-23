@@ -219,9 +219,10 @@ adımın çalışma süresinden düşülüyor. Jüri kartı okurken tur düşmes
 
 Aktif tablo kuralı: `get_series(into="new")`, `run_sql`, `ingest` ve `read_url`
 aktif tabloyu değiştirir; analiz sonucu tabloları değiştirmez. Üretim kaydı
-(`tools/toolset.py`): search_catalog, get_series, transform_table,
-detect_anomalies, detect_changes, **read_url**. `run_sql` ve `ingest` henüz
-yalnızca sahte araçlarda; kural sıraları geldiğinde uyacakları kural.
+(`tools/toolset.py`, sekiz araç): search_catalog, get_series,
+transform_table, detect_anomalies, detect_changes, **read_url**,
+**test_causality**, **web_search**. `run_sql` ve `ingest` henüz yalnızca
+sahte araçlarda; kural sıraları geldiğinde uyacakları kural.
 
 `read_url` aktif tabloyu devraldığında bunu **uyarıda söyler** ve önceki
 tablonun adını verir: analizin ortasında okunan bir adres, sonraki her
@@ -348,6 +349,71 @@ yüksek" sorusunun cevabı böylece araçtan gelir, modelin saymasından değil.
 
 ---
 
+## 7.2 Öncüllük (`test_causality`, 22 Eyl)
+
+`analysis/causality.py` saf, `tools/analysis.py` sarmalar. Aynı tablodan iki
+sütun alır, iki tablo yazar (hiçbiri aktif tabloyu değiştirmez):
+
+- **Granger tablosu**, yön başına bir satır: `yon, en_iyi_gecikme, p_degeri,
+  anlamli, gozlem, donusum`.
+- **Gecikmeli korelasyon tablosu**, −n…+n gecikme için `korelasyon` ve
+  `gozlem`. Pozitif gecikme = ilk sütun önde (x[t−k] ile y[t]).
+
+Kurallar:
+
+- Durağanlık şart. ADF durağan demiyorsa fark alınır; sütunun türü stok ya da
+  akımsa log-fark (değişim = büyüme oranı), oran ve endekste düz fark. Tür
+  sütunun soyağacından okunur; bilinmiyorsa düz fark. Uygulanan dönüşüm
+  tabloda yazar.
+- Eşik `0,05 / denenen gecikme` (Bonferroni): altı gecikmenin en iyisini
+  almak yirmide bir yanlış alarmı dörtte bire çıkarır.
+- Gecikme başına en az 3 gözlem + 10 taban; seri kısaysa gecikme sayısı
+  düşürülür, tek gecikmeye bile yetmiyorsa araç reddeder.
+- Özet metni her zaman "bu nedensellik kanıtı değildir, üçüncü etkenler
+  dışlanmadı" cümlesini taşır; `prompts/answer.md` kural 8 modeli buna bağlar.
+
+---
+
+## 7.3 Web araması (`web_search`, 22 Eyl)
+
+Havuzun cevaplayamadığı soru için: bir tarihte ne olduğu, hangi kararın
+alındığı. `web/search.py` arar, `tools/web_search.py` sunar.
+
+- **Sağlayıcı değiştirilebilir.** Bugün `ddgs` (DuckDuckGo, anahtarsız,
+  ücretsiz, hız sınırlı). Ücretli bir servise geçmek tek fonksiyon değiştirir;
+  araç, prompt ve testler aynı kalır. Sağlayıcı **çağrı anında** çözülür;
+  varsayılan argüman olarak bağlamak, testlerin sessizce ağa çıkmasına yol
+  açıyordu (ölçüldü, üç test).
+- **Sonuçlar veri, talimat değil.** Araç çıktısının başında bunu söyleyen bir
+  etiket var: içindeki yönergelere uyulmaz. Hiçbir şey `eval`/`exec`'e
+  girmez, tabloya yazılmaz.
+- **Sayı üretmez.** Tablo yazmaz, `preview` döndürmez. Cevaptaki sayılar
+  yalnızca havuz araçlarından gelir; `answer.md` kural 5 modele arama
+  özetinden sayı aktarmayı yasaklar (gerekçe: ölçümde model Temmuz 2023
+  kararını Ağustos'un oranıyla yazdı).
+- **Onay kapısı:** `approval="fetch"`, `read_url` ile aynı. Kart sorguyu
+  gönderilmeden önce gösterir.
+- Sonuçlar sorgu başına `data/adhoc/search/` altında önbelleklenir (zaman
+  damgasıyla); aynı soru ikinci kez çağrı yapmaz.
+
+**Kırılma → açıklama zinciri:** `detect_changes` bir tarih döndürdüğünde
+planner (kural 19) kullanıcı istemeden o ay için arama yapar, `answer.md`
+kural 5 de cevabın bunu kaynağıyla anlatmasını zorunlu kılar.
+
+---
+
+### 7.4 Doğrulayıcı bayrakları
+
+`VerificationFlag.kind` ∈ `number_not_found | source_not_listed |
+source_not_cited | date_out_of_range | unit_mix | model_contradiction`.
+`source_not_cited` 22 Eyl'de web araçlarıyla eklendi: cevapta uydurma kaynak
+olmasın diye `source_not_listed` vardı, ama sessiz hali eksikti — tur web'den
+okuduysa cevabın okuduğu adresi anması gerekir, yoksa bilgi havuzdan gelmiş
+gibi görünür. Adresin tamamı, şemasız hali, dosya adı ya da alan adı geçerse
+anılmış sayılır (uzun adresler "tcmb.gov.tr/…/duy2023-25" diye kısaltılıyor).
+
+---
+
 ## 8. Onay noktaları
 
 Üç tane, fazlası değil. Kararı döngü verir, araçlar değil.
@@ -355,7 +421,7 @@ yüksek" sorusunun cevabı böylece araçtan gelir, modelin saymasından değil.
 | Tür | Ne zaman | Seçenekler |
 |---|---|---|
 | `series_choice` | ilk iki adayın skor oranı eşiği aşarsa (sorguda koduyla geçen seriler hariç) | aday `series_id`'leri |
-| `fetch` | havuzda olmayan veri çekilmeden önce (bugün: `read_url`) | `approve`, `cancel` |
+| `fetch` | havuzda olmayan veri çekilmeden önce (`read_url` ve `web_search`) | `approve`, `cancel` |
 | `quality` | eksik oranı eşiği aşarsa, tekrar varsa, birim bilinmiyorsa | `continue`, `change_assumption`, `cancel` |
 
 Kimlikler İngilizce çünkü kodda karşılaştırılıyor; etiketler Türkçe çünkü

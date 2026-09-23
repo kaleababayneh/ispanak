@@ -510,12 +510,26 @@ class PoolIndex:
         return cls(table=table, manifest=manifest, ids=ids, meta=meta)
 
     def nearest(self, query_vector: np.ndarray, k: int) -> list[tuple[str, float]]:
-        """(series_id, cosine similarity), best first."""
+        """(series_id, cosine similarity), best first.
+
+        `_distance` is asked for by name. Selecting only "series_id" worked
+        because LanceDB adds the score column back on its own, and it warns
+        on every search that it is going to stop doing that. The day it
+        stops, the line below raises `KeyError` and semantic search dies
+        whole -- in a demo, not in a test. Measured 23 Sep: naming it
+        returns byte-identical results today.
+
+        `keyword` deliberately does not do the same. Its score column is
+        `_score` and the full-text scanner rejects it as a selected field
+        ("No field named _score"), so the same edit there breaks the search
+        immediately. It never reads the score, so autoprojection going away
+        costs it nothing.
+        """
         hits = (
             self.table.search(np.asarray(query_vector, dtype=np.float32))
             .distance_type("cosine")
             .limit(k)
-            .select(["series_id"])
+            .select(["series_id", "_distance"])
             .to_pandas()
         )
         return [

@@ -366,7 +366,8 @@ aktif tablo (öncekine döner, boşa değil) ve `retired_tables`. Arayüze de
 
 ## Uyarılar tura ait, oturuma değil
 `_collected_warnings` iki listeyi aynı etiket altında basıyordu: `state.warnings`
-her tur sıfırlanıyor, `state.steps` sıfırlanmıyor. `answer.md` 8. kural modele
+her tur sıfırlanıyor, `state.steps` sıfırlanmıyor. `answer.md`'nin o günkü 8.
+kuralı (bugün 9.) modele
 "eksik kaldıysan ilk cümlende söyle" dediği için 3. tur, 1. turda patlamış bir
 aracı canlı arıza gibi bildiriyordu. Tek satır: `step.turn_no == state.turn_no`.
 
@@ -964,6 +965,102 @@ Sonuç:  Havuz indeksi, indirilen dosyalar ve DuckDB dosyası silinerek koşuldu
         867 test geçti. Kural: repoda olmayan bir dosyaya bağlı test yazılmaz;
         gold repoda olduğu için gerçek veriyle test yazılabilir, indeks değil.
 
+## Öncüllük aracı (`test_causality`, 22 Eyl)
+Bağlam: Altı aracın beşincisi ve örnek senaryonun üçüncü sorusu ("faiz düştüğü
+        halde kredilerin artmamasının sebebi fiyat artışı olabilir mi?") tam
+        olarak bunu soruyor. Araç yokken agent nedensellikten söz etmiyordu —
+        doğru davranış, ama ölçemediği için.
+Karar:  İki ölçüm birlikte veriliyor, çünkü farklı sorulara cevap veriyorlar:
+        Granger "bu tesadüf mü?" (iki yönde, 1..n gecikme, ssr F testi),
+        gecikmeli korelasyon "ne kadar güçlü ve hangi gecikmede?". p-değeri
+        büyüklük hakkında bir şey söylemez; korelasyon tablosu okunur olanı.
+        Durağanlaştırma zorunlu (trendli iki seri konusu ne olursa olsun
+        ilişkili çıkar); dönüşüm seri başına, sütunun türüne göre seçiliyor.
+        Eşik Bonferroni ile düzeltiliyor ve kaç gecikme denendiği yazılıyor.
+        Saf fonksiyonun adı `lead_lag`: "test_" ile başlayan bir modül
+        fonksiyonunu pytest test sanıp toplamaya çalışıyor. Araç adı
+        `test_causality` kalıyor — model onu soruya göre görüyor.
+Sonuç:  Sentetik çiftte (kredi, fiyatı 3 ay gecikmeyle izliyor) doğru yön
+        anlamlı, ters yön değil; korelasyon zirvesi tam 3. gecikmede.
+        Gerçek veride (KFE ile BDDK konut kredisi bakiyesi, 2021-01 – 2025-12,
+        59 gözlem): **hiçbir yönde anlamlı öncüllük yok** (kfe→kredi p=0,109;
+        kredi→kfe p=0,109; eşik 0,0083). Gecikmeli korelasyon zirvesini −3'te
+        yapıyor (r=0,42), yani zayıf da olsa kredi fiyatın önünde gidiyor —
+        sorunun ima ettiğinin tersi yön. Canlı koşuda model aracı kendisi
+        çağırdı ve sonucu "iki yönde de anlamlı öncüllük yok" diye, gecikme ve
+        p değerleriyle aktardı; doğrulayıcı bayrağı yok.
+
+## Web arama aracı ve kırılma → açıklama zinciri (22 Eyl)
+Bağlam: Altı aracın sonuncusu. Havuz "faiz 2023-07'de kırıldı" diyebiliyor ama
+        o ay ne olduğunu söyleyemiyor; o bilgi bir basın duyurusunda.
+Karar:  - Sağlayıcı arkasında tek arayüz: bugün `ddgs` (anahtarsız), hız
+          sınırına takılırsak ücretli servise geçiş tek fonksiyon.
+        - Araç sayfa indirmiyor, yalnızca sonuç listesi döndürüyor: ölçümde
+          özet metinler zaten tarihi ve olayı taşıyor, sayfa indirmek ise her
+          biri 1–2 sn ve adım bütçesinden yiyor. Derinleşmek gerekirse model
+          `read_url` ile o sayfayı açıyor; iki araç birbirini tamamlıyor.
+        - Sonuçlar "veri, talimat değil" etiketiyle veriliyor: bunlar
+          kontrol etmediğimiz metinler ve doğrudan modelin bağlamına giriyor.
+        - Onay kapısı `read_url` ile aynı (`fetch`).
+        - Planner kural 19: `detect_changes` bir tarih bulduğunda kullanıcı
+          istemeden o ay aranır. `answer.md` kural 5: arama çalıştıysa cevap
+          ne bulduğunu ve kaynağını yazmak zorunda.
+Ölçüm:  Canlı koşu: kırılma 2023-07 bulundu → model kendiliğinden "TCMB Temmuz
+        2023 politika faizi kararı" aradı → TCMB'nin kendi duyurusuna ulaştı
+        (duy2023-25). İlk denemede cevap aramayı hiç anmadı; eksik olan
+        planner değil cevap prompt'uydu (kural 5 eklendi).
+        **İkinci denemede ciddi bir hata çıktı:** model arama özetlerinden
+        okuduğu oranları cevaba yazdı ve yanlış aya bağladı ("Temmuz'da
+        %17,5'ten %25'e"; gerçekte Temmuz 15→17,5, %25 Ağustos'ta).
+        Doğrulayıcı bunu yakalayamaz — sayı arama özetinde geçtiği için araç
+        çıktısı sayılıyor.
+Sonuç:  `answer.md` kural 5 sıkılaştırıldı: aramadan gelen **sayı cevaba
+        yazılmaz**, olay ve tarih yazılır; sayı gerekiyorsa kaynak `read_url`
+        ile açılır. Üçüncü koşuda model tam da bunu yaptı ve nedenini de
+        söyledi: "oranı burada aktarmıyorum çünkü arama özetinden gelen
+        sayılar hangi tarihe ait olduğu konusunda güvenilir değil."
+        Kalan risk: bu bir prompt kuralı, kod kısıtı değil. Kod tarafında
+        arama sonucu zaten tablo/sayı üretmiyor.
+
+## Cevapta kaynak: uydurmanın yanına sessizliği de koyduk (22 Eyl)
+Bağlam: Doğrulayıcı `source_not_listed` ile uydurma kaynağı yakalıyordu:
+        cevapta geçen her seri kimliği, kodu ve URL oturumun kaynak listesinde
+        olmalı. Ters yön açıktı — cevap hiç kaynak yazmasa bayrak kalkmıyordu.
+        Ölçüldü: kırılma + arama koşusunda model TCMB duyurusunu buldu ama
+        cevapta ne bulduğunu ne de adresi andı; cevap, bilgi havuzdan gelmiş
+        gibi okunuyordu.
+Karar:  `verifier._check_web_cited`: tur içinde `read_url` ya da `web_search`
+        başarıyla çalıştıysa, cevapta okunan adreslerden en az biri anılmalı.
+        Yeni bayrak türü `source_not_cited` (sözleşme §7.4).
+        Eşleşme cömert: adresin tamamı, şemasız hali, dosya adı ya da alan adı.
+        Gerekçe: bayrak sessizlik içindir, biçim için değil — modeller uzun
+        adresleri "tcmb.gov.tr/…/duy2023-25" diye kısaltıyor ve bu da okuyucunun
+        izleyebileceği bir kaynaktır. Yalnız bu turun çekimleri sayılır; bir
+        önceki turda yapılan arama bu turu bağlamaz.
+        `answer.md` kural 4 de sıkılaştırıldı: adres olduğu gibi yazılır,
+        yalnız dosya adı yetmez.
+Sonuç:  Altı test (anmama, şemasız adres, dosya adı, kısaltılmış adres, web
+        okumayan tur, başarısız çekim). Canlı koşuda cevap TCMB duyurusunu ve
+        PDF'i adlarıyla andı, bayrak yok.
+
+## Kaynaklar cevabın içinde değil, yanında (23 Eyl)
+Bağlam: Cevaptaki adres modelin yazdığıdır ve model uzun adresi kısaltıyor
+        ("tcmb.gov.tr/…/duy2023-25"): okunur ama tıklanamaz. Tam liste zaten
+        `sources` olayında var, ama ekrana basan bir yer yoktu.
+Karar:  Tur özetinde (`_summarise`, stderr) "KAYNAKLAR (bakilan)" bloğu:
+        oturumun bütün kaynakları, seri kimliği ya da tam URL ve adıyla.
+        Cevabın **metnine eklenmiyor**: cevap modelin yazdığı şeydir, ayrıca
+        kendi bastığımız adresleri doğrulayıcıya kaynak diye geri vermiş
+        olurduk (bayrak sırası: doğrula, sonra bas).
+        Başlık "bakilan": arama beş sonucun hepsini kaynak olarak kaydeder,
+        cevap ikisine dayanabilir; ikisini aynı adla anmak yanıltıcı olurdu.
+        Arayüz geldiğinde aynı olayı panelde tıklanabilir gösterecek; bu blok
+        o zamana kadar tek görünür yer ve atılacak bir şey değil (CLI demo
+        yüzeyi).
+Sonuç:  Cevapsız biten turda da basılıyor — nitekim ölçüm koşularından birinde
+        cevap boş döndü ve kaynaklar yine göründü. İki test (tam adres basılır,
+        kaynak yoksa başlık basılmaz).
+
 ## 23 Eylül incelemesinin düzeltmeleri
 Bağlam: Adım 1 (`feat/real-tools`) dört ayrı incelemeden geçti. Bulguların
         üçü ölçülerek doğrulandı ve testle sabitlendi; kalanlar aşağıda
@@ -1229,3 +1326,107 @@ Karar:  Başlık bandı hücre hücre değil kelime kelime okunuyor: her kelime
 Sonuç:  Aynı PDF'te 11 başlığın 11'i doğru: `AY/MONTH`, `Hacim/Volume (TL)`,
         `TOPLAM / TOTAL Miktar/Amount (KG)` ... Yinelenen `Sayısı/ Trans.`
         adları `_unique` ile ayrılıyor. Veri satırları değişmedi.
+
+## 23 Eylül incelemesi, üçüncü tur (nedensellik ve arama dalı)
+Bağlam: `feat/causality` üç incelemeden geçti; aşağıdakilerin hepsi ölçülerek
+        doğrulandı ve testle sabitlendi.
+Karar:  Güven hikâyesi (en önemlisi):
+        - **Arama sonucundaki sayı artık cevaba kanıt olamıyor.** Doğrulayıcı
+          her araç mesajını kanıtlanmış metin sayıyordu; `web_search` sonucu
+          da bir araç mesajı olduğu için yalnızca bir haber parçacığında geçen
+          "dolar kuru 99,99" bayraksız geçiyordu (ölçüldü). Oysa aracın kendi
+          metni, cevap isteminin 5. kuralı ve sözleşme §7.3 bunun
+          olamayacağını söylüyordu. Çit (`agent/formatting.fence`) artık tek
+          yerde tanımlı: `read_url` ve `web_search` yabancının yazdığı her
+          şeyi ona sarıyor, `_stated_text` çitli bölgeleri kesiyor. Ölçüm:
+          aynı cümle artık bayrak alıyor, tablodan gelen sayı ve kaynaklı
+          olay iddiası geçiyor.
+        - **Arama metni satır uyduramıyor.** `ddgs` adresleri `unquote`
+          ediyor ve sağlayıcı yalnızca başlık ile özeti sıkıştırıyordu; tek
+          bir `%0A` üç satıra dönüşüp `Uyarilar:`, `Kalite:` satırlarını
+          sıfırıncı sütunda taklit edebiliyordu (ölçüldü). Üç alan da
+          `one_line`'dan geçiyor ve çit içine giriyor.
+        - **Onay kartı sorguyu gösteriyor.** `web_search` önizlemesi
+          `source`/`detail` vermiyordu, kart "dis kaynak uzerinden veri
+          cekilsin mi?" diyordu. `read_url`'de düzeltilen regresyonun aynısı.
+        - **Arama motoru sabitlendi.** `ddgs` varsayılanı `auto`, yani google,
+          bing, brave, startpage de taranıyordu; her doküman DuckDuckGo
+          diyor. `BACKEND = "duckduckgo"`.
+        Süre bütçesi:
+        - **Boş cevap yeniden denemesi geç turlarda çalışmıyordu.** `_chat`
+          payı `active_s`'ten yeniden hesaplıyor, `left()` ise aynı
+          `_Spent`'ten ilk denemeyi bir kez daha düşüyordu. Ölçüm: tur 125 sn
+          harcamışken yeniden denemeye −15 sn veriliyor, bu `LlmTimeoutError`
+          oluyor ve `_answer` onu yutuyordu. Artık her çağrı yalnızca kendi
+          harcadığını düşüyor: 135 / 75 / 30 / 30 sn.
+        Nedensellik:
+        - **Durağanlık iddia edilmek yerine sağlanıyor.** Tek fark alınıp bir
+          daha bakılmıyordu. Ölçüm: 120 bağımsız iki-kez-entegre çiftin
+          117'si tek farktan sonra hâlâ durağan değildi ve %27,5'i "öncül"
+          çıkıyordu. Fark en çok iki kez yineleniyor; hâlâ durağan değilse
+          özet "DIKKAT ... sonucu kullanma" diyor. Yeni oran **%5,0** ve
+          kalan altı vakanın altısı da uyarı taşıyor.
+        - **Bonferroni ailesi iki yönü de sayıyor.** Eşik gecikme sayısına
+          bölünüyordu ama iki yön test edilip çifte tek karar veriliyor; 22
+          gözlemde gerçek oran %9 iken metin %5 diyordu. Artık `2 x gecikme`.
+        - **`donusum` iki serinin de dönüşümünü yazıyor.** Yalnızca neden
+          serisininkini yazıyordu, dolayısıyla bir satır "yok" derken diğer
+          taraf farklanmış olabiliyordu: seviyeye karşı fark regresyonu,
+          hiçbir şey olmamış gibi etiketlenmiş.
+        - Yan etki, ölçüldü: gerçek havuz çiftinde sonuç artık `kind` alanının
+          dolu olup olmamasına göre ters dönmüyor (p=0,6237 ve p=0,0312, ikisi
+          de anlamsız). Önceki halde biri "öncül" diğeri "öncüllük yok"
+          diyordu.
+        Belgeler: `answer.md` v3 (iki tane 9 numaralı kural vardı, rebase
+        artığı; ikincisi 10 oldu), `contracts.md` sekiz aracı ve `fetch`
+        kapısının iki aracını sayıyor, `docs/licenses.md` 69 paketle yeniden
+        üretildi (ddgs, primp, click dahil, hepsi permissive).
+Uygulanmadı (gerekçesiyle):
+        - **22 gözlemde testin gücü düşük** (güçlü etkide 0,42). Bu verinin
+          sınırı, kodun değil; "öncüllük yok" cevabını "ilişki yok" diye
+          okutmamak için ayrı bir güç cümlesi gerekir, o da ölçüm ister.
+        - **Tekil tasarım** (bir seri diğerinin katı) hâlâ "p=1,0, öncüllük
+          yok" diyor. Dürüst bir ret yazmak `_granger`'ın statsmodels
+          uyarısını ayırt etmesini gerektiriyor.
+        - **Tekrarlanan dönem, takvim boşluğu, karışık frekans** kontrol
+          edilmiyor. Üçü de `lead_lag`'in elindeki `period` sütunuyla
+          bakılabilir; ayrı bir adım.
+        - **Önbellekte süre sınırı yok**, boş sonuç kalıcı olarak saklanıyor
+          ve `force` parametresinin çağıranı yok.
+        - **Yeni araç testleri** hâlâ `sys.modules` saplaması kuran dosyanın
+          içinde; gerçek sözleşme nesneleriyle denenmiyor.
+
+## Alıntılanan adresin içindeki rakam iddia değildir (23 Eyl, canlı koşumdan)
+Bağlam: Çit düzeltmesinden sonraki ilk `--real` koşusunda doğru bir cevap iki
+        bayrakla çıktı: '906699' ve '900606'. İkisi de modelin kısaltarak
+        yazdığı haber adreslerinin içindeki numaralar
+        (`ekonomim.com/…-906699`).
+Neden:  Çit, arama sonucundaki adresleri `_stated_text`'ten çıkarıyor, ki asıl
+        istenen buydu. Ama cevaptaki kısaltılmış adres `https://` taşımadığı
+        için `_URL` ile de eşleşmiyordu, dolayısıyla içindeki rakamlar çıplak
+        sayı iddiası sayılıyordu. Kendi düzeltmemin yan etkisi.
+Karar:  Şemasız adresler de (`_BARE_URL`) diğer kimliklerle birlikte, sayı
+        okunmadan önce boşaltılıyor. `answer.md` 4. kuralı adresin yazılmasını
+        istiyor ve `_mentions` kısa biçimi kabul ediyor; bir alıntının gerçek
+        biçimi bu.
+Sonuç:  Ölçüm: alıntılı cevap geçiyor, arama parçacığındaki sayı ve uydurma
+        sayı hâlâ bayrak alıyor. Doğrulayıcının iki işi de yerinde.
+
+## `nearest` skor sütununu adıyla istiyor (23 Eyl, canlı koşumdan)
+Bağlam: `--real` koşusunda her `search_catalog` çağrısında LanceDB uyarı
+        basıyordu: arama çıktı sütunlarını belirtmiş ama `_distance`'ı
+        listeye koymamış; şimdilik sütun eklenmeye devam edecek, ileride
+        eklenmeyecek.
+Neden:  `pool_index.PoolIndex.nearest` yalnızca `series_id` seçiyor, sonra
+        `hits["_distance"]` okuyordu. Otomatik ekleme kalktığı gün satır
+        `KeyError` veriyor ve anlamsal arama komple düşüyor; bunu ilk gören
+        yer demo olurdu. Ölçüm (23 Eyl, gerçek havuz indeksi): sütunu adıyla
+        istediğimde sonuçlar birebir aynı.
+Karar:  `nearest` artık `["series_id", "_distance"]` seçiyor. `keyword` aynı
+        şeyi YAPMIYOR: onun skor sütunu `_score` ve tam metin tarayıcısı
+        seçilen alan olarak kabul etmiyor ("No field named _score"), yani
+        aynı düzeltme orada aramayı anında kırar. Zaten skoru hiç okumuyor.
+Sonuç:  `nearest` doğrudan test edildi (`test_nearest_scores_the_hits_it_
+        returns`): sıra benzerliğe göre ve en yakın kayıt 1,0 veriyor. Skoru
+        sabitleyince test kırmızıya düşüyor, yani sıralamanın sessizce ekleme
+        sırasına dönmesini de yakalıyor.

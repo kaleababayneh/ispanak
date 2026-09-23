@@ -17,11 +17,12 @@ import json
 import pandas as pd
 import pytest
 
+from lakehouse_agent.agent import loop as loop_module
 from lakehouse_agent.agent.events import ListSink
 from lakehouse_agent.agent.loop import AgentConfig, AgentDeps, AgentError, run_turn
 from lakehouse_agent.agent.prompts import load_prompt
 from lakehouse_agent.agent.state import ApprovalDecision, initial_state
-from lakehouse_agent.llm import LlmServerError, LlmTimeoutError
+from lakehouse_agent.llm import MIN_ATTEMPT_S, LlmServerError, LlmTimeoutError
 from lakehouse_agent.testing.fake_llm import FakeLLM, ScriptExhausted
 from lakehouse_agent.testing.fake_tools import make_fake_registry
 
@@ -1560,6 +1561,48 @@ def test_several_questions_are_turns_of_one_session(capsys):
     assert "t02_get_series" in err
 
 
+def test_the_recap_prints_every_address_in_full(capsys):
+    """An answer carries whatever address the model wrote, and a model
+    shortens a long one. The list beside it is built from the session, so a
+    person watching sees the address they can open."""
+    from datetime import UTC, datetime
+
+    from lakehouse_agent.agent.loop import _summarise
+    from lakehouse_agent.contracts import Source
+
+    url = "https://www.tcmb.gov.tr/wps/wcm/connect/tr/duyurular/2023/duy2023-25"
+    state = initial_state("cli")
+    state.turn_no = 1
+    state.sources = [
+        Source(
+            series_id="evds:TP.KTF12",
+            name="Konut Kredisi",
+            fetched_at=datetime(2026, 9, 22, tzinfo=UTC),
+        ),
+        Source(
+            url=url, name="TCMB duyurusu", fetched_at=datetime(2026, 9, 22, tzinfo=UTC)
+        ),
+    ]
+
+    _summarise(state, None)
+
+    err = capsys.readouterr().err
+    assert "KAYNAKLAR (bakilan)" in err
+    assert url in err  # not shortened
+    assert "evds:TP.KTF12" in err and "Konut Kredisi" in err
+
+
+def test_a_session_with_no_sources_prints_no_heading(capsys):
+    from lakehouse_agent.agent.loop import _summarise
+
+    state = initial_state("cli")
+    state.turn_no = 1
+
+    _summarise(state, None)
+
+    assert "KAYNAKLAR" not in capsys.readouterr().err
+
+
 def test_a_failed_turn_still_shows_what_it_built(capsys):
     """The 22 Sep live run ended on a bare error line although its table was
     built. The recap now prints the tables either way."""
@@ -2117,3 +2160,48 @@ def test_a_tool_call_cut_off_by_the_cap_is_asked_for_again_uncapped():
         for call in message["tool_calls"]
     ] == ["call_1", "whole"]
     assert not orphan_call_ids(state)
+
+
+def test_the_empty_answer_retry_still_has_time_late_in_a_turn():
+    """`allowance` is recomputed from `active_s`, which the first attempt
+    already increased, and `left()` subtracted that attempt a second time.
+    Measured: at 125 s spent the retry was handed -15 s, which `llm._call`
+    turns into `LlmTimeoutError` and `_answer` suppresses -- so main's
+    empty-answer retry silently did not happen on the late turns it exists
+    for. Both retry sites share one `_Spent`, so both were affected."""
+    clock = _Clock()
+    clock.now = 125.0
+    llm = FakeLLM([FakeLLM.text("", duration_ms=45_000), FakeLLM.text("Cevap.")])
+    deps = build([], clock=clock)
+    deps.llm = llm
+    state = initial_state("s1")
+    state.active_s = 125.0
+    spent = loop_module._Spent()
+
+    async def two_calls():
+        await loop_module._chat(
+            state,
+            deps,
+            [{"role": "user", "content": "x"}],
+            tools=None,
+            thinking=True,
+            tag="answer",
+            spent=spent,
+            last_chance=True,
+        )
+        clock.now += 45.0
+        await loop_module._chat(
+            state,
+            deps,
+            [{"role": "user", "content": "x"}],
+            tools=None,
+            thinking=False,
+            tag="answer-retry",
+            spent=spent,
+            last_chance=True,
+        )
+
+    asyncio.run(two_calls())
+
+    retry = llm.calls[-1]["timeout_s"]
+    assert retry >= MIN_ATTEMPT_S, f"yeniden deneme {retry} sn aldi"

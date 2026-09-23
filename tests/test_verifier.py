@@ -503,3 +503,134 @@ def test_digits_inside_ids_and_dates_in_tool_text_are_not_values():
     )
 
     assert not VERIFY("Faiz %12'ye indi.", state).passed
+
+
+# --- a turn that read the web has to say so -----------------------------------
+
+
+def _web_state(
+    tool="read_url", ok=True, url="https://borsa.example.com/veriler/altin.pdf"
+):
+    """A session where this turn fetched something from outside the pool."""
+    from lakehouse_agent.agent.state import Step
+
+    state = _state(tool_text="altin islem verileri okundu")
+    state.sources.append(
+        Source(
+            url=url,
+            name="Altin Islemleri",
+            fetched_at=datetime(2026, 9, 22, tzinfo=UTC),
+        )
+    )
+    state.steps.append(
+        Step(
+            step_no=1,
+            turn_no=state.turn_no,
+            node="act",
+            tool=tool,
+            ok=ok,
+            started_at=datetime(2026, 9, 22, tzinfo=UTC),
+        )
+    )
+    return state
+
+
+def test_reading_the_web_and_not_saying_where_is_flagged():
+    """The silent version of a bad citation: the run opened a PDF in front of
+    the person and the answer reads as if the lake had known it."""
+    result = VERIFY("Mart ayinda islem hacmi en yuksekti.", _web_state())
+
+    assert not result.passed
+    assert any("kaynak adresi anilmadi" in text for text in _flagged(result))
+
+
+def test_the_address_may_be_written_without_its_scheme():
+    """Models write `borsa.example.com/...`; that is the address, cited."""
+    answer = "Veri borsa.example.com/veriler/altin.pdf adresinden okundu."
+
+    assert VERIFY(answer, _web_state()).passed
+
+
+def test_naming_the_file_counts_as_naming_the_source():
+    answer = "Sayfa tablo vermedi, altin.pdf dosyasini actim."
+
+    assert VERIFY(answer, _web_state()).passed
+
+
+def test_an_elided_address_still_counts_as_a_citation():
+    """Models quote long addresses shortened -- `tcmb.gov.tr/.../duy2023-25`.
+    The flag is for an answer that says nothing, not for one that says it
+    briefly."""
+    state = _web_state(url="https://www.tcmb.gov.tr/wps/wcm/duyurular/2023/duy2023-25")
+    answer = "Temmuz 2023'te PPK faizi yukseltti (tcmb.gov.tr/…/duy2023-25)."
+
+    assert VERIFY(answer, state).passed
+
+
+def test_a_turn_that_did_not_read_the_web_is_not_asked_to_cite_one():
+    state = _state(kredi=[276740.0])
+
+    assert VERIFY("Bakiye 276.740 milyon TL.", state).passed
+
+
+def test_a_fetch_that_failed_is_not_a_source_to_cite():
+    """The tool ran and came back empty-handed; there is nothing to name."""
+    state = _web_state(ok=False)
+
+    assert VERIFY("Adres okunamadi, veriyi getiremedim.", state).passed
+
+
+def test_a_search_from_an_earlier_turn_does_not_bind_this_one():
+    state = _web_state(tool="web_search")
+    state.turn_no += 1  # the fetch belongs to the turn before this one
+    state.turn_starts.append(len(state.messages))
+
+    assert VERIFY("Bu turda yalnizca tablo yorumlandi.", state).passed
+
+
+def test_a_number_that_exists_only_in_a_search_snippet_is_not_grounded():
+    """`_stated_text` treated every tool message as text a number may
+    honestly come from, which is right for a lake tool and wrong for a page
+    someone else wrote. Measured 23 Sep: "dolar kuru 99,99 oldu" passed with
+    no flags against a table that held nothing of the sort, although
+    `web_search`'s own text and `answer.md` rule 5 both promise it cannot."""
+    from lakehouse_agent.agent.formatting import fence
+
+    state = _state(
+        tool_text=(
+            "'TCMB Temmuz 2023' icin 1 sonuc.\n"
+            + fence("1. Haber — https://ornek.com/x\n   dolar kuru 99,99 oldu.")
+        ),
+        kredi=[1.0],
+    )
+
+    assert not VERIFY("Dolar kuru 99,99 oldu.", state).passed
+    # The event and its address are still quotable; only the figure is not.
+    assert VERIFY("2023-07'de TCMB faizi artirdi (ornek.com).", state).passed
+
+
+def test_a_number_a_lake_tool_printed_is_still_grounded():
+    """The fence must not cost the ordinary case: a tool's own text is ours."""
+    state = _state(
+        tool_text="4 ay kosullarin hepsini sagliyor. 288 hafta.", kredi=[1.0]
+    )
+
+    assert VERIFY("288 haftalik veri var.", state).passed
+
+
+def test_digits_inside_a_cited_address_are_not_claims():
+    """`answer.md` rule 4 asks for the address and `_mentions` accepts a short
+    form, so a citation really looks like "ekonomim.com/…-906699". Once the
+    fence stopped those URLs from grounding numbers, their article ids became
+    unexplained figures: measured 23 Sep on a live run, a correct answer
+    shipped with two flags for '906699' and '900606'."""
+    from lakehouse_agent.agent.formatting import fence
+
+    state = _state(
+        tool_text="5 sonuc.\n" + fence("3. Haber — https://www.ekonomim.com/x-906699"),
+        v=[230.2844, 8.0102],
+    )
+
+    answer = "Seviye %230,3 artti, sicrama %8,0 (ekonomim.com/…-906699)."
+
+    assert VERIFY(answer, state).passed, _flagged(VERIFY(answer, state))

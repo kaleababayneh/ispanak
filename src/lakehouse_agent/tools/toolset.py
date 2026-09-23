@@ -7,10 +7,17 @@ for `ToolSpec` -- building the list there would be an import cycle.
 
 from __future__ import annotations
 
-from lakehouse_agent.tools import analysis, lakehouse, web_url
+from lakehouse_agent.tools import analysis, lakehouse, web_search, web_url
 from lakehouse_agent.tools.registry import ToolRegistry
 
 
 def make_registry() -> ToolRegistry:
     """Every tool with a real implementation behind it."""
-    return ToolRegistry.of([*lakehouse.TOOLS, *analysis.TOOLS, web_url.make_read_url()])
+    return ToolRegistry.of(
+        [
+            *lakehouse.TOOLS,
+            *analysis.TOOLS,
+            web_url.make_read_url(),
+            web_search.make_web_search(),
+        ]
+    )

@@ -415,6 +415,14 @@ Ay adları ("Ocak / January") tarihe çevrilmiyor: yıl tablonun içinde değil
 başlığında. Böyle bir tablo `top` ve `mark` ile kullanılır, zaman serisi
 araçlarına (anomali, kırılma) girmez.
 
+### Web aramaları (`data/adhoc/search/`)
+
+`web_search` her sorgunun sonucunu `<sorgu hash>.json` olarak saklar: sorgu,
+sonuç sayısı, çekim zamanı ve sonuçların kendisi (başlık, adres, özet). Aynı
+sorgu ikinci kez çağrı yapmaz — demo tekrarlarında ve hız sınırına karşı.
+Gitignore'da; havuza hiçbir şey yazılmaz. Sağlayıcı bugün `ddgs`
+(DuckDuckGo), bölge `tr-tr`.
+
 ### Havuz arama indeksi (`lake/pool_index.py`)
 
 `python -m lakehouse_agent.lake.pool_index` gold kataloğunun her serisi için bir

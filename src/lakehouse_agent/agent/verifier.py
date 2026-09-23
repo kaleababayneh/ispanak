@@ -1,7 +1,7 @@
 """Checks a finished answer against what the tools actually returned (plan 5.3).
 
 Rule-based and cheap: no model call, so it adds nothing to a turn's time
-budget. Three checks:
+budget. Four checks:
 
 * **Numbers.** Every number the answer states must be found -- within the
   rounding its own precision implies -- in the session's tables or in what the
@@ -10,7 +10,9 @@ budget. Three checks:
   within 0.005 of 27.85, so this check catches it. A bound ("200'ü aştı") is
   checked as a bound and a range ("165 ile 205 arasında") as a range.
 * **Sources.** Every series id, series code or URL the answer cites must be in
-  the session's source list.
+  the session's source list -- and, the other way round, a turn that read the
+  web must name what it read: an answer that quietly uses a page reads as if
+  the lake had known it.
 * **Dates.** Every month the answer names must lie inside the range the tables
   cover, unless the question, the user or a tool named it first -- a tool
   saying "havuzdaki veri 2026-06 ayinda bitiyor" and the answer repeating it
@@ -40,6 +42,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+from lakehouse_agent.agent.formatting import without_fenced
 from lakehouse_agent.agent.state import (
     SessionState,
     VerificationFlag,
@@ -118,6 +121,14 @@ _INDEX_BASE = re.compile(r"(?<!\d)(?:19|20)\d{2}\s*=\s*100(?!\d)")
 _SERIES_ID = re.compile(r"\b(?:evds|bddk):[A-Za-z0-9_.:]*[A-Za-z0-9_]")
 _SERIES_CODE = re.compile(r"(?<![\w:])TP\.[A-Za-z0-9_.]*[A-Za-z0-9_]")
 _URL = re.compile(r"https?://[^\s)\]>'\"]+[^\s)\]>'\".,;:]")
+#: An address written without its scheme, usually elided: "ekonomim.com/…-906699",
+#: "tcmb.gov.tr/…/Calisma+Tebligleri/2026/26-13". `answer.md` rule 4 asks the
+#: model to cite the address, and `_mentions` deliberately accepts a short
+#: form, so this is the shape a citation really takes. The digits in it are
+#: part of an address, not measurements: measured 23 Sep, a correct answer
+#: was flagged for "906699" and "900606", the article ids inside two cited
+#: links. Blanked with the other identifiers before any number is read.
+_BARE_URL = re.compile(r"\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}(?:/[^\s)\]>'\"]*)?", re.I)
 _CODE_SPAN = re.compile(r"`[^`]*`")
 _IDENTIFIER = re.compile(r"\b[A-Za-z_]+[A-Za-z0-9_.:]*\d[A-Za-z0-9_.:]*\b")
 
@@ -162,6 +173,7 @@ class AnswerVerifier:
         stated = _stated_text(state)
         flags: list[VerificationFlag] = []
         flags += _check_sources(answer, state, stated)
+        flags += _check_web_cited(answer, state)
         text, months = _without_dates_and_ids(answer)
         flags += _check_months(months, state, stated, self._today or date.today())
         flags += _check_numbers(text, state, stated)
@@ -189,9 +201,18 @@ def _stated_text(state: SessionState) -> str:
     number it can still see while waving through numbers it can no longer
     read. Whichever way the asymmetry falls it is wrong; the cheap side is
     the one that does not print a flag under a faithful answer.
+
+    Fenced regions are cut out (`agent/formatting.without_fenced`). A web
+    page's text and a search result's snippet arrive inside a tool message,
+    and treating them as grounded meant any number a stranger wrote passed
+    the answer's number check as if a tool had computed it. Measured 23 Sep:
+    an answer reading "dolar kuru 99,99 oldu" passed with no flags against a
+    table that held nothing of the sort, because the figure sat in a search
+    snippet. `web_search`'s own text and `answer.md` rule 5 both promise that
+    cannot happen; this is what makes the promise true rather than advisory.
     """
     parts = [
-        str(message.get("content") or "")
+        without_fenced(str(message.get("content") or ""))
         for message in state.messages
         if message.get("role") in ("tool", "user")
     ]
@@ -232,6 +253,64 @@ def _check_sources(
     ]
 
 
+#: The tools that bring something in from outside the pool. What they read is
+#: the one kind of source a reader cannot check for themselves unless the
+#: answer says where it came from.
+_WEB_TOOLS = frozenset({"read_url", "web_search"})
+
+
+def _check_web_cited(answer: str, state: SessionState) -> list[VerificationFlag]:
+    """Did this turn read the web without saying so?
+
+    `_check_sources` catches the opposite mistake -- a citation nobody
+    fetched. This one catches the silent version: the run opened a PDF or
+    searched the web, the person watched it happen, and the answer mentions
+    neither. Measured 22 Sep: the first break-plus-search run cited nothing
+    at all, and the answer read as if the lake had known the reason.
+
+    Only this turn's fetches count, and any of them being named is enough: an
+    answer is not obliged to list five search hits.
+    """
+    used = any(
+        step.turn_no == state.turn_no and step.tool in _WEB_TOOLS and step.ok
+        for step in state.steps
+    )
+    if not used:
+        return []
+    urls = [source.url for source in state.sources if source.url]
+    if not urls:
+        return []
+    if any(_mentions(answer, url) for url in urls):
+        return []
+    return [
+        VerificationFlag(
+            kind="source_not_cited",
+            text=(
+                "Bu turda web'den okundu ama cevapta kaynak adresi anilmadi; "
+                "okunan adresi cevaba yaz."
+            ),
+        )
+    ]
+
+
+def _mentions(answer: str, url: str) -> bool:
+    """Is this address in the answer?
+
+    Counted generously, because the flag is for silence, not for style: the
+    full URL, the same without its scheme (models write
+    `borsaistanbul.com/...`), the file it ends in (`kmp_au.pdf`), or its
+    host. The host matters -- a long address is routinely quoted elided,
+    `tcmb.gov.tr/.../duy2023-25`, and that is a citation a reader can follow.
+    """
+    bare = url.split("://", 1)[-1]
+    host = bare.split("/", 1)[0].removeprefix("www.")
+    tail = bare.rstrip("/").rsplit("/", 1)[-1]
+    candidates = [url, bare, host]
+    if "." in tail and len(tail) > 4:
+        candidates.append(tail)
+    return any(candidate and candidate in answer for candidate in candidates)
+
+
 # --------------------------------------------------------------------------
 # dates
 # --------------------------------------------------------------------------
@@ -252,6 +331,7 @@ def _without_dates_and_ids(answer: str) -> tuple[str, list[str]]:
     for pattern in (
         _CODE_SPAN,
         _URL,
+        _BARE_URL,
         _SERIES_ID,
         _SERIES_CODE,
         _INDEX_BASE,
