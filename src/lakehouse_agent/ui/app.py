@@ -29,6 +29,8 @@ from lakehouse_agent.agent.state import (
     initial_state,
 )
 from lakehouse_agent.ui.render import (
+    format_table_for_display,
+    protect_series_ids,
     render_approval_card,
     render_approval_decision,
     render_chart,
@@ -87,6 +89,18 @@ class ChainlitSink:
     def __init__(self, state: SessionState) -> None:
         self._state = state
         self._steps: dict[int, cl.Step] = {}
+        #: All of a turn's step cards nest under this one, sent as soon as
+        #: the first step arrives and cleared at `done`. Chainlit auto-nests
+        #: a `cl.Message` we construct under the ambient `on_message` run
+        #: step it wraps our handler in (via a context var Chainlit sets, not
+        #: something this class touches), but a plain `cl.Step` we construct
+        #: does not inherit that -- left ungrouped, each top-level step card
+        #: and the run-nested answer sorted independently, the answer's early
+        #: parent slot put it ahead of steps created later in the same turn.
+        #: One shared parent keeps every step of a turn together and, being
+        #: created at the first step rather than pinned to the run's own
+        #: earlier slot, orders after nothing the run already placed.
+        self._steps_parent: cl.Step | None = None
         self._pending_table = ""
         self._fresh: set[str] = set()
         self._pending_sources: dict[str, Any] | None = None
@@ -100,8 +114,11 @@ class ChainlitSink:
         await handler(event.payload)
 
     async def _draw_step_start(self, payload: dict[str, Any]) -> None:
+        if self._steps_parent is None:
+            self._steps_parent = cl.Step(name="Ajan adımları", type="tool")
+            await self._steps_parent.send()
         view = render_step_start(payload)
-        step = cl.Step(name=view["label"], type="tool")
+        step = cl.Step(name=view["label"], type="tool", parent_id=self._steps_parent.id)
         step.input = view["input_text"]
         await step.send()
         step_no = payload.get("step_no")
@@ -166,7 +183,10 @@ class ChainlitSink:
         await cl.Message(content=view["user_message"]).send()
 
     async def _draw_done(self, _payload: dict[str, Any]) -> None:
+        self._steps_parent = None
+
         if self._answer_msg is not None:
+            self._answer_msg.content = protect_series_ids(self._answer_msg.content)
             await self._answer_msg.send()
             self._answer_msg = None
 
@@ -174,7 +194,7 @@ class ChainlitSink:
         fresh, self._fresh = self._fresh, set()
         if ref and ref in self._state.tables:
             note = render_table_note({"table_ref": ref, "new_columns": sorted(fresh)})
-            frame = self._state.tables[ref]
+            frame = format_table_for_display(self._state.tables[ref])
             await cl.Message(
                 content=note,
                 elements=[cl.Dataframe(data=frame, name=ref, display="inline")],
@@ -263,6 +283,16 @@ async def _on_chat_start() -> None:
 
 @cl.on_message
 async def _on_message(message: cl.Message) -> None:
+    # The browser already drew this message -- optimistically, before this
+    # handler runs at all -- so a bare series id in it briefly shows the same
+    # corruption `protect_series_ids` fixes for the answer. `update()` is the
+    # one hook that reaches an already-drawn bubble: it re-sends the same id,
+    # so the browser replaces it in place a moment later.
+    protected = protect_series_ids(message.content)
+    if protected != message.content:
+        message.content = protected
+        await message.update()
+
     state: SessionState | None = cl.user_session.get("state")
     deps: AgentDeps | None = cl.user_session.get("deps")
     if state is None or deps is None:

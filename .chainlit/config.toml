@@ -26,7 +26,13 @@ enabled = false
 
 [UI]
 name = "Lakehouse Agent"
-cot = "full"
+# "full" also shows chainlit's own internal "on_message"/"on_chat_start" run
+# wrapper as a step -- an empty, early-created card whose slot put the
+# answer (nested under it) ahead of our own top-level step cards, which are
+# created later, during the turn. "tool_call" hides non-tool "run" steps
+# (frontend bundle: `t.type!=="tool"&&cot==="tool_call"` is skipped) and
+# still shows ours (`type="tool"`, `ui/app.py`).
+cot = "tool_call"
 
 [meta]
 generated_by = "2.12.0"

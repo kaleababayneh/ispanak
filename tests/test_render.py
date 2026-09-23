@@ -7,7 +7,11 @@ shape it has not seen a full example of yet.
 
 from __future__ import annotations
 
+import pandas as pd
+
 from lakehouse_agent.ui.render import (
+    format_table_for_display,
+    protect_series_ids,
     render_approval_card,
     render_approval_decision,
     render_chart,
@@ -37,8 +41,12 @@ def test_step_start_names_the_tool_and_its_arguments():
 
 def test_step_start_with_no_tool_names_the_node():
     assert render_step_start({"node": "plan", "tool": None})["label"] == "Planlama"
-    assert render_step_start({"node": "observe"})["label"] == "Degerlendirme"
+    assert render_step_start({"node": "observe"})["label"] == "Değerlendirme"
     assert render_step_start({"node": "verify"})["label"] == "verify"
+
+
+def test_step_start_with_no_node_falls_back_to_a_turkish_label():
+    assert render_step_start({"tool": None, "node": ""})["label"] == "Adım"
 
 
 def test_step_start_on_an_empty_payload_does_not_crash():
@@ -229,6 +237,15 @@ def test_approval_decision_line():
     assert "otomatik" in automatic
 
 
+def test_approval_decision_fences_a_series_id_choice():
+    """`choice` for a `series_choice` decision is a raw series id -- the
+    same corruption `protect_series_ids` exists for."""
+    line = render_approval_decision(
+        {"kind": "series_choice", "choice": "evds:TP.KTF12", "automatic": False}
+    )
+    assert "`evds:TP.KTF12`" in line
+
+
 # --- errors -------------------------------------------------------------
 
 
@@ -249,3 +266,108 @@ def test_error_on_an_empty_payload_does_not_crash():
     view = render_error(None)
     assert view["user_message"]
     assert view["log_message"] == ""
+
+
+# --- series id protection ---------------------------------------------------
+# chainlit's bundled markdown renderer ships `micromark-extension-directive`
+# (confirmed by grepping its frontend JS for the extension's tokenizer state
+# names); a bare `:name` outside a code span parses as an unrecognised
+# directive and is dropped, which is what corrupted "evds:TP.KTF12" into
+# "evds" + a line break + ".KTF12" on screen. `protect_series_ids` fences
+# ids in backticks -- a code span -- so directive parsing never sees them.
+
+
+def test_an_evds_id_is_fenced():
+    assert protect_series_ids("Kaynak: evds:TP.KTF12 alindi") == (
+        "Kaynak: `evds:TP.KTF12` alindi"
+    )
+
+
+def test_a_bddk_id_with_many_segments_is_fenced_whole():
+    text = "seri bddk:aylik:tuketici:konut:TL:sektor kullanildi"
+    assert protect_series_ids(text) == (
+        "seri `bddk:aylik:tuketici:konut:TL:sektor` kullanildi"
+    )
+
+
+def test_a_trailing_sentence_period_is_not_absorbed():
+    assert protect_series_ids("Bkz. evds:TP.KTF12.") == "Bkz. `evds:TP.KTF12`."
+
+
+def test_an_already_fenced_id_is_not_rewrapped():
+    text = "Kaynak: `evds:TP.KTF12` alindi"
+    assert protect_series_ids(text) == text
+
+
+def test_multiple_ids_are_all_fenced():
+    text = "evds:TP.KTF12 ve bddk:aylik:tuketici degerlendirildi"
+    protected = protect_series_ids(text)
+    assert "`evds:TP.KTF12`" in protected
+    assert "`bddk:aylik:tuketici`" in protected
+
+
+def test_text_with_no_series_id_is_unchanged():
+    text = "Faiz orani yukseldi, saat 10:30 itibariyla."
+    assert protect_series_ids(text) == text
+
+
+def test_protect_series_ids_on_empty_text_does_not_crash():
+    assert protect_series_ids("") == ""
+
+
+# --- table display formatting -----------------------------------------------
+
+
+def test_a_monthly_period_column_is_shortened():
+    frame = pd.DataFrame(
+        {
+            "period": pd.to_datetime(["2021-01-01", "2021-02-01", "2021-03-01"]),
+            "value": [1.0, 2.0, 3.0],
+        }
+    )
+    shown = format_table_for_display(frame)
+    assert list(shown["period"]) == ["2021-01", "2021-02", "2021-03"]
+
+
+def test_a_weekly_period_column_keeps_its_full_date():
+    frame = pd.DataFrame(
+        {
+            "period": pd.to_datetime(["2021-01-04", "2021-01-11", "2021-01-18"]),
+            "value": [1.0, 2.0, 3.0],
+        }
+    )
+    shown = format_table_for_display(frame)
+    assert list(shown["period"]) == ["2021-01-04", "2021-01-11", "2021-01-18"]
+
+
+def test_a_frame_without_a_period_column_is_unchanged():
+    frame = pd.DataFrame({"value": [1, 2, 3]})
+    shown = format_table_for_display(frame)
+    assert list(shown.columns) == ["value"]
+
+
+def test_an_empty_frame_does_not_crash():
+    frame = pd.DataFrame({"period": pd.to_datetime([]), "value": []})
+    shown = format_table_for_display(frame)
+    assert shown.empty
+
+
+def test_a_single_row_frame_keeps_its_full_date():
+    """One point has no gap to measure, so it is not guessed as monthly."""
+    frame = pd.DataFrame({"period": pd.to_datetime(["2021-01-01"]), "value": [1.0]})
+    shown = format_table_for_display(frame)
+    assert list(shown["period"]) == ["2021-01-01"]
+
+
+def test_an_unparseable_period_column_is_left_alone():
+    frame = pd.DataFrame({"period": ["not-a-date", "also-not"], "value": [1, 2]})
+    shown = format_table_for_display(frame)
+    assert list(shown["period"]) == ["not-a-date", "also-not"]
+
+
+def test_the_original_frame_is_not_mutated():
+    frame = pd.DataFrame(
+        {"period": pd.to_datetime(["2021-01-01", "2021-02-01"]), "value": [1.0, 2.0]}
+    )
+    format_table_for_display(frame)
+    assert frame["period"].iloc[0] == pd.Timestamp("2021-01-01")
