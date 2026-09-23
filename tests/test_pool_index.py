@@ -216,6 +216,37 @@ def test_a_search_over_the_index_puts_the_national_series_first(tmp_path):
     assert any("1 baska il/bolge" in note for note in notes)
 
 
+def test_nearest_scores_the_hits_it_returns(tmp_path):
+    """The similarity has to be a real measurement, not a constant.
+
+    `nearest` reads a column it does not select by name unless asked to, and
+    LanceDB warns it will stop supplying that column on its own. Every caller
+    ranks on this number, so the failure would be either a `KeyError` at
+    search time or -- worse -- a flat score that silently turns the ranking
+    into insertion order. Asserting the gap catches both.
+    """
+    catalog = _catalog(
+        ("bddk:aylik:tuketici:konut:TL:sektor", "Tüketici Kredileri Konut"),
+        ("bddk:finturk:bireysel:bolu:konut_kredisi:sektor", "BOLU - Konut"),
+    )
+    index_dir = tmp_path / "index"
+    pool_index.build(catalog, path=index_dir, embed_documents=_documents)
+
+    opened = pool_index.PoolIndex.open(index_dir)
+    assert opened is not None
+
+    # _NATIONAL exactly: the national series sits on the query, the province
+    # family a little off it.
+    scored = opened.nearest(np.array(_NATIONAL, dtype=np.float32), k=2)
+
+    assert [series_id for series_id, _ in scored] == [
+        "bddk:aylik:tuketici:konut:TL:sektor",
+        "bddk:finturk:bireysel:bolu:konut_kredisi:sektor",
+    ]
+    assert scored[0][1] == pytest.approx(1.0, abs=1e-6)
+    assert scored[0][1] > scored[1][1]
+
+
 def _grouped_meta() -> pd.DataFrame:
     """A pool where one datagroup's name is what the query spells out."""
     return pd.DataFrame(

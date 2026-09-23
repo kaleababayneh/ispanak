@@ -1411,3 +1411,22 @@ Karar:  Şemasız adresler de (`_BARE_URL`) diğer kimliklerle birlikte, sayı
         biçimi bu.
 Sonuç:  Ölçüm: alıntılı cevap geçiyor, arama parçacığındaki sayı ve uydurma
         sayı hâlâ bayrak alıyor. Doğrulayıcının iki işi de yerinde.
+
+## `nearest` skor sütununu adıyla istiyor (23 Eyl, canlı koşumdan)
+Bağlam: `--real` koşusunda her `search_catalog` çağrısında LanceDB uyarı
+        basıyordu: arama çıktı sütunlarını belirtmiş ama `_distance`'ı
+        listeye koymamış; şimdilik sütun eklenmeye devam edecek, ileride
+        eklenmeyecek.
+Neden:  `pool_index.PoolIndex.nearest` yalnızca `series_id` seçiyor, sonra
+        `hits["_distance"]` okuyordu. Otomatik ekleme kalktığı gün satır
+        `KeyError` veriyor ve anlamsal arama komple düşüyor; bunu ilk gören
+        yer demo olurdu. Ölçüm (23 Eyl, gerçek havuz indeksi): sütunu adıyla
+        istediğimde sonuçlar birebir aynı.
+Karar:  `nearest` artık `["series_id", "_distance"]` seçiyor. `keyword` aynı
+        şeyi YAPMIYOR: onun skor sütunu `_score` ve tam metin tarayıcısı
+        seçilen alan olarak kabul etmiyor ("No field named _score"), yani
+        aynı düzeltme orada aramayı anında kırar. Zaten skoru hiç okumuyor.
+Sonuç:  `nearest` doğrudan test edildi (`test_nearest_scores_the_hits_it_
+        returns`): sıra benzerliğe göre ve en yakın kayıt 1,0 veriyor. Skoru
+        sabitleyince test kırmızıya düşüyor, yani sıralamanın sessizce ekleme
+        sırasına dönmesini de yakalıyor.
