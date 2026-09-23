@@ -1729,3 +1729,48 @@ Sonuç:  Agent ölçümü iki koşumda da **12/12**, sıfır bayrak, sıfır kes
         ölçümü 25/27 ve ayrık 6/6, gerileme yok. Yeni testler dört sabotajda
         da kırmızıya düştü. A6'nın "bile bile kırmızı" notu artık geçersiz,
         soru dosyasından kaldırıldı.
+
+## Etkileşimli CLI: `--chat` (23 Eyl)
+Bağlam: Demo CLI'dan yapılacak (22 Eyl Slack: deploy zorunlu değil), ama
+        bugünkü CLI demoyu taşımıyordu. Üç ölçülmüş boşluk: `deps.approve`
+        üretim kodunda hiç atanmıyordu, yani her onay kartı `auto_default`'a
+        düşüyor ve kararın notu "otomatik onay (etkilesimsiz mod)" oluyordu;
+        üç mod da `JsonlSink` ile stdout'a yazdığı için soru başına kırk satır
+        JSON akıyordu; sorular `--question` ile baştan verildiği için takip
+        sorusu sorulamıyordu. Dördüncüsü kozmetik: kurulu `lakehouse-agent`
+        komutu uv taslağına bağlıydı ve "Hello from lakehouse-agent!"
+        yazdırıyordu.
+Karar:  Yeni `--chat` bayrağı. Mevcut çağrılar hiç değişmiyor: `--question`
+        ile başsız koşum, eval koşucusu ve bütün CLI testleri aynen duruyor.
+        **Sunum ayrı modülde.** Bütün `rich` kullanımı `agent/console.py`
+        içinde ve bunu bir test bekçilik ediyor, `chainlit` kuralının aynısı:
+        motor arayüzü import etmez, `loop.py` `--chat` verildiğinde tembel
+        import eder. Başsız koşum sunum kütüphanesini hiç yüklemez.
+        `Terminal` üç dikiş sunuyor, üçü de enjekte edilebilir olduğu için
+        ağsız test ediliyor: `emit` (`EventSink`), `approve` (`ApproveFn`),
+        `ask` (sıradaki soru). Klavye okuması `asyncio.to_thread` ile, çünkü
+        döngü async ve bu repoda engelleyici çağrının kalıbı bu.
+        **Olaylar kaybolmuyor.** Sohbet modunda JSONL dosyaya yazılıyor
+        (`--events`, varsayılanı `data/adhoc/sessions/<zaman>.jsonl`) ve ekran
+        insan görünümüne kalıyor. JSONL replay ve eval sözleşmesi olduğu için
+        kapatılmadı, yalnızca yeri değişti.
+        **Model metni `markup=False` ile basılıyor.** `rich` `[...]`'i biçim
+        kodu okuyor; `TP.KTF12 [aylik]` diye bir alıntı köşeli parantezi
+        kaybederdi ya da daha kötüsü, bizim yazmadığımız metin ekranı
+        renklendirirdi.
+        `--chat` TTY istiyor; boru bağlıysa cümleyle reddediyor, çünkü boruyu
+        insan yazısı sanıp okurdu.
+Sonuç:  `--fake --chat` ağsız çalışıyor ve testleniyor. Bunun için `FakeLLM`'e
+        `extend()` eklendi: kurucu listeyi kopyaladığı için REPL'de ikinci
+        soru `ScriptExhausted` veriyordu, artık her soru geldiğinde bir turluk
+        betik ekleniyor. Asıl kazanç sohbet döngüsünün kendisinin ağsız test
+        edilebilmesi.
+        18 yeni test. İki düzeltme tek tek bozulup kırmızıya düştüğü görüldü;
+        bu sırada onay testimin boş liste üzerinde geçtiği ortaya çıktı ve
+        belirsiz sahte aramayla kartı gerçekten tetikleyecek şekilde yeniden
+        yazıldı.
+        `rich` 15.0.0 eklendi (MIT), `docs/licenses.md` 72 paketle yeniden
+        üretildi, lisans iddiası bozulmadı. `lakehouse-agent` komutu gerçek
+        CLI'a bağlandı ve `pyproject` açıklaması taslak metinden çıkarıldı.
+        Grafik kapsam dışı: hiçbir araç grafik üretmiyor, gösterilecek bir şey
+        yok.

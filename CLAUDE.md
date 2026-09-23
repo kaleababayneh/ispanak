@@ -61,6 +61,9 @@ uv run python build_index.py                       # havuz DIŞI EVDS keşif ind
 # Agent: üç mod. --real demoda koşan moddur.
 uv run python -m lakehouse_agent.agent.loop --fake --question "..."
 uv run python -m lakehouse_agent.agent.loop --real --question "..." --question "..."
+# Demo: etkilesimli oturum. Soru ve onay klavyeden alinir, olaylar dosyaya gider.
+uv run lakehouse-agent --real --chat
+uv run python -m lakehouse_agent.agent.loop --fake --chat     # ayni sey, agsiz prova
 ```
 
 ## Kesin kurallar

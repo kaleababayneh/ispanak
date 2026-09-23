@@ -65,11 +65,14 @@ Tüm üçüncü taraf bağımlılıklar permissive açık kaynak lisanslıdır
 | duckdb                         | 1.5.5       | MIT License                                        |
 | et_xmlfile                     | 2.0.0       | MIT License                                        |
 | h11                            | 0.16.0      | MIT License                                        |
+| markdown-it-py                 | 4.2.0       | MIT License                                        |
+| mdurl                          | 0.1.2       | MIT License                                        |
 | openpyxl                       | 3.1.5       | MIT License                                        |
 | pdfplumber                     | 0.11.10     | MIT License                                        |
 | pluggy                         | 1.6.0       | MIT License                                        |
 | primp                          | 2.0.1       | MIT License                                        |
 | python-discovery               | 1.6.0       | MIT License                                        |
+| rich                           | 15.0.0      | MIT License                                        |
 | six                            | 1.17.0      | MIT License                                        |
 | cffi                           | 2.1.1       | MIT-0                                              |
 | pillow                         | 12.3.0      | MIT-CMU                                            |

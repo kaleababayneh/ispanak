@@ -56,6 +56,18 @@ class FakeLLM:
         self._ocr_text = ocr_text
         self.calls: list[dict[str, Any]] = []
 
+    def extend(self, items: list[ScriptItem]) -> None:
+        """Append more replies to the script.
+
+        The constructor copies the list it is given, which is right for a
+        test that hands over a literal. The chat CLI needs the other thing:
+        it cannot know how many questions will be asked, so it pushes one
+        scripted turn per question as the person types it. Without this,
+        `--fake --chat` raised `ScriptExhausted` on the second question and
+        the interactive loop could not be exercised offline at all.
+        """
+        self._script.extend(items)
+
     # -- LLM protocol ------------------------------------------------------
 
     def chat(

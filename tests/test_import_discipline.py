@@ -162,3 +162,23 @@ def test_core_modules_import_without_any_environment(name):
 
     module = importlib.import_module(f"lakehouse_agent.{name[:-3]}")
     assert module is not None
+
+
+def test_only_the_console_module_imports_rich():
+    """The engine publishes events; the interface draws them.
+
+    The same rule as chainlit, for the library the terminal interface is
+    built on. A headless run -- the eval runner, CI, a piped demo -- must not
+    load a presentation library, and the loop must stay swappable under a
+    different screen.
+    """
+    offenders = [
+        path.relative_to(SRC).as_posix()
+        for path in _python_files()
+        if "rich" in _imported_modules(path)
+        and path.relative_to(SRC).as_posix() != "agent/console.py"
+    ]
+    assert offenders == [], (
+        f"Bu dosyalar rich import ediyor: {offenders}. "
+        "Sunum yalnizca agent/console.py icinde."
+    )
