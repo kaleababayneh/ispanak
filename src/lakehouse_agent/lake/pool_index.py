@@ -487,7 +487,6 @@ def rank(
         return scored, {}
     wanted = query_places(query)
     wants_archive = "arsiv" in _fold(query)
-    asked = tables_asked(query, meta)
     info = meta.set_index("series_id")
     has_groups = "group" in info.columns
     folded_query = _fold(query)
@@ -502,6 +501,18 @@ def rank(
     named_countries = {
         name for name in known_countries if _country_named(name, folded_query)
     }
+    # A table is "asked for" only by a query that names no place at all --
+    # no province, no country, and not the breakdown itself. "Ankara konut
+    # fiyat endeksi" spells out the KFE table, but what it wants is the
+    # Ankara row, a sub-item, and promoting the national total over it
+    # dropped that row out of the five candidates (measured 23 Sep). "Almanya
+    # tüketici fiyat endeksi" is the same shape one level up: it spells out
+    # the TÜFE table, and promoting TÜİK's total would bury Germany's row.
+    asked = (
+        tables_asked(query, meta)
+        if wanted == frozenset() and not named_countries
+        else set()
+    )
     superseded = _superseded(meta) if has_groups and "table" in meta.columns else {}
 
     def _row(series_id: str) -> pd.Series | None:
@@ -585,17 +596,22 @@ def tables_asked(query: str, meta: pd.DataFrame) -> set[str]:
     endeksi" -> "Tüketici Fiyat Endeksi (2025=100)"). Such a query asks for
     the table's own total, not for one of its rows.
 
-    Every word of the query has to be in the table's name, and not the other
-    way round. The reverse reading is tempting and was measured on 23 Sep:
-    it fixes the agent's own phrasing ("tüketici fiyat endeksi TÜFE genel
-    endeks", where "tufe" is not in the table name, so nothing is asked for
-    and the CPI's sub-items crowd out its total) and costs more than it
-    buys. The pool search fell from 25/27 to 23/27: "Ankara konut fiyat
-    endeksi" spells out "Konut Fiyat Endeksi", so the national total is
-    promoted over the Ankara series the query actually names, and "sanayi
-    üretim endeksi" fell from first to twentieth. Promoting a table's total
-    and honouring a named province pull against each other; until that is
-    settled, the strict reading stays.
+    Two readings, and both are needed. The strict one -- every word of the
+    query is in the table's name -- catches a table whose name says more
+    than the query: "sanayi üretim endeksi" is asked of "Mevsim ve Takvim
+    Etkilerinden Arındırılmış Sanayi Üretim Endeksi" too, whose head the
+    search expects first. The loose one -- the table's name, parentheticals
+    dropped, is inside the query -- catches a query that says more than the
+    name: the agent asked "tüketici fiyat endeksi TÜFE genel endeks", "tufe"
+    is in no table name, and under the strict reading alone nothing was
+    asked for, no sub-item was demoted, and the five candidates were "08.
+    Bilgi Ve İletişim", "133. Sosyal Koruma" and three more rows of the very
+    table wanted. Measured 23 Sep: either reading alone loses a query the
+    other keeps; the union keeps both.
+
+    What a named place does to this is decided in `rank`, not here: a query
+    that names Ankara wants Ankara's row, which is a sub-item, and promoting
+    the table's total over it is exactly backwards.
     """
     if "group" not in meta.columns:
         return set()
@@ -603,11 +619,13 @@ def tables_asked(query: str, meta: pd.DataFrame) -> set[str]:
     if len(words) < 2:
         return set()
     names = meta[["group", "table"]].dropna().drop_duplicates("group")
-    return {
-        group
-        for group, table in zip(names["group"], names["table"], strict=True)
-        if words <= set(re.findall(r"[a-z]+", _fold(table)))
-    }
+    asked: set[str] = set()
+    for group, table in zip(names["group"], names["table"], strict=True):
+        full = set(re.findall(r"[a-z]+", _fold(table)))
+        stem = set(re.findall(r"[a-z]+", _fold(_PARENTHETICAL.sub(" ", str(table)))))
+        if words <= full or (len(stem) >= 2 and stem <= words):
+            asked.add(group)
+    return asked
 
 
 def digest(series_ids: list[str], texts: list[str]) -> str:

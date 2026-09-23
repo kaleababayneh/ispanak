@@ -119,6 +119,14 @@ tek adayda toplanır (aday kaç seriyi temsil ettiğini nota yazar); EVDS'in
 söylüyorsa o grubun ana serisi öne gelir. Ölçüm: `docs/decisions.md`, "Havuz
 araması: sıralama kuralları".
 
+`CatalogHit.table` (23 Eylül'den beri, isteğe bağlı): serinin oturduğu kaynak
+tablo, EVDS veri grubunun adı. `search_catalog` bunu modele `tablo` olarak
+gösterir ve onay kartı ayrıntı satırının başına koyar. Eklenme sebebi: "Konut
+Kredisi (TL, Akım, %)" hem "Kredi Faiz Oranları" hem "Kredi Kâr Oranları"
+tablosunda var; biri faiz, öteki katılım bankası kâr payı, ve ad, birim,
+frekans, tür dördü de aynı. Ayıran tek alan tablo. İndeksi olmayan küçük
+havuzda boş kalır.
+
 `CatalogHit.match` adayın nasıl bulunduğunu söyler: `code` | `semantic` |
 `keyword`. `search_catalog` bunu modele `eslesme: kod | anlam | kelime` olarak
 gösterir. Kelime eşleşmesiyle hiç aday çıkmazsa araç "havuzda yok" demez:

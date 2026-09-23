@@ -101,17 +101,11 @@
   expected_tools: [search_catalog, get_series, transform_table]
   not: "2021-01 = 16,125 ve 2026-06 = 129,99 olduğundan artış %706,1.
         Zincirleme yok, seri 2025=100 bazlı ve TÜİK geriye doğru hesaplamış.
-        BİLE BİLE KIRMIZI: agent yüzdeyi doğru buluyor (%706,1) ama seriyi
-        CLAUDE.md'nin şart koştuğu TP.TUKFIY2025.GENEL yerine
-        TP.GENENDEKS.T1 (2003=100) üzerinden hesaplıyor. Sonuç aynı, seri
-        sözleşmeye aykırı.
-        Nedeni 23 Eylül'de bulundu ve modelde değil: `tables_asked`
-        sorgunun HER kelimesinin tablo adında geçmesini istiyor. Agent
-        'tüketici fiyat endeksi TÜFE genel endeks' diye arayınca 'tufe'
-        tablo adında olmadığı için hiçbir tablo istenmiş sayılmıyor, alt
-        kalem indirimi çalışmıyor ve ilk beş aday TÜFE'nin alt kalemleri
-        oluyor. Ayrıntı ve geri alınan deneme: docs/decisions.md.
-        Bu satır yeşile çevrilerek değil, o kural düzelerek kapanmalı."
+        23 Eylül'e kadar bile bile kırmızıydı: agent yüzdeyi doğru buluyor
+        ama seriyi TP.GENENDEKS.T1 gibi başka bir TÜFE üzerinden alıyordu.
+        Kök neden `tables_asked` kuralının hep-ya-hiç olmasıydı; iki okumanın
+        birleşimiyle kapandı, iki koşumda da sözleşmedeki seri seçildi.
+        Ayrıntı: docs/decisions.md, 'Üç oynak satır kapatıldı'."
   checks:
     - cevapta_gecmeli: "706"
 

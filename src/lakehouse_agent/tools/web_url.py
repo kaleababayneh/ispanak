@@ -39,7 +39,7 @@ from lakehouse_agent.agent.formatting import preview_rows
 from lakehouse_agent.contracts import Source, ToolResult
 from lakehouse_agent.tools.registry import ToolSpec
 from lakehouse_agent.web import extract as extractor
-from lakehouse_agent.web.fetch import WebFetchError, fetch, redact_url
+from lakehouse_agent.web.fetch import WebFetchError, fetch, nearest_url, redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +131,16 @@ def make_read_url() -> ToolSpec:
     """The tool the model calls with an address."""
 
     def run(args: ReadUrlArgs, ctx: ToolContext) -> ToolResult:
+        # The person's question is the ground truth for the address. A long
+        # one comes back from the model altered (measured 23 Sep: a slash
+        # turned into a plus, and the fetch failed); when the question holds
+        # an address a few edits away on the same host, that is the one meant.
+        url = args.url
+        snapped = nearest_url(url, ctx.user_message or "")
+        if snapped is not None:
+            url = snapped
         try:
-            document = fetch(args.url, root=ctx.settings.adhoc_dir / "url")
+            document = fetch(url, root=ctx.settings.adhoc_dir / "url")
         except WebFetchError as exc:
             return ToolResult(ok=False, summary=f"Adres okunamadi: {exc}")
 
@@ -157,6 +165,11 @@ def make_read_url() -> ToolSpec:
             )
 
         warnings = list(found.notes)
+        if snapped is not None:
+            warnings.append(
+                f"Verilen adres sorudakinden farkliydi; sorudaki okundu: "
+                f"{redact_url(snapped)}"
+            )
         if document.from_cache:
             warnings.append("Adres daha once okunmustu; onbellekteki kopya kullanildi.")
         if found.skipped_tables:

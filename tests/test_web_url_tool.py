@@ -295,3 +295,35 @@ def test_an_excel_document_becomes_one_table_per_sheet(spec, context, monkeypatc
 
     assert len(context.written) == 2
     assert "aylik" in result.summary and "yillik" in result.summary
+
+
+# --- an address the model retyped is read as the question wrote it --------
+
+
+def test_a_retyped_address_is_read_as_the_question_wrote_it(
+    spec, monkeypatch, tmp_path
+):
+    """Measured 23 Sep: the address held two plus signs already, the model
+    continued the pattern (`main+menu/duyurular` -> `main+menu+duyurular`)
+    and the fetch failed on a page that exists. The person's own text is the
+    ground truth. `_serve` asserts on the address it is handed, so this test
+    fails if the tool passes the model's copy through."""
+    given = (
+        "https://www.tcmb.gov.tr/wps/wcm/connect/tr/tcmb+tr/main+menu/duyurular/"
+        "basin/2023/duy2023-25"
+    )
+    retyped = given.replace("main+menu/duyurular", "main+menu+duyurular")
+    context = ToolContext(
+        session_id="s1",
+        step_no=1,
+        llm=FakeLLM([]),
+        lake=LakeAdapter(catalog_path=tmp_path / "yok.parquet"),
+        settings=AgentSettings(MIA_API_KEY="test-only", DATA_DIR=str(tmp_path)),
+        user_message=f"{given} adresini oku ve karari ozetle.",
+    )
+    _serve(monkeypatch, _document(b"<p>Karar</p>", content_type="text/html", url=given))
+
+    result = spec.fn(ReadUrlArgs(url=retyped), context)
+
+    assert result.ok
+    assert any("sorudaki okundu" in warning for warning in result.warnings)

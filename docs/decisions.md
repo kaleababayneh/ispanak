@@ -1692,3 +1692,40 @@ Sonuç:  Üç test ayrımı sabitliyor: arama parçacığındaki sayı bayrak al
         ayrıca iddia ediliyor. Çitleri birleştirince üçünden ikisi kırmızıya
         düşüyor, denendi. Güvenlik tarafı değişmedi: iki çitin içi de talimat
         olarak okunmuyor.
+
+## Üç oynak satır kapatıldı: adres, TÜFE tablosu, faiz ikizi (23 Eyl)
+Bağlam: Üç ardışık ölçüm koşusu 10/12 verdi ama düşen satırlar değişiyordu.
+        Adım kaydı üç kök neden gösterdi: model uzun adresi yeniden yazarken
+        bozuyor (`main+menu/duyurular` -> `main+menu+duyurular`, çekim 404);
+        `tables_asked` sorguya kelime eklenince kapanıyor (A6 üç koşuda üç
+        farklı yanlış TÜFE serisi); ve "Konut Kredisi (TL, Akım, %)" ile
+        "Konut Kredisi, (TL, Akım, %)" ad, birim, frekans ve türde birebir
+        aynı, biri faiz öteki katılım bankası kâr payı (A1).
+Karar:  1. **Adres sorudan sabitleniyor.** `read_url`, verilen adres soruda
+           birebir yoksa ama aynı host'ta üç düzenleme uzağında bir adres
+           varsa onu okuyor ve uyarı yazıyor. Host birebir karşılaştırılıyor,
+           bir harflik host farkı başka site demektir. Sorudaki metin, ne
+           okunacağının tek doğru kaynağı.
+        2. **`tables_asked` iki okumanın birleşimi.** Düz okuma (sorgunun her
+           kelimesi tablo adında) tablo adı sorgudan uzun olduğunda gerekli:
+           "sanayi üretim endeksi" mevsimsellikten arındırılmış tabloyu da
+           istiyor ve arama onun başını bekliyor. Gevşek okuma (tablonun
+           parantezsiz adı sorgunun içinde) sorgu tablo adından uzun olduğunda
+           gerekli: A6'nın "TÜFE" ekli sorgusu. 22 Eylül'de yalnız gevşek
+           okumaya geçiş 25/27'den 23/27'ye düşürmüştü; birleşim 25/27'de
+           tutuyor, üç sorgu da (SÜE 1, TÜFE 1, Ankara KFE 3) yerinde.
+        3. **İl ya da ülke anan sorgu tablo istemiyor.** "Ankara konut fiyat
+           endeksi" KFE tablosunu heceliyor ama Ankara satırını istiyor; o
+           satır bir alt kalem ve tablonun toplamını öne almak onu beş adayın
+           dışına atıyordu. Ülke için aynı şekil bir üst katta: "Almanya
+           tüketici fiyat endeksi" TÜİK toplamını öne alıp Almanya'yı
+           gömüyordu. Yer anılıyorsa `asked` boş.
+        4. **`CatalogHit.table` eklendi** (isteğe bağlı, sözleşme belgesine
+           yazıldı). `search_catalog` modele `tablo` olarak gösteriyor, onay
+           kartı ayrıntının başına koyuyor. İkizleri ayıran tek alan bu.
+Sonuç:  Agent ölçümü iki koşumda da **12/12**, sıfır bayrak, sıfır kesinti;
+        ilk kez. A6 kendi sorgusuyla ("tüketici fiyat endeksi TÜFE")
+        sözleşmedeki `TP.TUKFIY2025.GENEL`'i seçti, A1 `TP.KTF12`'yi. Arama
+        ölçümü 25/27 ve ayrık 6/6, gerileme yok. Yeni testler dört sabotajda
+        da kırmızıya düştü. A6'nın "bile bile kırmızı" notu artık geçersiz,
+        soru dosyasından kaldırıldı.

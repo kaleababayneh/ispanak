@@ -326,3 +326,51 @@ def test_redaction_leaves_ordinary_parameters_alone():
     assert redact_url("https://x/y?yil=2026") == "https://x/y?yil=2026"
     assert redact_url("https://x/y") == "https://x/y"
     assert redact_url("https://x/y?token=abc&a=1") == "https://x/y?token=***&a=1"
+
+
+# --- an address the model retyped ------------------------------------------
+
+
+_QUESTION = (
+    "https://www.tcmb.gov.tr/wps/wcm/connect/tr/tcmb+tr/main+menu/duyurular/"
+    "basin/2023/duy2023-25 adresini oku ve karari ozetle."
+)
+_GIVEN = _QUESTION.split()[0]
+
+
+def test_a_slash_the_model_turned_into_a_plus_snaps_back_to_the_question():
+    """Measured 23 Sep: the address already held two plus signs and the model
+    continued the pattern, and the fetch failed on a page that exists."""
+    from lakehouse_agent.web.fetch import nearest_url
+
+    retyped = _GIVEN.replace("main+menu/duyurular", "main+menu+duyurular")
+
+    assert nearest_url(retyped, _QUESTION) == _GIVEN
+
+
+def test_an_address_copied_correctly_needs_no_correction():
+    from lakehouse_agent.web.fetch import nearest_url
+
+    assert nearest_url(_GIVEN, _QUESTION) is None
+
+
+@pytest.mark.parametrize(
+    "wrong",
+    [
+        # Another host: a one-letter slip in a host name is a different site.
+        _GIVEN.replace("tcmb.gov.tr", "tcmb.gov.xx"),
+        # Too far: a different page on the same site is not a typo.
+        "https://www.tcmb.gov.tr/baska/bir/sayfa",
+    ],
+)
+def test_only_a_near_copy_on_the_same_host_is_corrected(wrong):
+    from lakehouse_agent.web.fetch import nearest_url
+
+    assert nearest_url(wrong, _QUESTION) is None
+
+
+def test_no_address_in_the_question_means_nothing_to_snap_to():
+    from lakehouse_agent.web.fetch import nearest_url
+
+    assert nearest_url(_GIVEN, "faiz nasil seyretti?") is None
+    assert nearest_url(_GIVEN, "") is None

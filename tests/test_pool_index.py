@@ -592,3 +592,92 @@ def test_an_index_missing_a_ranking_column_says_so():
     notes = pool_index.meta_notes(meta.drop(columns=["country"]))
     assert len(notes) == 1
     assert "country" in notes[0] and "yeniden kur" in notes[0]
+
+
+# --- a table is asked for in both directions, by a query naming no place ----
+
+
+_TWO_SUE = pd.DataFrame(
+    [
+        {"group": "bie_tsanay2021", "table": "Sanayi Üretim Endeksi (TÜİK)"},
+        {
+            "group": "bie_tsanaymt2021",
+            "table": "Mevsim ve Takvim Etkilerinden Arındırılmış Sanayi Üretim Endeksi",
+        },
+        {"group": "bie_tukfiy2025", "table": "Tüketici Fiyat Endeksi (2025=100)"},
+    ]
+)
+
+
+def test_a_query_asks_for_a_table_whose_name_says_more_than_it():
+    """The strict reading: every query word is in the table's name. The
+    seasonally adjusted table says more than "sanayi üretim endeksi" and is
+    still asked for -- its head is what the search expects first."""
+    asked = pool_index.tables_asked("sanayi üretim endeksi", _TWO_SUE)
+
+    assert asked == {"bie_tsanay2021", "bie_tsanaymt2021"}
+
+
+def test_a_query_asks_for_a_table_it_says_more_than():
+    """The loose reading: the table's name, parentheticals dropped, is inside
+    the query. The agent's own phrasing adds a synonym no table name holds;
+    under the strict reading alone nothing was asked for and the CPI's
+    sub-items crowded out its total (A6, three runs out of three)."""
+    asked = pool_index.tables_asked(
+        "tüketici fiyat endeksi TÜFE genel endeks", _TWO_SUE
+    )
+
+    assert asked == {"bie_tukfiy2025"}
+
+
+def test_naming_a_province_or_a_country_asks_for_that_row_not_the_total():
+    """ "Ankara konut fiyat endeksi" spells out the KFE table, but wants the
+    Ankara row -- a sub-item. Promoting the national total over it dropped
+    the row out of the five candidates. A named country is the same shape."""
+    meta = pd.DataFrame(
+        [
+            {
+                "series_id": "evds:kfe",
+                "table": "Konut Fiyat Endeksi",
+                "places": "",
+                "country": "",
+                "archive": False,
+                "family": None,
+                "group": "bie_kfe",
+                "head": True,
+            },
+            {
+                "series_id": "evds:kfe_ankara",
+                "table": "Konut Fiyat Endeksi",
+                "places": "ankara",
+                "country": "",
+                "archive": False,
+                "family": None,
+                "group": "bie_kfe",
+                "head": False,
+            },
+            # A national series from another table, scoring just below the
+            # Ankara row. It is what the Ankara row would fall behind if it
+            # were demoted as a sub-item of an asked-for table.
+            {
+                "series_id": "evds:kira",
+                "table": "Kira Endeksi",
+                "places": "",
+                "country": "",
+                "archive": False,
+                "family": None,
+                "group": "bie_kira",
+                "head": True,
+            },
+        ]
+    )
+    scored = [("evds:kfe", 0.70), ("evds:kfe_ankara", 0.60), ("evds:kira", 0.55)]
+
+    plain, _ = pool_index.rank("konut fiyat endeksi", scored, meta)
+    named, _ = pool_index.rank("Ankara konut fiyat endeksi", scored, meta)
+
+    assert plain[0][0] == "evds:kfe"  # the total, asked for by name
+    # Nothing is asked for when a place is named, so the Ankara row is not a
+    # demoted sub-item and stays ahead of the lower-scoring national series.
+    # With the gate gone it drops behind it.
+    assert [sid for sid, _ in named] == ["evds:kfe", "evds:kfe_ankara", "evds:kira"]

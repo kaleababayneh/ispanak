@@ -158,6 +158,7 @@ class LakeAdapter:
         self._doc_vectors: np.ndarray | None = None
         self._embed_down_until: float | None = None
         self._coverage_cache: dict[str, tuple[str, str]] | None = None
+        self._table_names_cache: dict[str, str] | None = None
         self._embed_model = _configured_embed_model()
 
     # -- catalog -----------------------------------------------------------
@@ -351,18 +352,7 @@ class LakeAdapter:
         """
         if self._texts is None:
             catalog = self._series_catalog()
-            index = self._pool_index() if len(catalog) > self._in_memory_limit else None
-            tables: dict[str, str] = {}
-            if index is not None and index.meta is not None:
-                meta = index.meta
-                if "table" in meta.columns:
-                    tables = {
-                        sid: name
-                        for sid, name in zip(
-                            meta["series_id"], meta["table"], strict=True
-                        )
-                        if isinstance(name, str) and name
-                    }
+            tables = self._table_names()
             self._texts = [
                 search_text(row, table=tables.get(row["series_id"]))
                 for _, row in catalog.iterrows()
@@ -513,6 +503,31 @@ class LakeAdapter:
         self._embed_down_until = None
         return self._doc_vectors @ query_vector
 
+    def _table_names(self) -> dict[str, str]:
+        """Series id -> the datagroup name the index recorded, once per adapter.
+
+        Read from the index's meta, not from bronze: it is what the search
+        text was built with, and it is present on a fresh clone that has the
+        index but no bronze. Empty for a pool small enough to live in memory,
+        where no index is opened.
+        """
+        if self._table_names_cache is None:
+            names: dict[str, str] = {}
+            catalog = self._series_catalog()
+            index = self._pool_index() if len(catalog) > self._in_memory_limit else None
+            if index is not None and index.meta is not None:
+                meta = index.meta
+                if "table" in meta.columns:
+                    names = {
+                        sid: name
+                        for sid, name in zip(
+                            meta["series_id"], meta["table"], strict=True
+                        )
+                        if isinstance(name, str) and name
+                    }
+            self._table_names_cache = names
+        return self._table_names_cache
+
     def _hit(
         self, row: pd.Series, score: float, *, match: str | None = None
     ) -> CatalogHit:
@@ -521,13 +536,16 @@ class LakeAdapter:
         Everything comes from `series_catalog`, so `kind`, `agg_method` and
         `cum_type` are the values the lake itself computes with, not guesses.
         `start_date`/`end_date` are the pool's coverage, not the catalog's:
-        see `_coverage`.
+        see `_coverage`. `table` is the datagroup the index recorded -- the
+        one field that separates a loan rate from a participation bank's
+        profit share when everything else about the two rows reads the same.
         """
         first, last = self._coverage().get(row["series_id"], (None, None))
         return CatalogHit(
             series_id=row["series_id"],
             name_tr=_clean(row.get("name_tr")) or row["series_id"],
             name_en=_clean(row.get("name_en")),
+            table=self._table_names().get(row["series_id"]),
             source=_clean(row.get("source")),
             freq=_clean(row.get("freq")),
             unit=_clean(row.get("unit")) or None,
