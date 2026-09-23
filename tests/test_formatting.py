@@ -276,8 +276,11 @@ def test_the_model_reads_preview_rows_as_json_not_as_a_python_repr():
         )
     )
 
-    assert '"dönem": "2020-09-01"' in message
-    assert '"değer": null' in message
+    # Column names are written once, values follow as lists; what matters
+    # here is that the values themselves are JSON, not Python reprs.
+    assert "(sutunlar: dönem, değer)" in message
+    assert '"2020-09-01"' in message
+    assert "null" in message
     assert "datetime.date" not in message
     assert "nan" not in message
 
@@ -377,3 +380,23 @@ def test_the_cap_still_holds_when_it_is_not_the_preview_that_is_long():
 
     assert len(message) <= TOOL_MESSAGE_MAX_CHARS
     assert message.endswith("... (kisaltildi)")
+
+
+def test_wide_columns_do_not_cost_the_model_its_rows():
+    """Measured 23 Sep on Borsa İstanbul's gold PDF: eleven columns with
+    names like "TL Miktar/Amount İşlem (KG) Number of" made a row cost about
+    500 characters, and one month of thirteen reached the model. The answer
+    then reasoned about January alone."""
+    from lakehouse_agent.agent.formatting import format_tool_message
+
+    columns = [f"Cok Uzun Sutun Adi/Long Column Name {n} (KG)" for n in range(11)]
+    rows = [dict.fromkeys(columns, 1234.0) | {columns[0]: f"Ay {n}"} for n in range(13)]
+
+    message = format_tool_message(
+        ToolResult(ok=True, summary="Tablo hazir.", preview=rows)
+    )
+
+    # Every month survives, and the names are written once rather than per row.
+    for n in range(13):
+        assert f'"Ay {n}"' in message
+    assert message.count("Cok Uzun Sutun Adi/Long Column Name 0 (KG)") == 1

@@ -112,6 +112,35 @@ def _called_tools(state: SessionState) -> set[str]:
     }
 
 
+#: Characters of a tool argument kept in the report. Enough for an address,
+#: short of pasting a whole table reference list into the JSON.
+ARG_CHARS = 200
+
+
+def _steps(state: SessionState) -> list[dict[str, Any]]:
+    """What the turn actually called, in order, with what.
+
+    Recorded because a red row is not self-explaining. Measured 23 Sep: a
+    run's answer said a page had returned 404 while the fetch cache held a
+    200 for it, and there was no way to tell which address the tool had been
+    given -- the report knew a tool had been called, not with what. Reading
+    a measurement means reading the steps.
+    """
+    return [
+        {
+            "arac": step.tool,
+            "ok": step.ok,
+            "hata": step.error,
+            "args": {
+                name: str(value)[:ARG_CHARS]
+                for name, value in (step.args or {}).items()
+            },
+        }
+        for step in state.steps
+        if step.turn_no == state.turn_no and step.tool
+    ]
+
+
 def _table(state: SessionState, suffix: str) -> pd.DataFrame | None:
     """The table a given tool produced, by the suffix in its reference.
 
@@ -344,6 +373,7 @@ def _one(entry: dict, deps: AgentDeps) -> dict:
         ),
         "eksik_seri": missing_series,
         "eksik_arac": missing_tools,
+        "adimlar": _steps(state),
         "kontroller": checks,
         "bayrak": len(flags),
         "bayrak_metinleri": [flag.text for flag in flags],
@@ -419,6 +449,12 @@ if __name__ == "__main__":
         for check in row["kontroller"]:
             if not check["gecti"]:
                 print(f"          {check['tip']}: {check['detay']}")
+        if not row["gecti"]:
+            # A red row is not self-explaining: which tool, with what.
+            for step in row["adimlar"]:
+                mark = "" if step["ok"] else f" [{step['hata'] or 'basarisiz'}]"
+                args = ", ".join(f"{k}={v}" for k, v in step["args"].items())
+                print(f"          adim {step['arac']}{mark}: {args[:120]}")
         if row["bayrak"]:
             print(f"          bayrak: {'; '.join(row['bayrak_metinleri'])}")
     print(f"yazildi: {out}")

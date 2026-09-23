@@ -202,14 +202,24 @@ def _stated_text(state: SessionState) -> str:
     read. Whichever way the asymmetry falls it is wrong; the cheap side is
     the one that does not print a flag under a faithful answer.
 
-    Fenced regions are cut out (`agent/formatting.without_fenced`). A web
-    page's text and a search result's snippet arrive inside a tool message,
-    and treating them as grounded meant any number a stranger wrote passed
-    the answer's number check as if a tool had computed it. Measured 23 Sep:
-    an answer reading "dolar kuru 99,99 oldu" passed with no flags against a
-    table that held nothing of the sort, because the figure sat in a search
-    snippet. `web_search`'s own text and `answer.md` rule 5 both promise that
-    cannot happen; this is what makes the promise true rather than advisory.
+    Search results are cut out (`agent/formatting.without_fenced`). They
+    arrive inside a tool message, and treating them as grounded meant any
+    number a stranger wrote passed the answer's number check as if a tool had
+    computed it. Measured 23 Sep: an answer reading "dolar kuru 99,99 oldu"
+    passed with no flags against a table that held nothing of the sort,
+    because the figure sat in a search snippet. `web_search`'s own text and
+    `answer.md` rule 5 both promise that cannot happen; this is what makes
+    the promise true rather than advisory.
+
+    A page read by `read_url` is NOT cut out, and that is deliberate. It
+    fences its text with its own markers (`tools/web_url.SOURCE_OPEN`) which
+    this does not match, so a figure quoted from a document the person named
+    in their own question counts as grounded. Rule 5 sends the model there
+    for exactly that reason, and the brief asks for meaning to be drawn out
+    of a PDF or a text passage at a given address. Cutting it out too would
+    flag every number on any page whose answer is prose rather than a table.
+    Both fences still stop the same attack: nothing inside either is read as
+    an instruction.
     """
     parts = [
         without_fenced(str(message.get("content") or ""))

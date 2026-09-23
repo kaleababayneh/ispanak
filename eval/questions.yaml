@@ -182,6 +182,20 @@
   category: adres
   expected_tools: [read_url]
   not: "Dış bir sayfaya bağlı: sayfa taşınırsa bu soru düşer ve bu bir agent
-        hatası değildir. Düştüğünde önce adresi kontrol et."
+        hatası değildir. Düştüğünde önce adresi kontrol et.
+        Bu sayfada TABLO yok ama KARAR METNİ VAR: read_url'ün döndürdüğü
+        sayfa metninde 'yüzde 15'ten yüzde 17,5 düzeyine yükseltilmesine'
+        cümlesi geçiyor (ölçüldü, 23 Eyl). Yani doğru davranış sayfayı okuyup
+        cevaplamak; PDF bağlantısını açmak gerekmiyor, açmak da yanlış değil.
+        Kontrol bu yüzden sonuca bakıyor, araç sayısına değil.
+        İki yanlış kontrol denendi ve ikisi de kaldırıldı: `kaynak_url_var`
+        sahte yeşil veriyordu (web araması da adres döndürüyor), `tablo_var:
+        read_url` ise sayfada olmayan bir tabloyu şart koşuyordu ve agent'ı
+        gereksiz yere PDF'e yolluyordu.
+        OYNAK SATIR: dış siteye bağlı. İlk `read_url` başarısız olursa model
+        aramaya düşer ve `answer.md` 5. kuralı aramadan gelen sayıyı yazmasını
+        YASAKLAR, dolayısıyla cevapta 17,5 olmaz ve satır kırmızı olur. Bu
+        doğru davranış: o koşu kaynağı gerçekten okumamıştır. Kırmızı görünce
+        önce `adimlar` alanına bak, ilk read_url'in `ok` değeri cevabı verir."
   checks:
-    - kaynak_url_var: true
+    - cevapta_gecmeli: "17,5"

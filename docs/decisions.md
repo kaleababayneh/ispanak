@@ -1619,3 +1619,76 @@ Sonuç:  1021 test yeşil (23 yeni), ruff temiz. Arama ölçümü 25/27 ve ayrı
         gibi bir tablo tüketici endeksiyle aynı gövdeye düşebilir. Bugün
         havuzda böyle bir çakışma yok, spekülatif olduğu için elle
         değiştirilmedi.
+
+## B5 sahte yeşildi, adım kaydı yoktu, bağlantılar kaçak (23 Eyl, koşumdan)
+Bağlam: Manuel doğrulama koşusunda B5 geçti ama cevabında bayrak vardı ve
+        "sayfa 404 döndü" yazıyordu. Önbellekte o adres için 200 duruyordu.
+Neden:  Üç ayrı şey çıktı, biri benim hatamdı.
+        1. **`read_url` PDF'i tam okuyor**, ölçüldü: doğrudan verilince
+           `ok: True`, `t01_read_url` tablosu kuruluyor, metinde "yüzde
+           15'ten yüzde 17,5" geçiyor. Yetenek eksik değil. Araç sayfadaki
+           veri dosyalarını gösteriyor ama takip etmiyor; bu kasıtlı, her
+           çekim ayrı onaydan geçiyor.
+        2. **B5 sahte yeşil veriyordu.** Tek kontrolü `kaynak_url_var` idi ve
+           web araması da adres döndürüyor. HTML kabuğunda durup cevabı
+           kendi belleğinden yazan koşu da geçiyordu.
+        3. **Koşucu adım kaydı tutmuyordu**, bu yüzden hangi adresin
+           çağrıldığını söyleyemedim ve modeli haksız yere 404 uydurmakla
+           suçladım. Suçlamayı geri aldım.
+Karar:  B5'in kontrolü sonuca bağlandı: `tablo_var: read_url` artı
+        `cevapta_gecmeli: "17,5"`. O tabloyu yalnızca gerçekten okunan bir
+        belge kurar, web araması kuramaz.
+        Rapora `adimlar` eklendi: tur içindeki her araç çağrısı, argümanları
+        (200 karaktere kırpılı), `ok` ve hata. Düşen satırlarda özete de
+        basılıyor.
+        `_data_links` artık `href`'i `html.unescape` ile çözüyor. TCMB
+        bağlantılarını `?MOD=AJPERES&amp;CACHEID=...` diye yazıyor ve modele
+        olduğu gibi verilince ikinci parametre `amp;CACHEID` oluyor. Bu
+        sunucuda zararsız (ikisi de 200), parametreyi okuyan bir sunucuda
+        modelin açması istenen adres sayfanın kastettiği adres olmuyor.
+Sonuç:  Ölçüm 11/12'den 10/12'ye düştü ve bu bir gerileme DEĞİL: B5 artık
+        dürüstçe kırmızı. Adım kaydı ilk koşuda işe yaradı, A6'nın her
+        seferinde başka bir TÜFE serisi seçtiği görüldü (bu koşuda
+        `evds:TP.FE25.OKTG01`).
+        AÇIK KALAN: aynı koşuda agent tek bir `read_url` yapıp kabuk sayfayı
+        okudu, PDF bağlantısını takip etmedi ve "duyuruyu okudum" diyerek
+        kendi belleğinden sayı yazdı. Doğrulayıcı '250'yi yakaladı, '17,5'i
+        yakalamadı; boş oturumda ikisini de yakalıyor, yani gerçek koşuda
+        '17,5' araç çıktısında bir yerde bulunmuş. Hangisi olduğu
+        incelenmedi. Modelin veri dosyası bağlantısını takip etmemesi de
+        ayrı bir iş.
+
+## İki çit, iki anlam: arama kanıt değil, okunan belge kanıt (23 Eyl)
+Bağlam: B5'in `cevapta_gecmeli: "17,5"` kontrolü düştü. Kullanıcı "daha önce
+        URL'den sayı yazmasın diye bir şey yapmamış mıydık" diye sordu.
+Neden:  İki ayrı şey bulundu.
+        1. **Kural var ve aramayı hedefliyor.** `answer.md` 5. madde:
+           "Aramadan gelen sayıyı cevaba yazma... Sayı gerekiyorsa kaynağı
+           `read_url` ile aç ve oradan al." B5'in o koşumunda ilk `read_url`
+           başarısız oldu, model aramaya düştü ve kurala uyarak oranı
+           yazmadı. Kontrol doğru davranışı cezalandırdı; satırın notuna
+           yazıldı, kontrol değiştirilmedi çünkü kaynağı okumayan bir koşunun
+           kırmızı olması doğrudur.
+        2. **Çit ayrımı tesadüfe dayanıyordu.** `without_fenced` yalnızca
+           `formatting.UNTRUSTED_OPEN`'ı tanıyor. `web_search` onu kullanıyor,
+           dolayısıyla parçacıklardaki sayılar kanıt sayılmıyor. `read_url`
+           kendi metnini kullanıyor ve tanınmadığı için sayfa metnindeki
+           sayılar kanıt sayılıyor. Ölçüldü: çit içine konan 98.765,4 cevapta
+           yazılınca bayrak almıyor, hiç geçmeyen sayı alıyor. Doğrulayıcının
+           docstring'i ise ikisini de kestiğini söylüyordu, yani davranış ile
+           yazılı niyet ayrışmıştı.
+Karar:  Mevcut davranış DOĞRU kabul edildi ve kasıtlı hale getirildi.
+        Gerekçe: arama yabancı bir derlemedir ve bir sayı başka aya ait
+        olabilir (ölçüldü: model Temmuz kararını Ağustos oranıyla yazmıştı);
+        `read_url` ise kullanıcının kendi sorusunda verdiği belgeyi okur ve
+        şartname "pdf, excel, resim veya ilgili yazı bölümlerinden anlam
+        çıkartılması" diyor. Çiti de kesmek, cevabı tablo değil düzyazı olan
+        her sayfada 5. kuralı uyulamaz hale getirirdi.
+        `web_url` sabitleri `SOURCE_OPEN`/`SOURCE_CLOSE` diye adlandırıldı,
+        eski adlar takma ad olarak duruyor. İki dosyada da ayrımın neden
+        ayrım olduğu yazıldı. Doğrulayıcının docstring'i gerçeğe çekildi.
+Sonuç:  Üç test ayrımı sabitliyor: arama parçacığındaki sayı bayrak alıyor,
+        okunan sayfadaki sayı almıyor, ve iki çit metninin eşit olmaması
+        ayrıca iddia ediliyor. Çitleri birleştirince üçünden ikisi kırmızıya
+        düşüyor, denendi. Güvenlik tarafı değişmedi: iki çitin içi de talimat
+        olarak okunmuyor.

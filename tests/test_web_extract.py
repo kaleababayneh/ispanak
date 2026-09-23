@@ -392,3 +392,24 @@ def test_a_heading_that_cannot_be_rebuilt_leaves_the_table_alone():
             return []
 
     assert extractor._repaired_header(_Mismatched(), [["a", "b", "c"]]) is None
+
+
+def test_a_links_entities_are_unescaped_before_it_is_offered():
+    """TCMB writes `...?MOD=AJPERES&amp;CACHEID=...`. Handed over verbatim,
+    the second parameter becomes `amp;CACHEID` -- a different address from
+    the one the page meant."""
+    from lakehouse_agent.web import extract
+
+    html = (
+        '<a href="/wcm/connect/abc/DUY2023-25.pdf?MOD=AJPERES&amp;CACHEID=X">'
+        "Basin Duyurusu</a>"
+    )
+
+    links = extract._data_links(html, "https://www.tcmb.gov.tr/sayfa")
+
+    assert links == [
+        (
+            "https://www.tcmb.gov.tr/wcm/connect/abc/DUY2023-25.pdf?MOD=AJPERES&CACHEID=X",
+            "Basin Duyurusu",
+        )
+    ]

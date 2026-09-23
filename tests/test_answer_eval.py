@@ -681,3 +681,48 @@ def test_an_empty_question_file_is_an_empty_report(tmp_path):
 
     assert report["soru_sayisi"] == 0
     assert report["gecen"] == "0/0"
+
+
+def test_the_report_records_which_tool_was_called_with_what(tmp_path):
+    """A red row is not self-explaining. Without the arguments there was no
+    way to tell which address a failing read_url had been given."""
+    from lakehouse_agent.testing import FakeLLM
+
+    deps = _deps(
+        [
+            FakeLLM.tool_call(
+                "get_series",
+                {
+                    "series_ids": ["evds:TP.KTF12"],
+                    "start": "2021-01",
+                    "end": "2025-12",
+                    "into": "new",
+                },
+            ),
+            FakeLLM.text("Tablo hazir."),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+    path = _questions(tmp_path, [{"id": "Q1", "question": "a?"}])
+
+    steps = answer_eval.run(deps, path=path)["sorular"][0]["adimlar"]
+
+    assert [step["arac"] for step in steps] == ["get_series"]
+    assert steps[0]["ok"] is True
+    assert steps[0]["args"]["series_ids"].startswith("['evds:TP.KTF12'")
+
+
+def test_a_long_argument_is_cut_before_it_reaches_the_report():
+    state = _state()
+    state.steps = [
+        Step(
+            step_no=1,
+            turn_no=1,
+            node="act",
+            tool="read_url",
+            args={"url": "https://example.com/" + "x" * 500},
+            started_at=FETCHED_AT,
+        )
+    ]
+
+    assert len(answer_eval._steps(state)[0]["args"]["url"]) == answer_eval.ARG_CHARS
