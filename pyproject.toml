@@ -24,6 +24,8 @@ dependencies = [
     "ruptures>=1.1.10",
     "statsmodels>=0.15.0",
     "rich>=15.0.0",
+    "chainlit>=2.12.0",
+    "plotly>=7.1.0",
 ]
 
 [project.scripts]

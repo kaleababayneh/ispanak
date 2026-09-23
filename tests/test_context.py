@@ -181,3 +181,31 @@ def test_a_tool_cannot_rewrite_a_columns_provenance_in_place(agent_settings):
     ctx.lineage["t01_a.reel"].formula = "uydurma"
 
     assert column.formula == "value / tufe * 100"
+
+
+def test_new_chart_ref_counts_the_session_and_this_step_together(agent_settings):
+    """Two charts in one step must not both get `c01`.
+
+    The session list is a snapshot taken when the step began, so a second
+    call that only looked at it would hand out the same number twice and the
+    interface, which stores charts by key, would keep one of them.
+    """
+    from lakehouse_agent.agent.state import ChartSpec
+
+    held = (ChartSpec(chart_ref="c02", table_ref="t01_a"),)
+    ctx = ToolContext(
+        session_id="s1",
+        step_no=1,
+        llm=FakeLLM(),
+        lake=None,
+        settings=agent_settings,
+        _tables={},
+        charts=held,
+    )
+
+    first = ctx.new_chart_ref()
+    ctx.add_chart(ChartSpec(chart_ref=first, table_ref="t01_a"))
+    second = ctx.new_chart_ref()
+
+    assert (first, second) == ("c03", "c04")
+    assert ctx.charts == held  # the snapshot itself is untouched

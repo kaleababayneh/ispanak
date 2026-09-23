@@ -1525,7 +1525,7 @@ def test_real_mode_says_what_is_missing_instead_of_traceback(capsys, monkeypatch
 
 def test_real_mode_wires_real_tools_and_a_lake_and_no_fakes(monkeypatch):
     """The demo's dependency set: the production registry, a real lake."""
-    from lakehouse_agent.agent.loop import _real_deps
+    from lakehouse_agent.agent.loop import real_deps
     from lakehouse_agent.config import AgentSettings
     from lakehouse_agent.tools.lake_adapter import LakeAdapter
 
@@ -1535,7 +1535,7 @@ def test_real_mode_wires_real_tools_and_a_lake_and_no_fakes(monkeypatch):
         lambda: AgentSettings(MIA_API_KEY="test-only-not-a-real-key"),
     )
 
-    deps = _real_deps()
+    deps = real_deps()
 
     assert isinstance(deps.lake, LakeAdapter)
     assert {"search_catalog", "get_series", "transform_table"} <= set(

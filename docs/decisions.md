@@ -1896,3 +1896,248 @@ Sonuç:  Aynı soru tekrar koşuldu. Cevap: "Faizin düştüğü ama kredinin
         "tablo t01_get_series: X eklendi" satırı çıkıyor, tablo `done` ile bir
         kez çiziliyor. Tablo deposu bağlanmamış bir çağıran için eski davranış
         (olayın kendi önizlemesi) korundu, yoksa hiç tablo görmezdi.
+
+## Tarayıcı arayüzü: `app.py` kökte, mantık `webui.py`'de (23 Eyl)
+Bağlam: Şartname çıktıyı "rapor, grafik veya tablo" diye tanımlıyor; jüriye
+        gösterilecek yüzey tarayıcı. Motor hazırdı: on üç olay, `approve`
+        async, sözleşme §6 her olayın arayüz karşılığını yazıyor.
+Karar:  Chainlit uygulaması `src/` dışında, repo kökünde `app.py`.
+        `test_agent_and_tools_do_not_import_chainlit` `src/lakehouse_agent`
+        altını muafiyetsiz tarıyor; kök dışarıda kaldığı için kural tek harfi
+        değişmeden yürürlükte. Bedeli `app.py`'nin pytest'ten import
+        edilememesi; bu yüzden karar veren her şey `agent/webui.py`'de
+        (`action_specs`, `decision`, `default_chart`, metin yardımcıları),
+        `chainlit` ve `plotly` import etmez ve test edilir. `app.py` yalnızca
+        `cl.*` çağrıları. `plotly` de yalnızca orada:
+        `test_no_module_imports_plotly`, `rich` ve `chainlit` kuralının
+        üçüncü sürümü.
+        Onay kartı `cl.AskActionMessage` ile düğme; cevap gelmezse (zaman
+        aşımı, kapanan sekme, karttaki olmayan seçenek) `default` +
+        `automatic=True`. Bayrak kozmetik değil: `decision_message` kişi
+        seçtiğinde modele başka cümle söylüyor.
+        Tablo tur sonunda, `done`'da bir kez ve **tam** (`cl.Dataframe` kendi
+        sayfalıyor; §4 "tam tablo doğrudan arayüze gider"). Terminalin 200
+        satır sınırı burada yok.
+        Oturum kimliği `cl.user_session["id"]`; `"cli"` sabiti terminalde
+        kaldı. Olaylar `data/adhoc/sessions/<zaman>-<id>.jsonl`'e de yazılır.
+        `.chainlit/config.toml` commit edilir (ad, açıklama), `translations/`
+        edilmez: silinince açılışta yeniden üretildiği ölçüldü.
+
+## Grafik: model tarif eder, `tools/charts.py` sözlük kurar, `app.py` çizer (23 Eyl)
+Bağlam: Boru hattının tamamı vardı — `ChartSpec.plotly_json`, `add_chart`,
+        `chart` olayı, `answer.md`'de `Grafikler: {{charts}}` — ama
+        `add_chart`'ı çağıran üretim kodu yoktu; yalnızca testler çağırıyordu.
+Karar:  `make_chart` aracı (`tools/charts.py`). `ChartSpec` docstring'inin
+        seçtiği tasarım uygulandı: "The model describes it; it never draws
+        it." `figure_json` plotly'nin tel biçimini (`{"data", "layout"}`) düz
+        sözlük olarak kurar, kütüphane yok; `Event.payload` JSON kalır.
+        `cl.Plotly` gerçek `Figure` istediği için sarmalama `app.py`'de
+        (`go.Figure(sözlük)`). Eksik değer `None` olarak gider, satır
+        düşürülmez: plotly null'da çizgiyi keser, düşürülen satır iki komşuyu
+        düz çizgiyle birleştirip ölçülmemiş ayı icat ederdi (CLAUDE.md #2).
+        Grafik `ctx.add_chart` ile döner, `artifacts` ile DEĞİL: döngü
+        ikisini de `state.charts`'a ekliyor (`loop.py` 1208-1215), ikisini
+        birden vermek çift sayardı; sabotajla kanıtlandı.
+        `ToolContext.new_chart_ref` eklendi: oturumdaki + bu adımda yazılan
+        grafikleri birlikte sayar; `new_table_ref`'in aynısı.
+        `planner.md` v9, kural 20: zaman serisi cevabında tablo hazır olunca
+        `make_chart`. `max_steps = 12` ve kural 12 adım cimriliği istediği için
+        model bazı turlarda grafiği atlayacak; çare motorda değil arayüzde:
+        tur grafiksiz bitmişse `app.py` aktif tablodan varsayılan çizgi grafik
+        çizer ve başlığına "(arayuz cizdi)" yazar. Eval'de bu yedek yok, yani
+        `grafik_var` kontrolü modelin aracı çağırdığını ölçer. C1 sorusu
+        eklendi; `test_the_shipped_questions_cover_every_registered_tool`
+        yeni aracı sorusuz bırakmayı zaten reddediyordu.
+
+## `LakeAdapter` yarışı: bayrak indeksten önce set ediliyordu (23 Eyl)
+Bağlam: Chainlit çok oturumlu; tek `LakeAdapter` bütün oturumlarca paylaşılır
+        (indeks ~0,5 GB, oturum başına açmak anlamsız) ve araçlar worker
+        thread'de koşar.
+Neden:  `_pool_index` `self._index_checked = True` yazıp SONRA
+        `self._index = PoolIndex.open(...)` yapıyordu (`lake_adapter.py`
+        365-367). Açılış sürerken gelen ikinci çağıran "bakıldı, indeks yok"
+        okuyup sessizce kelime aramasına düşüyordu; uyarı bile yoktu.
+Karar:  `threading.Lock` (asyncio değil: thread'deyiz), çift kontrollü;
+        notlar dâhil her şey hazırlanıp bayrak **en son** set edilir.
+Kanıt:  `test_two_threads_opening_the_index_at_once_both_get_it`: açılışa
+        50 ms gecikme, iki thread. Kilit kaldırılıp eski sıra geri konunca
+        test kırmızı (sabotaj koşumu, 7/7 yakalandı).
+
+## Grafik ve tablo başlıkları insan için, sütun adları model için (23 Eyl, ekran görüntüsünden)
+Bağlam: İlk gerçek grafikte lejant `aylik_tuketici_tuketici_kredileri_konut_
+        toplam_sektor` ve `TP_KTF12` yazıyordu; tabloda `TP_KTF12_diff`. Tablo
+        adlarını bilmeyen biri için anahtar, başlık değil.
+Neden:  Ad değiştirilemez: planner kural 3 modele sütun adını bir sonraki
+        çağrıya **birebir** kopyalamasını söylüyor, eval kontrolleri
+        (`deger: {sutun: "TP_KTF12"}`) o adı okuyor. Ama insan için gereken
+        bilgi zaten oturumda: `ColumnInfo` (sözleşme §5, anahtar
+        `"{table_ref}.{column}"`) çekilen sütunda kataloğun `name_tr` ve
+        `unit` değerini, türetilmişte `op` ve `inputs`'u taşıyor.
+Karar:  `agent/labels.py`, saf: `column_label` etiketi soyağacından türetir,
+        uydurmaz, kısaltmaz. Çekilen sütun = katalog adı + birim (birim adın
+        içinde geçiyorsa tekrar yok; `TP.KTF12`'nin adı `%` taşıyor).
+        Türetilmiş sütun = girdinin etiketi (**birimsiz**) + işlem sözü
+        (`OP_PHRASES`: fark, % değişim, endeks, payı…) + sütunun kendi
+        birimi; baz dönem sütun adının sonundan okunur (`_endeks_202101`).
+        Soyağacının bilmediği sütun kendi adıyla kalır; `period` → Dönem.
+        Etiketler üç yere gider: `make_chart` lejant ve eksenlere
+        (`figure_json(labels=)`; `ChartSpec.series[].column` ad olarak
+        kalır), tarayıcı tablosu `webui.display_frame` ile **kopyanın**
+        başlıklarına (oturumun çerçevesi dokunulmaz; aynı etiketli iki
+        sütun kendi adında kalır, tek başlığa çökmez), terminal tablosu
+        başlığa etiket + altına soluk ham ad (sonraki soru o adı kullanacak).
+        Modelin gördüğü `tables_summary` ham adla kalır.
+        Sahte `get_series` de `label_tr`'yi sahte katalogdan yazıyor artık;
+        gerçek araç bunu zaten yapıyordu, prova demo ekranını göstermeliydi.
+Ölçüm:  Gold veri, gerçek araçlar, model yok. İlk sürüm endeks sütununda
+        girdinin birimini sürükledi: "Tüketici Kredileri - Konut (Toplam)
+        (milyon TL) — endeks (2021-01 = 100)". Endeksin birimi milyon TL
+        değil; türetilmişte girdi birimsiz alınır oldu. Şimdi:
+        `TP_KTF12` → "Konut Kredisi (TL, Akım, %) (Ağırlıklı ortalama)"
+        (katalogda `unit` sütununda "Ağırlıklı ortalama" yazıyor; kaynağın
+        verisi, düzeltilmedi), `TP_KTF12_diff` → "… — fark (yuzde puan)",
+        `..._pay` → "Türkiye_Konut_İpotekli Satışlar / Türkiye_Konut_Toplam
+        Satışlar payı (%)". Sekiz sabotaj, sekizi yakalandı. `answer_eval`
+        yeniden koşulmadı: modelin girdisi (araç özeti, sütun adları)
+        değişmedi, yalnızca insan tarafı.
+
+## "300k" 300 milyon değil 300 milyar; tarihte saat yok (23 Eyl, ikinci ekran görüntüsünden)
+Bağlam: Grafikte sol eksen "300k", başlık "(milyon TL)"; okuyan "300 milyon"
+        anladı. Tabloda dönem `2021-01-01T00:00:00.000`.
+Ölçüm:  `bddk:aylik:tuketici:tuketici_kredileri_konut:toplam:sektor` 2021-01
+        değeri **276.785**, birimi `milyon TL`. Yani 300k = 300 bin milyon TL
+        = 300 milyar TL. Birim doğru; plotly'nin SI kısaltması (`k`) Türkçe
+        birim başlığının yanında yanlış okunuyor.
+Karar:  Birim çevrilmedi (CLAUDE.md #3; grafik tabloyla aynı sayıyı
+        göstermeli). Değer eksenlerinde `exponentformat: "none"` (sayı tam
+        yazılır), `separators: ",."` (Türkçe: ondalık virgül, binlik nokta).
+        "300k" → "300.000", başlık "(milyon TL)" olduğu gibi. Tarih ekseni
+        sayı değil, dokunulmadı.
+        Tarih: `webui.display_frame` gösterim kopyasında datetime64
+        sütunları `YYYY-MM-DD` yazar; `period` sözleşmede tarihtir, saat
+        veri değil serileştirme gürültüsüydü. Oturumun çerçevesi datetime64
+        kalır. Terminal zaten `json_safe` ile tarih yazıyordu.
+        Üç sabotaj (kısaltma geri, İngilizce ayraç, saat geri), üçü yakalandı.
+
+        Açık soru: `TP.KTF12` etiketi "Konut Kredisi (TL, Akım, %)" — bu
+        kataloğun `name_tr`'si, "faiz oranı" kelimesi adında yok. Kelime
+        `topic`'te ("FAİZ VE KÂR PAYI İSTATİSTİKLERİ (AKIM)"), `tags`'te
+        ("kredi, faiz"), `notes`'ta ve bronze veri grubu adında ("Kredi Faiz
+        Oranları (Akım)") var; veri grubu adı gold kataloğa taşınmıyor
+        (sütun listesi sözleşme). Nasıl gösterileceği kullanıcıya soruldu.
+
+## Lejant etiketini model yazar, katalog yedektir (23 Eyl, kullanıcı kararı)
+Bağlam: "Konut Kredisi (TL, Akım, %)" kataloğun kendi adı; "faiz oranı"
+        kelimesi adında yok. Kullanıcı okuyanın anlayacağı etiket istedi.
+        Üç yol soruldu: model yazsın (katalog yedek), EVDS veri grubu adını
+        kataloğa taşı (şema değişikliği, gold yeniden kurulur, BDDK'da
+        karşılığı yok), olduğu gibi kalsın. İlki seçildi.
+Karar:  `make_chart` seri başına isteğe bağlı `label` alır (≤ 80 karakter;
+        şemada sınır ve örnek var). `ChartSeries.label` kaydeder. Araç
+        önce kataloğun etiketini kurar (`agent/labels.py`), sonra modelin
+        yazdığını üstüne yazar; boş ya da yalnız boşluk etiket üstüne
+        yazmaz. `title` zaten modelindi, `label` aynı sınıf: model tarif
+        eder, çizmez. Planner kural 20 etiketi ister ve sınırı koyar:
+        "sorudaki dille yaz ama anlamı değiştirme — stoku akım, oranı tutar
+        diye adlandırma". Doğrulayıcı etiketi denetlemez; bilinen risk.
+        Tablo başlığı lejantla aynı şeyi söyler: `webui.chart_labels`
+        oturumun grafiklerinden o tablonun sütun etiketlerini okur (son
+        grafik kazanır, etiketsiz seri katkı vermez), `display_frame` ve
+        terminal tablosu kataloğun etiketinin üstüne yazar. Sütun adı
+        yine ad; modelin gördüğü özet değişmez.
+Kanıt:  Beş sabotaj (etiket kullanılmıyor, boş etiket kataloğu eziyor,
+        tablo etiketi almıyor, başka tablonun etiketi sızıyor, terminal
+        almıyor), beşi yakalandı.
+Ölçüm:  Gerçek modelle tek soru ("Konut kredisi faizi ile konut kredisi
+        bakiyesini 2021-2025 için grafikle göster"). Model `make_chart`'ı
+        şöyle çağırdı: `TP_KTF12` → label "Konut kredisi faiz oranı (%)",
+        bakiye sütunu → "Konut kredisi bakiyesi (milyon TL)", ikincisi sağ
+        eksende, başlık "Konut kredisi faiz oranı ve konut kredisi bakiyesi
+        (2021-2025)". Birimi kimse istemedi, araç özetinden kendisi taşıdı.
+        Lejant ve eksen başlıkları bu etiketlerle çıktı; sütun adları ve
+        modelin gördüğü özet değişmedi.
+
+## Yedek grafik önceki sorunun tablosunu çizdi (23 Eyl, üçüncü ekran görüntüsünden)
+Bağlam: 13. soru (TCMB duyurusunu oku) doğru cevaplandı, altına konut satış
+        serilerinin grafiği geldi: "t03_get_series (arayuz cizdi)".
+Neden:  Yedek grafik "bu turda grafik eklendi mi" ve "aktif tablo var mı"
+        diye bakıyordu. Aktif tablo turdan tura yaşar; `read_url`'ün
+        sayfasında tablo yoktu, aktif tablo 3. sorudan kalan `t03` idi.
+        `TurnResult.table_refs` de yardımcı değil: oturumun bütün
+        tablolarını taşıyor, bu turunkileri değil (`loop.py` 337).
+        İkinci kusur aynı grafikte: üç sütun tek eksende, "payı (%)" adet
+        ekseninde sıfıra yapışık düz çizgi.
+Karar:  `webui.fallback_table(active, touched, charts_added)`, saf: yalnız
+        bu turda `table_update` ile dokunulan tablo, yalnız tur kendisi
+        grafik çizmediyse. `ChainlitSink` turun dokunduğu tabloları `done`
+        anında `last_touched` olarak saklar; `app.py` kararı vermez, sorar.
+        `default_chart` sütunları soyağacındaki birime göre eksene dağıtır:
+        ilk birim sol, ikinci sağ, üçüncü çizilmez — yanlış ölçekte çizmek
+        yerine eksik çizmek. Birimi olmayan sütunlar kendi grubudur.
+Kanıt:  Dört sabotaj (bayat tablo, grafik çizilmişken yedek, ikinci birim
+        solda, üçüncü birim çiziliyor), dördü yakalandı. Tablosuz bir
+        turda artık grafik yok; `docs/manual_test.md` 13. soru bunu
+        bekliyor.
+
+## Modelin sözcükleri türetilmiş sütunlara da akar; tablo dört ondalık; ad "🥬 Ispanak" (23 Eyl)
+Bağlam: Tablo başlıkları karışık görünüyordu: modelin lejant için verdiği
+        etiket yalnız grafiğe koyduğu sütunlara gidiyordu, `_diff`, `_pay`
+        ve koşul sütunları kataloğun uzun teknik adından üretiliyordu, koşul
+        sütunu ise ilk girdisinden ("…faiz oranı — koşul işareti") yanlış
+        adlanıyordu. Hücrelerde 1716481.7634920634 gibi değerler vardı.
+Karar:  `column_label` modelin etiketlerini (`overrides`) **sonuçtan sonra
+        yapıştırmak yerine** türetimin başında okur: `TP_KTF12` "Konut
+        kredisi faiz oranı (%)" ise `TP_KTF12_diff` "Konut kredisi faiz
+        oranı (%) — fark (yuzde puan)" olur. Model etiketi olduğu gibi
+        alınır, birim eklenmez. `mark` sütunu modelin verdiği adı taşır
+        (`faiz dustu kredi artmadi (koşul)`), girdilerini değil. Katalog
+        adlarındaki ve araç sütunlarındaki alt çizgiler boşluk olur
+        (`Türkiye Konut İpotekli Satışlar`, `ortalama öncesi`); başka
+        hiçbir harf değişmez. `make_chart`, `display_frame` ve terminal
+        aynı yolu kullanır.
+        Tablo gösterim kopyasında float sütunlar 4 ondalığa yuvarlanır
+        (terminalle aynı `DECIMALS`); oturumun çerçevesi her basamağı
+        tutar, eval ve sonraki araç oradan okur.
+        Chainlit `[UI] name = "🥬 Ispanak"`; ıspanak emojisi Unicode'da yok,
+        en yakını "leafy green" (U+1F96C). Karşılama sayfası başlığı aynı.
+Kanıt:  Beş sabotaj (etiket türetilmişe akmıyor, koşul girdisinden adlanıyor,
+        alt çizgi kalıyor, yuvarlama yok, grafik aracı etiketi türetilmişe
+        vermiyor), beşi yakalandı. Gerçek gold tablosunda ölçülen
+        başlıklar bu girdinin altındaki koşum çıktısında.
+
+## Takip sorusu tabloyu ve grafiği yeniden getirdi; yedek grafik katalog adıyla çıktı (23 Eyl)
+Bağlam: 11. sorudan sonra "faizin en yüksek üç ayı" soruldu. Cevap doğru
+        (`top`: 2024-04, 2024-05, 2024-06), ama altına 60 satırlık tablo
+        yeniden geldi ve "t03_get_series (arayuz cizdi)" grafiği ikinci kez
+        çizildi; lejantı da modelin sözcükleri değil katalog adlarıydı.
+Neden:  Üç ayrı kusur. (1) `top` sütun eklemez ama `table_update` fırlatır
+        (`new_columns` boş); arayüz her `table_update`'i "dokunuldu" sayıp
+        tabloyu çiziyordu. (2) Yedek grafik "bu turda dokunulan tablo" diye
+        bakıyordu; takip sorusu tabloya dokunur. (3) `default_chart`'a
+        modelin etiketleri (`chart_labels`) verilmiyordu; tablo başlığı
+        modelin sözcüklerini alırken grafik kataloğu gösteriyordu. Bir de
+        iki seri aynı eksende olunca eksen başlığı iki uzun etiketin virgülle
+        birleşimi oluyor, grafiğin üstünden taşıyordu.
+Karar:  `webui.note_table(known, ref, fresh) -> (yeni mi, çizilsin mi)`:
+        tablo ilk görüldüğünde ve sütun eklendiğinde çizilir, yalnız
+        okunduğunda çizilmez. Tarayıcı ve terminal aynı kuralı kullanır.
+        `fallback_table` yalnız **bu turda kurulan** tablo için: yedek grafik
+        "model adımlarını bitirdi, tablo grafiksiz kaldı" durumu içindir,
+        takip sorusu için değil. `default_chart` `overrides` alır, arayüz
+        `chart_labels`'ı geçer. `figure_json(units=)`: bir eksende birden
+        çok seri varsa ve birimleri aynıysa eksen başlığı birimdir
+        ("milyon TL"), farklıysa etiketler; tek seride etiket.
+        Soruya cevap: her soruda tablo/grafik zorunlu değil. Model 14. soruda
+        grafik istemedi; ikisini de arayüz kuralları getirdi, kapatıldı.
+Kanıt:  Beş sabotaj (okunan tablo yine çiziliyor, terminal de basıyor, yedek
+        grafik modelin etiketini almıyor, paylaşılan eksen etiketlerle
+        başlıklanıyor, farklı birimler tek birimle), beşi yakalandı. Canlı
+        kontrol `docs/manual_test.md` takip sorusuyla elle yapılır.
+
+        Logo ve favicon: `public/logo_light.png`, `public/logo_dark.png`,
+        `public/favicon.png`. Chainlit `public/` altındaki bu adları
+        kendi varsayılanının yerine servis ediyor (`server.py` `/logo`,
+        `/favicon`); ölçüldü, üçü de bizimki geldi. Dosyalar Pillow ile
+        Apple Color Emoji (🥬, 160 px tek bitmap boyu) + Arial Rounded
+        Bold'dan üretildi; üretici betik commit edilmedi, macOS fontuna
+        bağlı, PNG'ler kaynaktır.

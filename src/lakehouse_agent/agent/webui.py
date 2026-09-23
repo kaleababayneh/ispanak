@@ -1,0 +1,280 @@
+"""The browser interface, minus the browser.
+
+`app.py` at the repository root is the Chainlit shell. It cannot be imported
+by a test -- pytest does not put the root on `sys.path` -- so nothing that
+makes a decision lives there. Everything that does lives here, imports neither
+`chainlit` nor `plotly`, and is tested like any other module.
+
+The sibling of `agent/console.py`: one draws the terminal, this one prepares
+what the browser draws. Both read the event contract in `docs/contracts.md`
+section 6 and neither is known to the loop.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from typing import Any
+
+import pandas as pd
+
+from lakehouse_agent.agent.labels import column_units, table_labels
+from lakehouse_agent.agent.state import (
+    ApprovalDecision,
+    ApprovalRequest,
+    ChartSeries,
+    ChartSpec,
+    new_chart_ref,
+)
+from lakehouse_agent.tools.charts import figure_json
+
+#: How many sources are listed before the rest are counted. Same as the
+#: terminal's, so the two interfaces do not disagree about what is shown.
+SOURCES_SHOWN = 12
+
+#: Columns that are an axis, not a measurement. A default chart draws
+#: everything else.
+AXIS_COLUMNS = ("period", "obs_date", "date", "tarih")
+
+#: Decimals shown in the browser table. The session's frame is not rounded;
+#: the eval reads it and a ratio of 19.998 must stay 19.998. Four is what
+#: the terminal shows too (`console.DECIMALS`), so the two screens agree.
+DECIMALS = 4
+
+#: Most series a default chart draws. Beyond this the picture is a hairball
+#: and the model should have asked for the columns it meant.
+DEFAULT_SERIES_MAX = 4
+
+
+def action_specs(request: ApprovalRequest) -> list[dict[str, Any]]:
+    """The approval card's options as Chainlit action arguments.
+
+    Plain dicts, so `app.py` only has to call `cl.Action(**spec)`. The choice
+    travels in `payload["value"]`, which is where `cl.AskActionMessage` puts
+    it in the response.
+    """
+    specs = []
+    for option in request.options:
+        mark = " (varsayilan)" if option.id == request.default else ""
+        label = f"{option.label}{mark}"
+        specs.append(
+            {
+                "name": option.id,
+                "payload": {"value": option.id},
+                "label": label,
+                "tooltip": option.detail or label,
+            }
+        )
+    return specs
+
+
+def decision(request: ApprovalRequest, value: Any) -> ApprovalDecision:
+    """Turn what the card came back with into a decision.
+
+    Anything unrecognised -- a timeout, a closed tab, an option that is not on
+    this card -- falls to the default and is marked `automatic`. The flag is
+    not cosmetic: `approvals.decision_message` tells the model a different
+    thing when a person actually chose, so passing a default off as a choice
+    would put a sentence in the answer that nobody said.
+    """
+    chosen = str(value) if value is not None else ""
+    if chosen not in {option.id for option in request.options}:
+        return ApprovalDecision(
+            request_id=request.request_id,
+            choice=request.default or "",
+            note="karta cevap gelmedi, varsayilan uygulandi",
+            automatic=True,
+        )
+    return ApprovalDecision(
+        request_id=request.request_id,
+        choice=chosen,
+        note="arayuzden secildi",
+    )
+
+
+def note_table(known: set[str], ref: str, fresh: Iterable[str]) -> tuple[bool, bool]:
+    """Whether a `table_update` is worth drawing, and whether the table is new.
+
+    Returns `(is_new, changed)` and records the table in `known`. A turn
+    that only read a table -- "the three highest months" is a `top`, which
+    adds no column -- fires an update with no new columns; drawing sixty
+    rows again under that answer was noise (seen 23 Sep). A table is drawn
+    the first time it is seen and whenever a column is added, and not
+    otherwise.
+    """
+    is_new = ref not in known
+    known.add(ref)
+    return is_new, is_new or bool(list(fresh))
+
+
+def fallback_table(
+    active_table: str | None, new_tables: Iterable[str], charts_added: int
+) -> str | None:
+    """Which table, if any, the interface should chart on the model's behalf.
+
+    Only a table this turn **created**, and only when the turn drew nothing
+    itself. The fallback exists for one case: the model spent its steps on
+    the analysis and ended table-only. It is not for follow-ups. The active
+    table survives across turns, so a question that produced no table (a
+    page read, a refusal) would otherwise get the previous question's chart
+    under its answer -- seen 23 Sep, a TCMB summary with housing-sales
+    lines beneath it -- and a follow-up that only read the table ("the
+    three highest months") got the same chart a second time.
+    """
+    if charts_added or not active_table:
+        return None
+    return active_table if active_table in set(new_tables) else None
+
+
+def default_chart(
+    frame: pd.DataFrame,
+    table_ref: str,
+    charts: list[Any],
+    title: str | None = None,
+    lineage: Mapping[str, Any] | None = None,
+    overrides: Mapping[str, str] | None = None,
+) -> ChartSpec | None:
+    """A line chart of whatever the table holds, or `None` if it holds nothing.
+
+    A fallback, not a feature. `make_chart` is a step and a turn has twelve
+    (`loop.AgentConfig.max_steps`), so the model will sometimes spend them all
+    on the analysis and never draw. Rather than show a table-only answer, the
+    interface draws the obvious chart itself. It is built here so the choice
+    of columns is testable, and it is marked in its title so nobody reads it
+    as something the agent asked for.
+    """
+    x = next((name for name in AXIS_COLUMNS if name in frame.columns), None)
+    if x is None:
+        return None
+    numeric = [
+        str(name)
+        for name in frame.columns
+        if str(name) != x and pd.api.types.is_numeric_dtype(frame[name])
+    ]
+    numeric = [name for name in numeric if frame[name].notna().any()]
+    if not numeric:
+        return None
+
+    label = title or f"{table_ref} (arayuz cizdi)"
+    series = _by_unit(numeric[:DEFAULT_SERIES_MAX], table_ref, lineage or {})
+    labels = table_labels(table_ref, frame.columns, lineage or {}, overrides)
+    units = column_units(table_ref, frame.columns, lineage or {})
+    return ChartSpec(
+        chart_ref=new_chart_ref(charts),
+        table_ref=table_ref,
+        x=x,
+        series=series,
+        title=label,
+        plotly_json=figure_json(frame, x, series, label, labels, units),
+    )
+
+
+def chart_labels(charts: Iterable[Any], table_ref: str) -> dict[str, str]:
+    """The names the model gave this table's columns when it drew them.
+
+    Read off the session's charts so the table header says what the legend
+    says: a reader who has just seen "Konut kredisi faiz oranı" on the
+    chart should not meet "Konut Kredisi (TL, Akım, %)" in the table below
+    it. The latest chart of the table wins; a series left unlabelled
+    contributes nothing.
+    """
+    found: dict[str, str] = {}
+    for chart in charts:
+        if str(_attr(chart, "table_ref") or "") != table_ref:
+            continue
+        for one in _attr(chart, "series") or []:
+            label = str(_attr(one, "label") or "").strip()
+            if label:
+                found[str(_attr(one, "column"))] = label
+    return found
+
+
+def _attr(thing: Any, name: str) -> Any:
+    return thing.get(name) if isinstance(thing, Mapping) else getattr(thing, name, None)
+
+
+def _by_unit(
+    columns: list[str], table_ref: str, lineage: Mapping[str, Any]
+) -> list[ChartSeries]:
+    """One axis per unit: the first unit seen goes left, the second right.
+
+    A share in percent drawn on an axis of counts is a flat line at zero,
+    which is what the first fallback chart did. Columns of a third unit are
+    left out rather than drawn on the wrong scale; a chart that says less
+    beats one that misleads. Unit comes from lineage; a column with none
+    forms its own group.
+    """
+    axes: dict[str, str] = {}
+    series: list[ChartSeries] = []
+    for name in columns:
+        info = lineage.get(f"{table_ref}.{name}")
+        unit = str(getattr(info, "unit", None) or "").strip().casefold()
+        if unit not in axes:
+            if len(axes) == 2:
+                continue
+            axes[unit] = "left" if not axes else "right"
+        series.append(ChartSeries(column=name, axis=axes[unit]))  # type: ignore[arg-type]
+    return series
+
+
+def display_frame(
+    frame: pd.DataFrame,
+    table_ref: str,
+    lineage: Mapping[str, Any],
+    overrides: Mapping[str, str] | None = None,
+) -> pd.DataFrame:
+    """The table as a person reads it: labelled headers, same values.
+
+    A renamed copy, never the session's frame. The session keeps the names
+    the model works with; only what is drawn changes. Two columns that
+    label the same (a fixture, or a catalog collision) are left under their
+    own names rather than collapsed into one header. `overrides` are the
+    model's own words for some columns (`chart_labels`); they win over the
+    catalog's.
+    """
+    labels = table_labels(table_ref, frame.columns, lineage, overrides)
+    seen = list(labels.values())
+    unique = {name: label for name, label in labels.items() if seen.count(label) == 1}
+    shown = frame.rename(columns=unique)
+    for name in shown.columns:
+        if pd.api.types.is_datetime64_any_dtype(shown[name]):
+            # `period` is a date by contract (the first day, no time), but
+            # the frame holds it as datetime64 and the browser table then
+            # printed `2021-01-01T00:00:00.000`. The time was never data.
+            shown[name] = shown[name].dt.strftime("%Y-%m-%d")
+        elif pd.api.types.is_float_dtype(shown[name]):
+            # 1716481.7634920634 is not more true than 1716481.7635; it is
+            # just harder to read. Display only; the frame keeps every digit.
+            shown[name] = shown[name].round(DECIMALS)
+    return shown
+
+
+def step_line(payload: dict[str, Any]) -> str:
+    """The one-line label of a finished step.
+
+    Keyed on `node`, not `tool`: `step_end` carries no tool name
+    (`docs/contracts.md` section 6).
+    """
+    ok = payload.get("ok") is not False
+    mark = "✓" if ok else "✗"
+    summary = str(payload.get("summary") or "").splitlines()
+    head = summary[0] if summary else ""
+    return f"{mark} {payload.get('node') or ''} · {payload.get('duration_ms', 0)} ms · {head}"
+
+
+def flag_lines(payload: dict[str, Any]) -> list[str]:
+    """One bullet per statement the verifier could not confirm."""
+    return [f"- {flag.get('text', '')}" for flag in (payload.get("flags") or [])]
+
+
+def source_lines(payload: dict[str, Any]) -> list[str]:
+    """The sources list, capped, with the remainder counted rather than cut."""
+    sources = payload.get("sources") or []
+    lines = []
+    for source in sources[:SOURCES_SHOWN]:
+        who = source.get("series_id") or source.get("url") or ""
+        name = source.get("name") or ""
+        lines.append(f"- `{who}` {name}".rstrip())
+    more = len(sources) - SOURCES_SHOWN
+    if more > 0:
+        lines.append(f"- … ve {more} kaynak daha")
+    return lines

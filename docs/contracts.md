@@ -227,10 +227,17 @@ adımın çalışma süresinden düşülüyor. Jüri kartı okurken tur düşmes
 
 Aktif tablo kuralı: `get_series(into="new")`, `run_sql`, `ingest` ve `read_url`
 aktif tabloyu değiştirir; analiz sonucu tabloları değiştirmez. Üretim kaydı
-(`tools/toolset.py`, sekiz araç): search_catalog, get_series,
+(`tools/toolset.py`, dokuz araç): search_catalog, get_series,
 transform_table, detect_anomalies, detect_changes, **read_url**,
-**test_causality**, **web_search**. `run_sql` ve `ingest` henüz yalnızca
-sahte araçlarda; kural sıraları geldiğinde uyacakları kural.
+**test_causality**, **web_search**, **make_chart**. `run_sql` ve `ingest`
+henüz yalnızca sahte araçlarda; kural sıraları geldiğinde uyacakları kural.
+
+`make_chart` tablo yazmaz, aktif tabloyu değiştirmez; `ChartSpec`'i
+`ToolContext.add_chart` ile bırakır ve `plotly_json`'u **düz sözlük** olarak
+kurar (`tools/charts.py`, `plotly` import etmez). `ToolResult.artifacts`'a
+ayrıca yazılmaz: döngü iki kaynağı da `state.charts`'a eklediği için ikisini
+birden vermek grafiği iki kez sayar. Anahtar `ToolContext.new_chart_ref` ile
+üretilir; araç anahtar uydurmaz (tablolarla aynı kural).
 
 `read_url` aktif tabloyu devraldığında bunu **uyarıda söyler** ve önceki
 tablonun adını verir: analizin ortasında okunan bir adres, sonraki her

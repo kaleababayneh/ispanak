@@ -25,6 +25,7 @@ from lakehouse_agent.contracts import (
     Source,
     ToolResult,
 )
+from lakehouse_agent.testing.fake_lake import SCENARIO_SERIES
 from lakehouse_agent.tools.lakehouse import column_name, deflate_refusal
 from lakehouse_agent.tools.registry import ToolRegistry, ToolSpec
 
@@ -145,6 +146,12 @@ def make_get_series() -> ToolSpec:
             columns.append(
                 ColumnInfo(
                     name=name,
+                    # The real tool copies the catalog name into `label_tr`
+                    # and the interfaces label charts and headers from it; a
+                    # fake that left it empty would rehearse a screen the
+                    # demo never shows. Unknown ids (tests invent them) stay
+                    # unlabelled, as an uncatalogued series would.
+                    label_tr=SCENARIO_SERIES.get(series_id, {}).get("name_tr"),
                     unit="%" if "KTF" in name else "milyon TL",
                     kind="rate" if "KTF" in name else "stock",
                     freq="M",

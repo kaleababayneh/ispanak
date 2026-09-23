@@ -31,6 +31,10 @@
 #       O sütun, verilen tarihten önce hiçbir dönemde DEĞER taşımamalı.
 #       Boş hücre sayılmaz: kaynak pencerenin tamamına hücre verip seri
 #       yayımlanmadan önceki dönemleri boş bırakıyor.
+#   grafik_var: true
+#       Oturumda çizilmiş (plotly_json taşıyan) en az bir grafik olmalı.
+#       Yalnızca `make_chart` üretir; arayüzün kendi çizdiği yedek grafik
+#       eval'de yoktur, yani bu kontrol modelin aracı çağırdığını ölçer.
 #
 # Sütun adları uydurma değil, üretilme kuralları belli:
 #   get_series  -> evds:TP.KTF12 => TP_KTF12  (tools/lakehouse.py column_name)
@@ -193,3 +197,16 @@
         önce `adimlar` alanına bak, ilk read_url'in `ok` değeri cevabı verir."
   checks:
     - cevapta_gecmeli: "17,5"
+
+# --- grafik (23 Eylül) --------------------------------------------------------
+
+- id: C1
+  question: "Konut kredisi faizinin son 24 ayını grafikle göster."
+  category: grafik
+  expected_series: ["evds:TP.KTF12"]
+  expected_tools: [get_series, make_chart]
+  not: "Soru açıkça grafik istiyor; planner kural 20 tabloyu kurduktan sonra
+        `make_chart` çağırmayı söylüyor. Kontrol yalnızca bir grafiğin
+        çizildiğine bakıyor; hangi sütunların seçildiği modelin işi."
+  checks:
+    - grafik_var: true

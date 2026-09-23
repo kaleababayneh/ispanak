@@ -624,6 +624,7 @@ async def _act(
         user_message=question,
         _tables=state.tables,
         retired_refs=frozenset(state.retired_tables),
+        charts=tuple(state.charts),
     )
 
     request = approval_rules.needs_fetch_approval(spec, args, ctx, state)
@@ -1660,12 +1661,17 @@ def _live_deps() -> AgentDeps:
     )
 
 
-def _real_deps() -> AgentDeps:
+def real_deps(*, lake: Any = None, sink: EventSink | None = None) -> AgentDeps:
     """Real model, real tools, real data: what the demo runs.
 
     No fakes are imported here, so this mode cannot put a synthetic number on
     screen. The lake reads the committed gold data and, on the first search,
     embeds the pool catalog once (cached on disk afterwards).
+
+    `lake` and `sink` are parameters because the browser interface builds one
+    set of deps per chat session and must hand every one of them the *same*
+    `LakeAdapter`: it holds the opened pool index, roughly half a gigabyte,
+    and opening it per session would pay that cost again for nothing.
     """
     from dotenv import find_dotenv, load_dotenv
 
@@ -1680,8 +1686,8 @@ def _real_deps() -> AgentDeps:
         llm=MiaLLM(settings),
         registry=make_registry(),
         settings=settings,
-        lake=LakeAdapter(),
-        sink=JsonlSink(),
+        lake=lake if lake is not None else LakeAdapter(),
+        sink=sink if sink is not None else JsonlSink(),
     )
 
 
@@ -1814,7 +1820,7 @@ def _cli(argv: list[str] | None = None) -> int:
     state = initial_state("cli")
     try:
         if args.real:
-            deps = _real_deps()
+            deps = real_deps()
         elif args.live:
             deps = _live_deps()
         else:
@@ -1839,7 +1845,9 @@ def _cli(argv: list[str] | None = None) -> int:
             # the interface, and the engine must not depend on it.
             from lakehouse_agent.agent.console import Terminal
 
-            terminal = Terminal(tables=state.tables.get)
+            terminal = Terminal(
+                tables=state.tables.get, lineage=state.lineage, charts=state.charts
+            )
             deps.sink = _Both(deps.sink, terminal)
             deps.approve = terminal.approve
         return asyncio.run(_run_cli(state, deps, questions, terminal, args.fake))
