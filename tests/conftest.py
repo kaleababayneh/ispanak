@@ -24,6 +24,27 @@ def _no_secrets_in_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _gold_db_outside_the_repo(tmp_path_factory):
+    """Tests build their DuckDB copy of gold in a temporary directory.
+
+    `gold.connect()` materialises the parquet files as tables inside
+    `GOLD_DB_PATH`, which is relative to the working directory: every test
+    that touches real gold was writing an 800 KB file into `data/gold/` in
+    the working tree. It is gitignored, so `git status` never showed it and
+    nobody noticed. The parquet files themselves are only ever read.
+
+    Session-scoped, so the tables are built once for the whole suite rather
+    than per test, and `raising=False` is not needed: the attribute exists.
+    """
+    from lakehouse_agent.lake import gold
+
+    original = gold.GOLD_DB_PATH
+    gold.GOLD_DB_PATH = tmp_path_factory.mktemp("gold") / "catalog.duckdb"
+    yield
+    gold.GOLD_DB_PATH = original
+
+
 @pytest.fixture
 def agent_settings(monkeypatch, tmp_path) -> AgentSettings:
     """Settings with a throwaway key and a per-test data directory."""

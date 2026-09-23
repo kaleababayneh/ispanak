@@ -485,7 +485,16 @@ def _coverage_warnings(
 ) -> list[str]:
     """Months with no value, and a requested `window` (start, end) the pool
     only partly covers. No window for columns added to an existing table,
-    whose months are the table's, not the request's."""
+    whose months are the table's, not the request's.
+
+    Where the first value sits is only news about the pool when the whole
+    window was asked for. On `into='active'` the column was fetched for its
+    own range and laid onto a wider table, so the empty months in front of it
+    are the request's doing: measured, a series the pool holds from 2021 was
+    reported as "seri havuzda 2024-01 itibariyla basliyor" because the model
+    had asked for 2024 onwards. That sentence reaches the answer, and
+    planner rule 5 forbids telling anyone the pool lacks data it has.
+    """
     warnings = []
     for name in columns:
         missing = int(frame[name].isna().sum())
@@ -493,8 +502,17 @@ def _coverage_warnings(
             continue
         filled = frame.loc[frame[name].notna(), "period"]
         note = f"{name}: {len(frame)} ayin {missing}'inda deger yok (doldurulmadi)"
-        if not filled.empty and filled.min() > frame["period"].min():
+        if (
+            window is not None
+            and not filled.empty
+            and filled.min() > frame["period"].min()
+        ):
             note += f"; seri havuzda {_month(filled.min())} itibariyla basliyor"
+        elif window is None and not filled.empty:
+            note += (
+                f"; bu sutun yalnizca {_month(filled.min())} - "
+                f"{_month(filled.max())} icin getirildi"
+            )
         warnings.append(note + ".")
     if window is None:
         return warnings
@@ -737,22 +755,39 @@ def make_transform_table() -> ToolSpec:
                     f"Mevcut sutunlar: {', '.join(map(str, frame.columns))}."
                 ),
             )
-        not_numbers = [name for name in inputs if not _is_numeric(frame, name)]
+        arithmetic = args.op != "mark"
+        not_numbers = [
+            name
+            for name in inputs
+            if not _is_numeric(frame, name, arithmetic=arithmetic)
+        ]
         if not_numbers:
-            usable = [str(c) for c in frame.columns if _is_numeric(frame, c)]
+            usable = [
+                str(c)
+                for c in frame.columns
+                if _is_numeric(frame, c, arithmetic=arithmetic)
+            ]
+            what = (
+                "sayisal bir deger sutunu degil" if arithmetic else "karsilastirilamaz"
+            )
             return ToolResult(
                 ok=False,
                 summary=(
-                    f"{', '.join(repr(name) for name in not_numbers)} sayisal bir "
-                    "deger sutunu degil ('period' donem sutunudur). Kullanilabilir "
-                    f"sutunlar: {', '.join(usable) or 'yok'}."
+                    f"{', '.join(repr(name) for name in not_numbers)} {what} "
+                    "('period' donem sutunudur; isaret sutunlari yalnizca mark "
+                    "kosullarinda kullanilir). Kullanilabilir sutunlar: "
+                    f"{', '.join(usable) or 'yok'}."
                 ),
             )
 
         lineage = {name: ctx.lineage.get(f"{ref}.{name}") for name in inputs}
         try:
             outcome = _OPS[args.op](args, work, lineage, ctx)
-        except ValueError as exc:
+        except (ValueError, TypeError, ZeroDivisionError) as exc:
+            # Not just ValueError: a column of numeric-looking text reaches
+            # pandas as a string dtype and raises TypeError on subtraction,
+            # and a zero divisor raises ZeroDivisionError. Both used to leave
+            # the tool as an opaque crash the model could not act on.
             return ToolResult(ok=False, summary=f"{args.op} uygulanamadi: {exc}")
         if isinstance(outcome, ToolResult):
             return outcome
@@ -852,17 +887,29 @@ OpFn = Callable[
 ]
 
 
-def _is_numeric(frame: pd.DataFrame, column: str) -> bool:
-    """A column an operation can compute on: numbers or flags, never the
-    period column. Checked up front, because `period` passes the "column
-    exists" check and then broke `_single` with a bare KeyError."""
+def _is_numeric(frame: pd.DataFrame, column: str, *, arithmetic: bool) -> bool:
+    """A column an operation can compute on, never the period column.
+
+    Checked up front, because `period` passes the "column exists" check and
+    then broke `_single` with a bare KeyError.
+
+    `arithmetic` separates the two kinds of operation. `mark` compares a
+    column with a threshold and is happy with a flag column; every other
+    operation divides or subtracts, and a flag column there is meaningless
+    at best and fatal at worst -- measured, `pct_change` on a `mark` column
+    raises `ZeroDivisionError` (its first period is False, and the change
+    from False is a division by zero), while `diff` quietly adds a column of
+    XOR-ish numbers with no unit. Neither is something to hand a model.
+    """
     if column == "period":
         return False
     values = frame[column]
-    if pd.api.types.is_bool_dtype(values) or pd.api.types.is_numeric_dtype(values):
+    if pd.api.types.is_bool_dtype(values):
+        return not arithmetic
+    if pd.api.types.is_numeric_dtype(values):
         return True
     present = values.dropna()
-    return pd.to_numeric(present, errors="coerce").notna().all()
+    return bool(pd.to_numeric(present, errors="coerce").notna().all())
 
 
 def _free_name(name: str, taken: Any) -> str:
@@ -1110,6 +1157,20 @@ def _op_deflate(
 
     nominal = _single(frame, args.column)
     result, _ = transforms.deflate(nominal, cpi[["period", "value"]], base=base)
+    if result["value"].isna().all() and nominal["value"].notna().any():
+        # Every month lost its value to a missing CPI: the table lies outside
+        # what the pool holds the index for. Adding an entirely empty column
+        # and calling it a success invites the model to describe a real
+        # series that does not exist; saying which months are covered lets it
+        # narrow the table instead.
+        return ToolResult(
+            ok=False,
+            summary=(
+                f"{start} - {end} araliginda TUFE havuzda olmadigi icin "
+                f"'{args.column}' enflasyondan arindirilamadi. Tabloyu TUFE'nin "
+                "kapsadigi aylara daraltip tekrar dene."
+            ),
+        )
     unmatched = int(result["value"].isna().sum() - nominal["value"].isna().sum())
     warnings = [f"Reel {args.column} {prices}; nominal degil, reel tutar."]
     if unmatched > 0:

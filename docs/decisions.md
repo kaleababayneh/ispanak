@@ -502,9 +502,11 @@ Karar:  - Sütun adı kuralı sahte araçlarla ortak tek fonksiyon (`column_name
           hep boş döndüğü için kapı her seferinde açılırdı; kalite kartı demo
           anında gelen tablolar içindir (plan 2.6). Eksik aylar uyarıda sayılır.
         - `transform_table` işlemleri: diff, pct_change, yoy, change_since,
-          rebase, ratio, deflate, mark. Hepsi yeni sütun ekler, var olan adı
-          reddeder. `mark` koşulu sağlayan ayları özet metninde listeler: "hangi
-          aylar" sorusunu model saymaz (planner kural 1).
+          rebase, ratio, deflate, mark. Hepsi yeni sütun ekler; var olan adı
+          **aynı hesap** tutuyorsa reddeder, başka bir hesap tutuyorsa sütun
+          `_2` ekiyle eklenir (aynı günün ilerleyen maddesi). `mark` koşulu
+          sağlayan ayları özet metninde listeler: "hangi aylar" sorusunu model
+          saymaz (planner kural 1).
         - `deflate` yalnızca stok/akım serilerine uygulanır; oran ve endeks
           reddedilir. TÜFE sabit (TP.TUKFIY2025.GENEL); baz 2025 ortalaması = 100,
           ya da `base_period` verilirse o ayın fiyatları. TÜFE kaynaklara eklenir.
@@ -670,3 +672,91 @@ uğradı; başarılı tek örnek 15 Eylül'deki. Cevaplar gold'dan kontrol edild
 - 3. cevap: doğru.
 Gözlem çağrısı yine uzun bir cevap yazdı (734 token, 30 sn; planner 14. kurala
 rağmen).
+
+## 23 Eylül incelemesinin düzeltmeleri
+Bağlam: Adım 1 (`feat/real-tools`) dört ayrı incelemeden geçti. Bulguların
+        üçü ölçülerek doğrulandı ve testle sabitlendi; kalanlar aşağıda
+        "bilerek değiştirilmedi" başlığında.
+Karar:  Süre bütçesi:
+        - Düşünme kapalı yedek cevap artık **`MIN_ATTEMPT_S` (5 sn)** kalmışsa
+          çalışıyor, `min_call_s` (10 sn) değil. Düşünme açık deneme
+          `pay - min_call_s` ile sınırlı olduğu için zaman aşımını her zaman
+          bir miktar aşıyor ve `left()` tam da 10 sn'nin altına düşüyordu:
+          gerçek saatle yedek **hiç** çalışmıyordu. Yalnızca payı 55 sn'nin
+          altına düşen turlarda, yani turun 180 sn'nin 125'ini harcadığı
+          durumda görünüyordu, ki yedeğin var olma sebebi tam o tur. Test
+          sahte saati zaman aşımı kadar ilerlettiği için bunu göremiyordu;
+          yeni test bir miktar aşım ekliyor.
+        - Tur durdurulduğunda (`CancelledError`) `done` olayı artık
+          `truncated_reason="cancelled"` taşıyor ve bir `error` olayı
+          yayımlanıyor. Cancellation bir `Exception` olmadığı için bitmiş bir
+          turdan ayırt edilemiyordu. `TruncatedReason`'a `cancelled` eklendi.
+        - `draft_answer` tur başında temizleniyor; yarıda kalan tur öncekinin
+          cevabını taşıyordu.
+        - Doğrulayıcı `_verify` içinde try/except ile sarıldı. Cevap zaten
+          yazılmışken bir kural motorunun çökmesi bitmiş işi çöpe atıyordu.
+        Araçlar:
+        - `into='active'` eklenen sütunun önündeki boşluk için artık "seri
+          havuzda X itibariyla basliyor" demiyor; o boşluk istenen pencerenin
+          sonucu. Havuzun 2021'den tuttuğu bir seri için "2024-01'de başlıyor"
+          diyordu, ki planner 5. kuralın yasakladığı yanlış "bizde yok".
+        - `mark` ile üretilen işaret sütunu aritmetik işlemlerde reddediliyor
+          (`pct_change` yakalanmayan `ZeroDivisionError` veriyordu, `diff`
+          anlamsız bir sütun ekliyordu); `mark` koşullarında hâlâ kullanılıyor.
+          İşlem hataları `TypeError` ve `ZeroDivisionError`'ı da yakalıyor.
+        - `deflate` tablonun tamamı TÜFE kapsamı dışındaysa `ok=False`
+          dönüyor; tamamen boş bir sütunu başarı saymak modeli olmayan reel
+          tutarları anlatmaya davet ediyordu.
+        - `gold.connect()` yenileme başarısız olursa eski kopyayla devam
+          ediyor: DuckDB aynı dosyayı aynı süreçte farklı yapılandırmayla
+          açmayı reddediyor (ölçüldü, 1.5.5) ve adım zaman aşımına uğramış bir
+          araç hâlâ okurken bu mümkün.
+        - `llm.parse_tool_calls` kimliksiz gelen çağrıyı kendi verdiği
+          kimlikle (`call_0`) geri yazıyor; aksi halde araç cevabı hiçbir
+          çağrıya ait olmuyor ve geçmiş görünümünden düşüyordu.
+        Doğrulayıcı (yanlış alarmlar, hepsi ölçüldü):
+        - Sayı ile sınır kelimesi arasına giren kelimeler okunuyor: "200
+          seviyesinin üzerine çıktı", "200 eşiğini aştı", "200'den daha fazla"
+          artık sınır sayılıyor. Tek kelimeye bakmak bunları kesin iddia
+          yapıp doğru cümleyi işaretliyordu.
+        - Olumsuz sınırlar ("geçmedi", "aşmadı", "altına inmedi") hiç
+          değerlendirilmiyor. Sınır gibi okunduklarında tersini söylüyorlardı;
+          ifade edilemeyen iddia yargılanmıyor.
+        - Bugünün ayı kapsam dışı sayılmıyor. Tarih modele **sistem** mesajıyla
+          gidiyor, doğrulayıcı sistem mesajını okumuyor; "bugün ... itibarıyla"
+          istemin kendi istediği cümleydi ve bayrak yiyordu.
+        - Bir aracın yazdığı seri kimliği/kodu/adresi cevapta anılabiliyor.
+          `search_catalog` kaynak kaydetmiyor, dolayısıyla "hangi seriler var?"
+          sorusuna adayları sayan cevap her aday için ayrı bayrak alıyordu.
+        - `_stated_text` artık bütün turların kullanıcı mesajlarını okuyor.
+          `agent/history.py` eski turların sorularını modelin önünde tutup
+          araç mesajlarını attığı için asimetri tersineydi: model gördüğü
+          sayıyı tekrarladığında bayrak yiyor, göremediği sayı serbest
+          geçiyordu.
+        Testler:
+        - Testler artık `data/gold/catalog.duckdb` dosyasını repo ağacına
+          yazmıyor; `tests/conftest.py` oturum boyunca geçici bir dizine
+          yönlendiriyor. Dosya gitignore'da olduğu için `git status` bunu hiç
+          göstermiyordu. `tests/test_gold.py` kendi küçük parquet'iyle
+          çalıştığı için kendi dosyasını alıyor (paylaşılanı doldurunca
+          senaryo turları tablosuz kalıyordu, ölçüldü).
+Bilerek değiştirilmedi (gerekçesiyle):
+        - **Seri seçim kapısının 0,9 oranı.** Kosinüs skorları 0,40-0,65
+          arasına sıkıştığı için kapı sık açılıyor; ama belgelenen tek gerçek
+          örnek (takipteki 0,650 / bakiye 0,615) tam da insanın karar vermesi
+          gereken durum ve organizatörler insan onayını puanlanan bir ayrım
+          olarak sayıyor. Havuz 45 bin seriye çıkınca yeniden ölçülmeli.
+        - **`_recent_rate` ölçümü.** Token/saniye çağrının tamamına bölünüyor,
+          yani istem okuma süresi de içinde; bu yüzden düşünme açık cevap
+          pratikte hep kapalıya düşüyor. Doğrusu ilk token'a kadar geçen
+          süreyi ayırmak, o da streaming istiyor. Ölçüm düzelene kadar
+          davranışı değiştirmek körlemesine ayar olurdu.
+        - **Doğrulayıcı bayraklarının modele gösterilmemesi.** Bayraklar
+          kullanıcıya gidiyor, `state.messages`'a yazılan cevap bayraksız.
+          Göstermek modelin kendi hatasını görmesini sağlar ama sonraki turun
+          bağlamını da kirletir; tasarım kararı, hata değil.
+        - **`contracts.md` sürüm numarası.** Bu dalda artırılmadı: sonraki
+          dallar v0.5'e geçmiş durumda, burada artırmak rebase'te çakışır.
+        - **Kullanılmayan `VerificationFlag` türleri** (`unit_mix`,
+          `model_contradiction`) ve `NullVerifier`. İleriye dönük; kaldırmak
+          sonraki dallarla çakışma riski taşıyor.

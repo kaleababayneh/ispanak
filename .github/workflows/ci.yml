@@ -62,9 +62,10 @@ jobs:
       - name: Testler
         run: uv run pytest --junit-xml=junit.xml
 
-      # 13 test gerçek gold verisi olmadığında atlanıyor. Biri o atlama
-      # koşulunu bozarsa BÜTÜN testler atlanır ve bu iş yine yeşil yanar --
-      # yani koruma sessizce kaybolur. Aşağıdaki taban onu görünür kılıyor.
+      # 21 test gerçek gold verisi olmadığında atlanıyor (gold repoda olduğu
+      # için normalde hiçbiri atlanmaz). Biri o atlama koşulunu bozarsa BÜTÜN
+      # testler atlanır ve bu iş yine yeşil yanar -- yani koruma sessizce
+      # kaybolur. Aşağıdaki taban onu görünür kılıyor.
       # Sayı bir alt sınır: testler arttıkça yükseltilebilir, düşmesi ise
       # kasıtlı olmalı.
       #

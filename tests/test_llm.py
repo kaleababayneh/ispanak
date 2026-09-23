@@ -266,6 +266,22 @@ def test_multiple_tool_calls_are_trimmed_in_both_places(settings):
     assert len(result.as_message()["tool_calls"]) == 1
 
 
+def test_a_call_with_no_id_is_answered_under_the_id_we_gave_it(settings):
+    """A provider that sends no id gets `call_0`, and the tool message is
+    written against that. Leaving the assistant message's own call without an
+    id made the reply an answer to nothing, which the history view then drops
+    -- a request carrying a tool call with no reply, the protocol error the
+    trimming exists to prevent."""
+    call = {"type": "function", "function": {"name": "a", "arguments": "{}"}}
+    llm, _ = make_llm(settings, [_completion(None, [call], "tool_calls")])
+
+    result = llm.chat([{"role": "user", "content": "x"}], tools=[{"a": 1}])
+
+    assert result.tool_calls[0].id == "call_0"
+    assert result.raw_message["tool_calls"][0]["id"] == "call_0"
+    assert result.as_message()["tool_calls"][0]["id"] == "call_0"
+
+
 def test_malformed_arguments_do_not_raise(settings):
     llm, _ = make_llm(
         settings, [_completion(None, [_tool_call("c1", "a", "{bozuk")], "tool_calls")]

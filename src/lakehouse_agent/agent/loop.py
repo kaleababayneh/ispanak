@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import sys
 import time
 from collections.abc import Awaitable, Callable
@@ -58,6 +59,7 @@ from lakehouse_agent.config import AgentSettings
 from lakehouse_agent.contracts import ToolResult, Usage
 from lakehouse_agent.llm import (
     LLM,
+    MIN_ATTEMPT_S,
     ChatResult,
     LlmError,
     LlmTimeoutError,
@@ -65,6 +67,8 @@ from lakehouse_agent.llm import (
     ToolCall,
 )
 from lakehouse_agent.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 DATA_RANGE = "2021-01 – 2026-06"
 
@@ -210,6 +214,11 @@ async def run_turn(state: SessionState, deps: AgentDeps, question: str) -> TurnR
     state.call_signatures = {}
     state.warnings = []
     state.verification = None
+    # Cleared with the rest of the per-turn bookkeeping: a turn that dies
+    # before writing an answer used to leave the previous turn's answer here,
+    # and anything reading the answer off the state (contracts.md §5) would
+    # have shown it again under the new question.
+    state.draft_answer = None
 
     started = deps.clock()
     approvals_before = len(state.approvals)
@@ -265,6 +274,22 @@ async def run_turn(state: SessionState, deps: AgentDeps, question: str) -> TurnR
             kind=type(exc).__name__,
         )
         raise AgentError(f"Model cagrisi basarisiz: {exc}") from exc
+    except asyncio.CancelledError:
+        # Stopping a turn is not an `Exception`, so without this branch a
+        # cancelled turn fell through to the `finally` below and published
+        # `done` with `truncated_reason: null` -- indistinguishable from a
+        # turn that finished. The tool messages are already repaired inside
+        # `_act`; what was missing was saying out loud that the turn stopped.
+        state.truncated_reason = "cancelled"
+        with contextlib.suppress(Exception):
+            await emit(
+                deps.sink,
+                state.session_id,
+                "error",
+                message="Tur durduruldu.",
+                kind="CancelledError",
+            )
+        raise
     except Exception as exc:
         # Anything else still has to leave the channel consistent. Only
         # `LlmError` was handled, so any other crash reached the `finally`
@@ -786,11 +811,11 @@ async def _chat(
     A thinking-on attempt that times out is tried once more with thinking off
     and a capped output: a different request, which a blind retry of the same
     one is not -- thinking is where the time goes, about four times the tokens
-    by our own measurement. The thinking-on attempt is capped so that the
-    retry still gets `min_call_s`, and for the answer it is skipped outright
-    when the model's recent speed could not produce `answer_thinking_tokens`
-    inside it. Every second an attempt used is charged to the turn, and to
-    `spent`, whether it answered or not.
+    by our own measurement. The retry runs whenever the client could still
+    start an attempt (`MIN_ATTEMPT_S`), and for the answer the thinking-on
+    attempt is skipped outright when the model's recent speed could not
+    produce `answer_thinking_tokens` inside it. Every second an attempt used
+    is charged to the turn, and to `spent`, whether it answered or not.
     """
     config = deps.config
     cap = deps.settings.llm_timeout_s
@@ -835,7 +860,16 @@ async def _chat(
         try:
             return await attempt(True, None, window)
         except LlmTimeoutError:
-            if left() < config.min_call_s:
+            # What the fallback needs is what the client needs to start an
+            # attempt at all, not a whole `min_call_s`. The thinking-on
+            # attempt is capped at `allowance - min_call_s` and then overruns
+            # that cap by however long the timeout itself takes to fire, so
+            # `left()` lands just under `min_call_s` every time a real clock
+            # is involved. Measured: with the answer's allowance at or below
+            # `llm_timeout_s + min_call_s` -- a turn that has already spent
+            # 125 s of its 180 -- the fallback never ran at all, which is
+            # exactly the turn that needed it (22 Sep, third run).
+            if left() < MIN_ATTEMPT_S:
                 raise
     return await attempt(
         False,
@@ -880,12 +914,23 @@ def _fast_enough(state: SessionState, tokens: int, window_s: float) -> bool:
 
 
 async def _verify(state: SessionState, deps: AgentDeps, answer: str) -> None:
-    """Check the answer against the tool output, then publish the verdict."""
+    """Check the answer against the tool output, then publish the verdict.
+
+    A verifier that raises must not cost the turn its answer. The answer is
+    already written at this point, and checking it is the last thing that
+    happens; a crash here -- a regex on text nobody anticipated, an injected
+    verifier calling a model that is down -- would throw away finished work
+    to report a doubt. So a failure is logged and read as "nothing to flag".
+    """
     started_at = datetime.now(UTC)
     # Run off the event loop. `AnswerVerifier` is rule-based and quick, but a
     # verifier is injected, and one that calls a model would otherwise freeze
     # the interface for the length of that call.
-    verification = await asyncio.to_thread(deps.verifier.verify, answer, state)
+    try:
+        verification = await asyncio.to_thread(deps.verifier.verify, answer, state)
+    except Exception:
+        logger.exception("dogrulayici calismadi; cevap oldugu gibi birakildi")
+        verification = VerificationResult(passed=True)
     state.verification = verification
     state.steps.append(
         Step(

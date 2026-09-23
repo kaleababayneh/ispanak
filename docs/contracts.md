@@ -172,12 +172,27 @@ soru + son cevap olarak gider (`agent/history.py`); `messages` hiç kırpılmaz.
 
 `lineage` anahtarı: `"{table_ref}.{column}"`.
 
+`truncated_reason` ∈ `step_limit | time_budget | repeat_loop | llm_error |
+cancelled`. `cancelled` tur durdurulduğunda yazılır: `done` olayı bunu taşır ve
+yanında bir `error` olayı gider, yoksa durdurulan tur bitmiş turdan ayırt
+edilemiyordu. `draft_answer` her tur başında temizlenir.
+
+**Doğrulayıcı hata veremez.** `loop._verify` doğrulayıcıyı try/except içinde
+çağırır; çöken bir doğrulayıcı "işaretlenecek bir şey yok" olarak okunur ve
+loglanır. Cevap o noktada zaten yazılmıştır, bir şüpheyi bildirmek için bitmiş
+işi çöpe atmak turun en kötü takasıdır.
+
 **Zaman muhasebesi.** Bütçe `active_s` üzerinden ölçülüyor ve insan beklemesi ona
 girmiyor: `approval_wait_s` yalnız onay kartının açık kaldığı süreyi tutuyor,
 adımın çalışma süresinden düşülüyor. Jüri kartı okurken tur düşmesin diye.
 
 Aktif tablo kuralı: `get_series(into="new")`, `run_sql`, `ingest` ve `read_url`
-aktif tabloyu değiştirir; analiz sonucu tabloları değiştirmez.
+aktif tabloyu değiştirir; analiz sonucu tabloları değiştirmez. Bunlardan
+**bugün üretim kaydında yalnızca `get_series` var** (`tools/toolset.py`:
+search_catalog, get_series, transform_table, detect_anomalies,
+detect_changes); `run_sql`, `ingest` ve `read_url` henüz yalnızca sahte
+araçlarda ya da ileriki adımlarda. Kural yazıldığı gibi kalıyor, sıraları
+geldiğinde uyacakları kural bu.
 
 ---
 
@@ -255,9 +270,12 @@ sunucu değil süre bitirmiştir. Her denemesi 5xx dönen çağrı hâlâ
 Döngü tarafı (`loop._chat`): çağrının payı başta bir kez hesaplanır, turun
 kalan bütçesi; cevapta en az 30 sn. Denemelerin hepsi bu tek paydan yer. Plan ve
 gözlem denemesi ayrıca `LLM_TIMEOUT_S` ile sınırlanır, ardından gelen adımlara
-süre kalsın diye. Düşünme açık deneme, düşünme kapalı yedeğe en az 10 sn
-bırakacak şekilde sınırlanır; zaman aşımına uğrarsa bir kez düşünme kapalı ve
-`max_tokens=1024` ile denenir. Cevabın düşünme kapalı denemesi son şanstır,
+süre kalsın diye. Düşünme açık deneme `pay - 10 sn` ile sınırlanır; zaman
+aşımına uğrarsa, **geriye en az 5 sn (`MIN_ATTEMPT_S`) kaldıysa** bir kez
+düşünme kapalı ve `max_tokens=1024` ile denenir. Eşik 5 sn, çünkü zaman aşımı
+her zaman verilen süreyi bir miktar aşar ve 10 sn'lik bir eşik yedeği pratikte
+hiç çalıştırmıyordu (23 Eyl, `docs/decisions.md`). Cevabın düşünme kapalı
+denemesi son şanstır,
 kalan payın tamamını alır. Oturumun son model çağrılarında ölçülen hız
 (token/sn) düşünme açık bir cevabı (800 token) pencereye sığdıramıyorsa cevap
 baştan düşünme kapalı başlar.
@@ -330,7 +348,7 @@ testinin diğer yarısı (`tests/test_lake_contract_parity.py`).
 |---|---|---|---|
 | 1 | `get()`, `wide(freq="M")` | `lake/gold.py` | A |
 | 2 | `to_freq()` | `analysis/transforms.py`, adapter sarıyor | A |
-| 3 | `search()` | `lake/catalog.py::search_catalog`, adapter sarıyor | A |
+| 3 | `search()` | `tools/lake_adapter.py::search_detailed` (22 Eyl'den beri; gold `series_catalog` üzerinde kosinüs, kelime eşleşmesi yedeği). `lake/catalog.py::search_catalog` + LanceDB indeksi yalnızca havuz dışı keşifte. | A |
 | 4 | `profile_table()` | `lake/quality.py` (`QualityReport` buradan import ediliyor) | A |
 | 5 | `catalog_lookup()`, `prepare_table()` | `tools/lake_adapter.py` | B |
 | 6 | anomali ve kırılma sarmalayıcıları | `tools/analysis.py` | A |

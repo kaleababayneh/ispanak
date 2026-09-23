@@ -6,9 +6,14 @@ Uzun açıklamalar `docs/` altına, buraya sadece **kural** yaz.
 ## Proje
 
 KKB Hackathon 2026. EVDS + BDDK verisini (2021-01 – 2026-06) bronze→silver→gold
-katmanlarına indiren, DuckDB + LanceDB üzerinden sorgulanabilir hale getiren ve bir
+katmanlarına indiren, DuckDB üzerinden sorgulanabilir hale getiren ve bir
 kendi agent döngüsüne (LangGraph değil, `docs/decisions.md`) araç olarak sunan
 Python projesi. Teslim tarihi 20 Eylül'den ertelendi.
+
+Agent'ın **arama** aracı havuzun kendi kataloğunda (gold `series_catalog`)
+çalışıyor, LanceDB indeksinde değil (22 Eyl, `docs/decisions.md`). LanceDB
+indeksi (`build_index.py`, `data/catalog.lance`) havuz dışı EVDS keşfi için
+duruyor; agent yolunda kullanılmıyor.
 
 ## Geliştirici ve sahiplik (ÖNEMLİ)
 
@@ -38,7 +43,18 @@ start_date, end_date, topic, tags, metadata_url, notes`
 uv sync                      # ortam
 uv run pytest -q             # testler (ağ ERİŞİMİ OLMADAN geçmeli)
 uv run ruff check --fix .
-uv run python -m lakehouse_agent.ingest.run --source evds --since 2021-01 --until 2026-06
+uv run ruff format .         # CI `--check` ile koşuyor, format da kırar
+# --source evds için --datagroups ya da --all ZORUNLU; ikisi de yoksa çıkar.
+uv run python -m lakehouse_agent.ingest.run --source evds \
+  --datagroups bie_kt100h,bie_kfe,bie_tukfiy2025,bie_akonutsat1,bie_akonutsat2,bie_hpbitablo6 \
+  --since 2021-01 --until 2026-06
+uv run python -m lakehouse_agent.ingest.run --source bddk --since 2021-01 --until 2026-06
+uv run python -m lakehouse_agent.lake.gold        # bronze+silver -> data/gold
+uv run python -m lakehouse_agent.lake.quality     # docs/data_quality.md
+uv run python build_index.py                      # havuz DIŞI EVDS keşif indeksi
+# Agent: üç mod. --real demoda koşan moddur.
+uv run python -m lakehouse_agent.agent.loop --fake --question "..."
+uv run python -m lakehouse_agent.agent.loop --real --question "..." --question "..."
 ```
 
 ## Kesin kurallar

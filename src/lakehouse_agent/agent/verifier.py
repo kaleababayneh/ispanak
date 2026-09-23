@@ -35,6 +35,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -63,15 +64,33 @@ _APPROX_BEFORE = re.compile(
 #: What may stand between a number and the word that qualifies it: a percent
 #: sign, a suffix after either apostrophe, a scale word, a unit. "800 milyar
 #: TL'nin üzerine" and "%40’ın üstüne" are one bound each.
+#:
+#: `rest` keeps the next few words rather than only the next one, because
+#: Turkish puts a noun between the number and the verb that bounds it:
+#: "%40 seviyesinin üzerine çıktı", "%40 eşiğini aştı", "%40'tan daha fazla".
+#: With one word these read as exact claims and a correct sentence is
+#: flagged (measured). The scan stops at punctuation on its own, so a comma
+#: or a full stop ends the phrase before an unrelated verb can be read as a
+#: bound.
 _TAIL = re.compile(
     r"^\s*%?(?:['’]\w*)?"
     r"(?:\s*(?P<scale>bin|milyon|milyar|trilyon)(?:['’]?\w*)?)?"
     # "20 bin milyon TL": a multiplier and then the table's own scale.
     r"(?:\s*(?:milyon|milyar)(?:['’]?\w*)?)?"
     r"(?:\s*(?P<unit>baz\s+puan\w*|puan\w*|TL\w*|lira\w*|adet\w*)(?:['’]\w*)?)?"
-    r"(?:\s+(?P<word>\w+))?",
+    # `\s*` rather than `\s+`: the pattern's own leading `^\s*` has already
+    # eaten the space in "200 seviyesinin", and a word cannot run straight
+    # into the number (the number pattern's lookahead forbids it).
+    r"(?P<rest>(?:\s*\w+){0,3})",
     re.I,
 )
+
+#: A negated verb anywhere in the qualifying phrase. "%50'yi geçmedi" and
+#: "%40'ın altına inmedi" are true of a series that never reached 50 or never
+#: fell below 40, and this checker has no way to test that -- read as bounds
+#: they say the opposite. A claim it cannot express is left alone rather than
+#: flagged under a correct answer.
+_NEGATED = re.compile(r"(?:m[ae]d[ıi]|m[ae]m[ıi]ş|m[ae]z|m[ıiuü]yor)\b", re.I)
 _BELOW_WORDS = re.compile(r"^(?:alt[ıi]|aşağı|asagi|düşük|dusuk|kadar|geride)", re.I)
 _ABOVE_WORDS = re.compile(
     r"^(?:üzer|uzer|üst|ust|aşt|aşk|aşar|aşan|aşm|geçt|geçe|geçm|geçer|fazla|"
@@ -127,14 +146,24 @@ class _Claim:
 
 
 class AnswerVerifier:
-    """The verifier the agent runs with; satisfies `loop.Verifier`."""
+    """The verifier the agent runs with; satisfies `loop.Verifier`.
+
+    `today` is the day the answer is written, read at verify time unless one
+    is given (a test needs a fixed one). The planner prompt puts the date in
+    front of the model as a *system* message, which `_stated_text` does not
+    read, so "bugün 2026-09-23 itibarıyla" was flagged as a month outside the
+    tables -- a flag under a sentence the prompt itself asked for.
+    """
+
+    def __init__(self, today: date | None = None) -> None:
+        self._today = today
 
     def verify(self, answer: str, state: SessionState) -> VerificationResult:
         stated = _stated_text(state)
         flags: list[VerificationFlag] = []
-        flags += _check_sources(answer, state)
+        flags += _check_sources(answer, state, stated)
         text, months = _without_dates_and_ids(answer)
-        flags += _check_months(months, state, stated)
+        flags += _check_months(months, state, stated, self._today or date.today())
         flags += _check_numbers(text, state, stated)
 
         unique: dict[str, VerificationFlag] = {}
@@ -150,15 +179,21 @@ class AnswerVerifier:
 
 
 def _stated_text(state: SessionState) -> str:
-    """Everything the answer may repeat without it being its own claim: this
-    turn's user messages (the question, and any note typed at an approval
-    card) and every tool message of the session."""
-    start = state.turn_starts[-1] if state.turn_starts else 0
+    """Everything the answer may repeat without it being its own claim: every
+    user message of the session (the questions, and any note typed at an
+    approval card) and every tool message.
+
+    Every turn's, not just this one's. `agent/history.py` keeps earlier
+    turns' questions in front of the model and drops their tool messages, so
+    restricting this to the current turn flagged the model for repeating a
+    number it can still see while waving through numbers it can no longer
+    read. Whichever way the asymmetry falls it is wrong; the cheap side is
+    the one that does not print a flag under a faithful answer.
+    """
     parts = [
         str(message.get("content") or "")
-        for index, message in enumerate(state.messages)
-        if message.get("role") == "tool"
-        or (message.get("role") == "user" and index >= start)
+        for message in state.messages
+        if message.get("role") in ("tool", "user")
     ]
     return "\n".join(parts)
 
@@ -168,11 +203,25 @@ def _stated_text(state: SessionState) -> str:
 # --------------------------------------------------------------------------
 
 
-def _check_sources(answer: str, state: SessionState) -> list[VerificationFlag]:
+def _check_sources(
+    answer: str, state: SessionState, stated: str
+) -> list[VerificationFlag]:
+    """Series, codes and addresses the answer names that nothing produced.
+
+    Only `get_series` and `deflate` register a `Source`; `search_catalog`
+    registers none, although naming what it found is the honest answer to
+    "which series are there?". So a candidate a tool printed counts as
+    citable too, exactly as `_check_months` already treats a month a tool
+    named -- otherwise listing four search hits earns four flags.
+    """
     ids = {source.series_id for source in state.sources if source.series_id}
     codes = {sid.partition(":")[2] for sid in ids}
     urls = {source.url for source in state.sources if source.url}
     urls |= {source.metadata_url for source in state.sources if source.metadata_url}
+
+    ids |= set(_SERIES_ID.findall(stated))
+    codes |= set(_SERIES_CODE.findall(stated))
+    urls |= set(_URL.findall(stated))
 
     cited = [c for c in _SERIES_ID.findall(answer) if c not in ids]
     cited += [c for c in _SERIES_CODE.findall(answer) if c not in codes]
@@ -215,13 +264,14 @@ def _without_dates_and_ids(answer: str) -> tuple[str, list[str]]:
 
 
 def _check_months(
-    months: list[str], state: SessionState, stated: str
+    months: list[str], state: SessionState, stated: str, today: date
 ) -> list[VerificationFlag]:
     covered = _covered_months(state)
     if covered is None:
         return []
     first, last = covered
     said = set(_months_in(stated))
+    said.add(today.strftime("%Y-%m"))
     return [
         VerificationFlag(
             kind="date_out_of_range",
@@ -280,21 +330,25 @@ class _Context:
     approx: bool
     above: bool
     below: bool
+    negated: bool
 
 
 def _context(before: str, after: str) -> _Context:
     tail = _TAIL.match(after)
     scale = tail.group("scale").lower() if tail and tail.group("scale") else None
     unit = tail.group("unit").lower() if tail and tail.group("unit") else None
-    word = tail.group("word") if tail else None
+    words = (tail.group("rest") or "").split() if tail else []
+    above = next((w for w in words if _ABOVE_WORDS.match(w)), None)
+    below = next((w for w in words if _BELOW_WORDS.match(w)), None)
+    approx = next((w for w in words if _APPROX_WORDS.match(w)), None)
     return _Context(
         percent=before.rstrip().endswith("%") or after.lstrip().startswith("%"),
         scale=scale,
         unit=unit,
-        approx=bool(_APPROX_BEFORE.search(before))
-        or bool(word and _APPROX_WORDS.match(word)),
-        above=bool(word and _ABOVE_WORDS.match(word) and not _BELOW_WORDS.match(word)),
-        below=bool(word and _BELOW_WORDS.match(word)),
+        approx=bool(_APPROX_BEFORE.search(before)) or bool(approx),
+        above=bool(above) and not below,
+        below=bool(below),
+        negated=any(_NEGATED.search(word) for word in words),
     )
 
 
@@ -315,6 +369,8 @@ def _claims(text: str) -> Iterator[_Claim]:
         spans.append(match.span())
         a_raw, b_raw = match.group("a"), match.group("b")
         context = _context(text[max(0, match.start() - 25) : match.start()], after)
+        if context.negated:
+            continue
         percent = context.percent or "%" in match.group(0)
         amount = percent or context.scale or context.unit
         if not amount and _plain_small_or_year(a_raw) and _plain_small_or_year(b_raw):
@@ -331,6 +387,8 @@ def _claims(text: str) -> Iterator[_Claim]:
         start, end = match.span(1)
         before, after = text[max(0, start - 25) : start], text[end : end + 40]
         context = _context(before, after)
+        if context.negated:
+            continue
         if (
             not context.percent
             and not context.scale

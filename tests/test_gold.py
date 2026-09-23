@@ -16,6 +16,22 @@ from lakehouse_agent.ingest import bddk_monthly, evds
 from lakehouse_agent.lake import gold
 
 
+@pytest.fixture(autouse=True)
+def _gold_db_next_to_this_tests_own_parquet(monkeypatch, tmp_path):
+    """Every test here builds its own little gold in `tmp_path` and works
+    from there, so its DuckDB copy belongs there too.
+
+    The root conftest points `GOLD_DB_PATH` at one file for the whole
+    session, which is right for the tests that read the committed gold. These
+    tests would fill that same file with their three-row fixtures and every
+    later test would read them instead (measured: the scenario's turns came
+    back with no table at all).
+    """
+    monkeypatch.setattr(
+        gold, "GOLD_DB_PATH", tmp_path / "data" / "gold" / "catalog.duckdb"
+    )
+
+
 def _write_bronze_catalog_and_year(tmp_path):
     evds.CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(

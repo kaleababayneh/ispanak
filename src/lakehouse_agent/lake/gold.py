@@ -344,7 +344,21 @@ def connect() -> duckdb.DuckDBPyConnection:
     work with external access fully disabled.
     """
     if _stale(GOLD_DB_PATH):
-        _ensure_tables()
+        try:
+            _ensure_tables()
+        except Exception:
+            # Rebuilding opens the same file for writing, and DuckDB refuses
+            # that while a read-only connection is open on it in the same
+            # process (measured, duckdb 1.5.5, in both orders) -- a tool that
+            # overran its step timeout and is still reading in its thread is
+            # enough. An out-of-date copy of the tables answers the query;
+            # failing the call does not. If the file is missing altogether
+            # the `connect` below raises, which is the honest outcome.
+            if not GOLD_DB_PATH.exists():
+                raise
+            logger.warning(
+                "gold: %s yenilenemedi, eski kopya kullaniliyor", GOLD_DB_PATH
+            )
     return duckdb.connect(
         str(GOLD_DB_PATH), read_only=True, config={"enable_external_access": "false"}
     )

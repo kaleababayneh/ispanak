@@ -157,6 +157,13 @@ arasındaki gerçek tek dönem sıçraması). Özet metni ikisini ayrı ayrı ad
 
 ## Katalog arama indeksi (`lake/catalog.py`, plan 2.5)
 
+> **22 Eylül'den beri agent bu indeksi kullanmıyor.** `search_catalog` aracı
+> `LakeAdapter.search_detailed` üzerinden havuzun kendi kataloğunda (gold
+> `series_catalog`) arıyor: skor kosinüs benzerliği, embedding yapılamazsa
+> kelime eşleşmesi. Gerekçe `docs/decisions.md`, "Arama indeksi havuzun kendi
+> kataloğundan". Aşağıdaki LanceDB indeksi havuz **dışı** EVDS keşfi için
+> duruyor (`build_index.py`), agent yolunda değil.
+
 `data/bronze/evds/catalog.parquet` 53792 satır — agent'ın arayacağı ham
 kapsam bu kadar büyük olunca embedding maliyeti kabul edilemez hale geliyor
 (tek worker'la ~242 dk, ölçüldü). `filter_catalog()` bu yüzden önce kapsamı

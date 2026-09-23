@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -165,12 +165,67 @@ def test_a_series_that_is_not_among_the_sources_is_flagged():
     assert "evds:TP.YOK" in result.flags[0].text
 
 
+def test_a_candidate_a_tool_printed_may_be_named_in_the_answer():
+    """Only `get_series` and `deflate` register a source, but "hangi seriler
+    var?" is answered by naming what the search found. Listing four hits used
+    to earn four flags."""
+    state = _state(
+        question="Konut kredisiyle ilgili hangi seriler var?",
+        tool_text=(
+            "3 aday seri bulundu: evds:TP.KTF12, evds:TP.KTF17, "
+            "bddk:aylik:tuketici:konut:TL:sektor."
+        ),
+        sources=["evds:TP.KTF12"],
+        kredi=[1.0],
+    )
+
+    found = VERIFY(
+        "Havuzda evds:TP.KTF12, evds:TP.KTF17 ve "
+        "bddk:aylik:tuketici:konut:TL:sektor var.",
+        state,
+    )
+    assert found.passed, _flagged(found)
+    # A series nobody mentioned is still flagged.
+    assert not VERIFY("Ayrica evds:TP.UYDURMA var.", state).passed
+
+
+def test_a_number_from_an_earlier_turns_question_is_not_a_made_up_one():
+    """`agent/history.py` keeps earlier turns' questions in front of the
+    model, so it can see and repeat them; reading only this turn's user
+    messages flagged it for doing exactly that."""
+    state = _state(
+        question="2023-07'de faiz 8,5'ten 15'e cikti, dogru mu?", kredi=[1.0]
+    )
+    state.turn_starts.append(len(state.messages))
+    state.messages.append({"role": "user", "content": "Peki sonrasinda ne oldu?"})
+
+    result = VERIFY("Onceki soruda gecen 8,5 ve 15 degerleri disinda veri yok.", state)
+
+    assert result.passed, _flagged(result)
+
+
 def test_a_month_outside_the_tables_is_flagged_unless_the_question_asked():
     state = _state(kredi=[1.0])
 
-    assert not VERIFY("2026-09 ayinda yukseldi.", state).passed
-    asked = _state(question="2026-09 icin veri var mi?", kredi=[1.0])
-    assert VERIFY("2026-09 icin havuzda veri yok.", asked).passed
+    assert not VERIFY("2027-05 ayinda yukseldi.", state).passed
+    asked = _state(question="2027-05 icin veri var mi?", kredi=[1.0])
+    assert VERIFY("2027-05 icin havuzda veri yok.", asked).passed
+
+
+def test_todays_month_is_not_a_month_out_of_range():
+    """The planner prompt puts the date in front of the model as a system
+    message, which the verifier does not read, so "bugün ... itibarıyla" was
+    flagged under an answer the prompt itself asked for."""
+    today = date(2026, 9, 23)
+    state = _state(kredi=[1.0])
+
+    result = AnswerVerifier(today=today).verify(
+        "Bugun 2026-09-23 itibariyla havuzdaki en guncel veri 2025-12.", state
+    )
+
+    assert result.passed
+    # Still bounded: a month that is neither covered nor today is flagged.
+    assert not AnswerVerifier(today=today).verify("2027-05 ayinda arttı.", state).passed
 
 
 # --- through the loop ---------------------------------------------------------
@@ -341,6 +396,39 @@ def test_a_bound_is_still_checked():
     state = _state(kfe=[204.04])
 
     assert not VERIFY("KFE 400'ü aştı.", state).passed
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "KFE 200 seviyesinin üzerine çıktı.",
+        "KFE 200 eşiğini aştı.",
+        "KFE 200 sınırını geçti.",
+        "KFE 200'den daha fazla.",
+        "KFE 200'ün biraz üzerinde.",
+    ],
+)
+def test_a_bound_with_a_word_in_between_is_still_a_bound(sentence):
+    """Turkish puts a noun between the number and the verb that bounds it.
+    Reading only the next word turned every one of these into an exact claim
+    and flagged a correct sentence -- and "seviyesinin üzerine" and "eşiğini
+    aştı" are the forms a financial answer actually uses."""
+    state = _state(kfe=[204.04])
+
+    assert VERIFY(sentence, state).passed, _flagged(VERIFY(sentence, state))
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    ["KFE 400'ü geçmedi.", "KFE 100'ün altına inmedi.", "KFE 400'ü aşmadı."],
+)
+def test_a_negated_bound_is_left_alone_rather_than_read_backwards(sentence):
+    """All three are true of a series that sat at 204, and the checker has no
+    way to test "never reached": read as bounds they say the opposite and
+    flag a correct answer. What it cannot express, it does not judge."""
+    state = _state(kfe=[204.04])
+
+    assert VERIFY(sentence, state).passed, _flagged(VERIFY(sentence, state))
 
 
 @pytest.mark.parametrize(

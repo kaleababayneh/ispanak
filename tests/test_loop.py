@@ -692,22 +692,28 @@ class _Clock:
         return self.now
 
 
-def _times_out_on(clock, holder):
-    """Script entry for a call that runs its whole timeout and fails."""
+def _times_out_on(clock, holder, overshoot=0.0):
+    """Script entry for a call that runs its whole timeout and fails.
+
+    `overshoot` is what a real timeout costs beyond the number it was given:
+    httpx fires the read timeout at or after the deadline, and the exception
+    still has to travel back through the worker thread. It is small and it is
+    never zero, which is the whole of the bug the caller below reproduces.
+    """
 
     def reply(messages, tools, thinking):
-        clock.now += holder[0].llm.calls[-1]["timeout_s"]
+        clock.now += holder[0].llm.calls[-1]["timeout_s"] + overshoot
         raise LlmTimeoutError("MIA zaman asimi: Request timed out.")
 
     return reply
 
 
-def _timed_turn(script_for, *, config=None, sink=None):
+def _timed_turn(script_for, *, config=None, sink=None, overshoot=0.0):
     """Run one turn whose failing calls advance a shared clock."""
     clock = _Clock()
     holder = []
     deps = build(
-        script_for(_times_out_on(clock, holder)),
+        script_for(_times_out_on(clock, holder, overshoot)),
         clock=clock,
         config=config,
         sink=sink,
@@ -739,6 +745,32 @@ def test_the_answer_floor_is_one_allowance_not_one_per_attempt():
     assert first == pytest.approx(20.0, abs=0.5)
     assert retry == pytest.approx(10.0, abs=0.5)
     assert first + retry == pytest.approx(deps.config.answer_min_s, abs=0.5)
+
+
+def test_the_fallback_still_runs_when_the_timeout_overran_its_window():
+    """The blocker this guards against: the thinking-on attempt is capped at
+    `allowance - min_call_s`, so a timeout that fires a hair late leaves just
+    under `min_call_s`. Tested against a clock that advanced by exactly the
+    timeout, the old `left() < min_call_s` check passed; against any real
+    clock it raised and the turn ended with no answer at all -- and only on
+    the turns tight enough to need the fallback, which is every turn that had
+    already spent 125 s of its 180."""
+    state, deps, result = _timed_turn(
+        lambda times_out: [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            FakeLLM.text("Tamam.", duration_ms=170_000, completion_tokens=100_000),
+            times_out,
+            FakeLLM.text("Cevap."),
+        ],
+        overshoot=0.05,
+    )
+
+    first, retry = deps.llm.calls[-2:]
+    assert result.answer == "Cevap."
+    assert (first["thinking"], retry["thinking"]) == (True, False)
+    # What is left after the overshoot: under `min_call_s`, over what the
+    # client needs to start an attempt.
+    assert 5.0 <= retry["timeout_s"] < 10.0
 
 
 def test_the_last_chance_answer_gets_all_the_time_that_is_left():
@@ -914,6 +946,35 @@ def test_a_turn_stopped_at_the_approval_card_answers_the_call():
 
     assert orphan_call_ids(state) == []
     assert "durduruldu" in tool_messages(state)[0]["content"]
+
+
+def test_a_stopped_turn_does_not_close_the_channel_as_a_finished_one():
+    """Cancellation is not an `Exception` either, so it fell through to the
+    `finally` and published `done` with `truncated_reason: null` -- the same
+    payload a turn that answered publishes. An interface reading that draws a
+    stopped turn as a success."""
+    sink = ListSink()
+
+    async def stopped(request):
+        raise asyncio.CancelledError
+
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(
+                "ingest", {"source": "evds", "series_id": "evds:TP.YENI"}, call_id="c1"
+            ),
+        ],
+        approve=stopped,
+        sink=sink,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        turn(state, deps)
+
+    assert state.truncated_reason == "cancelled"
+    assert sink.last("done").payload["truncated_reason"] == "cancelled"
+    assert sink.of_type("error")
 
 
 # --------------------------------------------------------------------------
@@ -1721,13 +1782,33 @@ def test_an_unexpected_crash_is_reported_as_an_error_not_as_a_clean_finish():
     def explode(*args, **kwargs):
         raise RuntimeError("beklenmedik")
 
-    deps.verifier.verify = explode
+    deps.llm.chat = explode
 
     with pytest.raises(RuntimeError):
         turn(state, deps)
 
     assert sink.of_type("error")
     assert sink.last("done").payload["truncated_reason"] == "llm_error"
+
+
+def test_a_verifier_that_crashes_does_not_cost_the_turn_its_answer():
+    """The one crash that must not propagate. The answer is already written
+    when the verifier runs, and throwing away finished work to report a doubt
+    is the worst trade in the turn."""
+    sink = ListSink()
+    state = initial_state("s1")
+    deps = build([FakeLLM.text("Plan."), FakeLLM.text("Cevap.")], sink=sink)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("beklenmedik")
+
+    deps.verifier.verify = explode
+
+    result = turn(state, deps)
+
+    assert result.answer == "Cevap."
+    assert result.truncated_reason is None
+    assert sink.last("verification").payload["passed"] is True
 
 
 def test_a_model_that_returns_no_answer_is_not_a_finished_turn():

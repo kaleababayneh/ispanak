@@ -29,6 +29,7 @@ from lakehouse_agent.testing.fake_lake import (
     FakeLake,
 )
 from lakehouse_agent.testing.fake_llm import FakeLLM
+from lakehouse_agent.tools import lakehouse
 from lakehouse_agent.tools.lakehouse import TOOLS, column_name
 from lakehouse_agent.tools.registry import ToolRegistry
 
@@ -225,6 +226,26 @@ def test_into_active_counts_the_gaps_in_the_table_it_lands_in(scenario):
     assert "60 ay, 2021-01 - 2025-12" in result.summary
 
 
+def test_into_active_does_not_blame_the_pool_for_the_window_that_was_asked(scenario):
+    """The gap in front of an added column is the request's doing, not the
+    pool's. Saying "seri havuzda 2024-01 itibariyla basliyor" about a series
+    the pool holds from 2021 puts a false "we do not have it" in the answer
+    (planner rule 5)."""
+    result = scenario.run(
+        "get_series",
+        series_ids=[HPI_SERIES],
+        start="2024-01",
+        end="2025-12",
+        into="active",
+    )
+
+    gap = next(w for w in result.warnings if HPI in w and "deger yok" in w)
+    assert "havuzda" not in gap
+    assert "yalnizca 2024-01 - 2025-12 icin getirildi" in gap
+    # The pool really does hold it from the table's first month.
+    assert scenario.lake.get([HPI_SERIES], "2021-01", "2021-03")["value"].notna().any()
+
+
 # --- transform_table: the scenario's operations -----------------------------
 
 
@@ -264,6 +285,58 @@ def test_mark_names_the_months_where_every_condition_holds(scenario):
     flagged = list(flags.index[flags.eq(True).fillna(False)].strftime("%Y-%m"))
     assert flagged == PLANTED_RATE_DOWN_CREDIT_FLAT
     assert "1 ay eksik veri" in result.summary  # the first month has no diff
+
+
+def test_a_flag_column_is_refused_by_the_arithmetic_operations(scenario):
+    """A `mark` column is a yes/no, and dividing by it is not a question with
+    an answer: `pct_change` raised `ZeroDivisionError` straight out of the
+    tool (its first period is False, so the change from it divides by zero),
+    and `diff` quietly added a column of XOR-ish numbers with no unit."""
+    scenario.run("transform_table", op="diff", column=RATE)
+    scenario.run(
+        "transform_table",
+        op="mark",
+        conditions=[{"column": f"{RATE}_diff", "op": "<", "value": 0}],
+    )
+
+    for op, extra in (
+        ("pct_change", {}),
+        ("diff", {}),
+        ("rebase", {"base_period": "2021-06"}),
+    ):
+        result = scenario.run("transform_table", op=op, column="isaret", **extra)
+        assert not result.ok, op
+        assert "isaret" in result.summary
+
+    # Still usable where it means something: as a condition of another mark.
+    again = scenario.run(
+        "transform_table",
+        op="mark",
+        name="ayni_ay",
+        conditions=[{"column": "isaret", "op": "==", "value": 1}],
+    )
+    assert again.ok
+
+
+def test_deflate_refuses_a_table_the_price_index_does_not_reach(scenario, monkeypatch):
+    """An all-empty column is not a deflated series. Returned as a success it
+    invited the model to describe real amounts that were never computed; the
+    refusal says what to do instead."""
+    empty_cpi = pd.DataFrame(
+        {
+            "period": scenario.table["period"],
+            "value": [float("nan")] * len(scenario.table),
+        }
+    )
+    monkeypatch.setattr(
+        lakehouse, "_cpi", lambda lake, start, end: empty_cpi, raising=True
+    )
+
+    result = scenario.run("transform_table", op="deflate", column=CREDIT)
+
+    assert not result.ok
+    assert "TUFE havuzda olmadigi icin" in result.summary
+    assert f"reel_{CREDIT}" not in scenario.table.columns
 
 
 def test_deflate_turns_a_money_amount_real_and_cites_the_price_index(scenario):

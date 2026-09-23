@@ -237,7 +237,13 @@ def parse_tool_calls(
         parse_error=parse_error,
     )
     trimmed = dict(raw_message)
-    trimmed["tool_calls"] = [first]
+    # The id we answer with, not the one that arrived: a provider that sends
+    # no id gets `call_0` above, and the tool message is written against that.
+    # Leaving the raw call without an id made the reply an answer to nothing,
+    # which `history._without_stray_replies` then drops -- a request carrying
+    # a tool call with no reply, the protocol error both of them exist to
+    # prevent.
+    trimmed["tool_calls"] = [{**first, "id": tool_call.id}]
     return [tool_call], trimmed
 
 

@@ -29,7 +29,9 @@ from lakehouse_agent.llm import ToolCall
 
 NodeName = Literal["plan", "act", "observe", "answer", "verify", "approval"]
 
-TruncatedReason = Literal["step_limit", "time_budget", "repeat_loop", "llm_error"]
+TruncatedReason = Literal[
+    "step_limit", "time_budget", "repeat_loop", "llm_error", "cancelled"
+]
 
 
 class Step(BaseModel):
