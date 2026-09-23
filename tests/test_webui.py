@@ -559,3 +559,25 @@ def test_a_series_table_title_lists_the_fetched_series_not_their_derivatives():
     )
     # nothing fetched-looking at all (a fixture): every column, as before
     assert webui.table_title("t09_get_series", ["a", "b"], {}) == "Seri tablosu — a, b"
+
+
+def test_a_dot_in_a_header_is_replaced_for_the_browser_but_not_in_the_frame():
+    """Seen 23 Sep: every header with a dot rendered an empty column."""
+    frame = pd.DataFrame(
+        {
+            "AY/MONTH": ["Ocak"],
+            "Sayısı/ Trans.": [1017.0],
+            "8.İşsizlik oranı (%)": [9.1],
+        }
+    )
+
+    shown = webui.display_frame(frame, "t01_read_url", {})
+
+    assert list(shown.columns) == [
+        "AY/MONTH",
+        "Sayısı/ Trans\u2024",
+        "8\u2024İşsizlik oranı (%)",
+    ]
+    assert "." not in "".join(shown.columns)
+    assert shown.iloc[0].tolist() == ["Ocak", 1017.0, 9.1]
+    assert list(frame.columns) == ["AY/MONTH", "Sayısı/ Trans.", "8.İşsizlik oranı (%)"]

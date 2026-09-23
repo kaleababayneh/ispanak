@@ -10,6 +10,7 @@ stays NaN rather than becoming 0.
 
 import logging
 import operator
+import re
 from collections.abc import Mapping, Sequence
 
 import pandas as pd
@@ -454,3 +455,16 @@ def year_to_date(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     running = working["value"].fillna(0.0).groupby(year).cumsum()
     working["value"] = running.where(~gap)
     return working[["period", "value"]], "ytd[t] = toplam(akim[Ocak..t])"
+
+
+#: A row that sums the others, by its label. A printed table ends on one
+#: ("TOPLAM / TOTAL"); ranked among the months it is the highest "month",
+#: drawn beside them it is a bar eight times their height (both seen 23 Sep
+#: on Borsa Istanbul's gold table). One rule, used by `top` and by the
+#: charts, so the two never disagree about what a total is.
+_TOTAL_LABEL = re.compile(r"\b(?:toplam|total|genel toplam|grand total)\b", re.I)
+
+
+def is_total_label(label: object) -> bool:
+    """Whether a row label names a total rather than a period or an item."""
+    return bool(_TOTAL_LABEL.search(str(label)))

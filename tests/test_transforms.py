@@ -539,3 +539,14 @@ def test_year_to_date_is_the_inverse_and_stops_at_a_missing_month():
     result, _ = transforms.year_to_date(gappy)
     assert result["value"].iloc[0] == 10.0
     assert result["value"].iloc[1:].isna().all()
+
+
+def test_a_total_row_is_recognised_by_its_label_in_either_language():
+    from lakehouse_agent.analysis.transforms import is_total_label
+
+    assert is_total_label("TOPLAM / TOTAL")
+    assert is_total_label("Genel Toplam")
+    assert is_total_label("Grand total")
+    assert not is_total_label("Ocak / January")
+    assert not is_total_label("Toplamlar Hariç Konut")  # no whole word
+    assert not is_total_label(2024)

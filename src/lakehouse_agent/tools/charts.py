@@ -15,7 +15,6 @@ chart twice, and `contracts.Artifact` has no field to carry the figure in.
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Mapping
 from typing import Any, Literal
 
@@ -25,6 +24,7 @@ from pydantic import BaseModel, Field
 from lakehouse_agent.agent.context import TableNotFound, ToolContext
 from lakehouse_agent.agent.labels import column_units, table_labels
 from lakehouse_agent.agent.state import ChartSeries, ChartSpec
+from lakehouse_agent.analysis.transforms import is_total_label
 from lakehouse_agent.contracts import TableRef, ToolResult
 from lakehouse_agent.tools.registry import ToolSpec
 
@@ -74,20 +74,18 @@ def _cell(value: Any) -> Any:
     return item() if callable(item) else str(value)
 
 
-#: A row that sums the others, by the label in its x cell. A printed table
-#: ends on one ("TOPLAM / TOTAL"); drawn as a bar beside the months it is
-#: eight times their height and the months become a floor (seen 23 Sep on
-#: Borsa Istanbul's gold table). Matched on the label only: a month named
-#: "Total" does not exist, a column named that is not an x axis.
-_TOTAL_LABEL = re.compile(r"\b(?:toplam|total|genel toplam|grand total)\b", re.I)
-
-
 def without_totals(frame: pd.DataFrame, x: str) -> tuple[pd.DataFrame, list[str]]:
-    """The frame without its total rows, and the labels of the rows dropped."""
+    """The frame without its total rows, and the labels of the rows dropped.
+
+    Drawn as a bar beside the months, "TOPLAM / TOTAL" was eight times their
+    height and the months became a floor (seen 23 Sep on Borsa Istanbul's
+    gold table). The rule itself is `analysis.transforms.is_total_label`,
+    shared with `top`.
+    """
     if x not in frame.columns:
         return frame, []
     labels = frame[x].astype(str)
-    mask = labels.str.contains(_TOTAL_LABEL)
+    mask = labels.map(is_total_label)
     if not mask.any():
         return frame, []
     return frame[~mask], labels[mask].tolist()

@@ -311,9 +311,14 @@ sütun; başlıklar kelime kelime onarılmış ("Hacim/Volume (TL)").
   (2026)" başlığı listelenmeli
 
 Yanlış olan: TOPLAM satırını bir ay sanmak; boş Eylül–Aralık satırlarını
-sıfır saymak. Grafik çizilirse **TOPLAM çubuğu olmamalı** (araç toplam
-satırını grafiğe almaz ve uyarıda söyler; 23 Eylül'de çizildi, kapatıldı).
-Tablo başlığı "Adresten okunan tablo — kmp_au.pdf" olmalı.
+sıfır saymak; **"yalnızca Ocak–Mart dolu" demek** (23 Eylül'de dedi: `top
+n=3` TOPLAM, Mart, Ocak döndürmüştü). Artık `top` toplam satırını
+sıralamaya almaz ve "8 dolu satır arasından" der; cevapta dolu ay sayısı
+geçerse 8 olmalı. Grafik çizilirse **TOPLAM çubuğu olmamalı**. Tablo
+başlığı "Adresten okunan tablo — kmp_au.pdf" olmalı. Tabloda **"Sayısı/
+Trans" sütunları dolu** olmalı (Ocak 1.017, Mart 2.922 işlem); 23 Eylül'de
+adında nokta olan üç sütun boş göründü, başlıktaki nokta gösterimde
+değiştirildi — boş kalırsa bana söyleyin, mekanizma doğrulanmadı.
 
 ### A2. Doğrudan PDF, karşılaştırma
 

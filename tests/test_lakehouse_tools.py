@@ -966,6 +966,31 @@ def test_top_lists_the_whole_row_so_a_value_beside_it_needs_no_second_fetch():
     assert "2023-12: 4.433 (TP_KTF12=42.088)" in lowest.summary
 
 
+def test_top_leaves_the_total_row_out_and_says_how_many_rows_it_ranked():
+    """Borsa Istanbul's gold table ends on "TOPLAM / TOTAL". Ranked with the
+    months it was the highest "month", and the three rows that came back
+    were read as the only filled months (23 Sep). The count says otherwise."""
+    frame = pd.DataFrame(
+        {
+            "AY/MONTH": ["Ocak", "Şubat", "Mart", "Nisan", "Eylül", "TOPLAM / TOTAL"],
+            "hacim": [93.0, 90.0, 151.0, 57.0, None, 391.0],
+        }
+    )
+    spec = make_transform_table()
+
+    result = spec.fn(
+        TransformArgs(op="top", column="hacim", n=3, table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert result.ok
+    assert [row["satir"] for row in result.preview] == ["Mart", "Ocak", "Şubat"]
+    assert "TOPLAM" not in result.summary.split(":")[1]  # not among the ranked
+    assert "4 dolu satir arasindan" in result.summary
+    assert "Toplam satiri siralamaya alinmadi: TOPLAM / TOTAL" in result.summary
+    assert "1 satir bos deger" in result.summary
+
+
 def test_top_works_on_a_table_that_has_no_period_column():
     """A document read from a URL is often a printed table whose rows are
     named, not dated; every other operation needs a period and this one

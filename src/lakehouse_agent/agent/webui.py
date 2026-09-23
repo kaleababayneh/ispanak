@@ -36,6 +36,10 @@ SOURCES_SHOWN = 12
 #: everything else.
 AXIS_COLUMNS = ("period", "obs_date", "date", "tarih")
 
+#: What a "." in a column header becomes on the browser table: U+2024 ONE
+#: DOT LEADER, which renders as a dot and is not read as a key path.
+DISPLAY_DOT = "\u2024"
+
 #: Decimals shown in the browser table. The session's frame is not rounded;
 #: the eval reads it and a ratio of 19.998 must stay 19.998. Four is what
 #: the terminal shows too (`console.DECIMALS`), so the two screens agree.
@@ -307,6 +311,12 @@ def display_frame(
     catalog's.
     """
     labels = table_labels(table_ref, frame.columns, lineage, overrides)
+    # A dot in a header left its whole column blank in the browser (seen
+    # 23 Sep: "Sayısı/ Trans." and its twins empty, the eight dot-free
+    # headers full, the values present all the way to the element). The
+    # table widget reads a dotted key as a path. The one-dot leader looks
+    # the same and is not a separator; the frame's own names are untouched.
+    labels = {name: label.replace(".", DISPLAY_DOT) for name, label in labels.items()}
     seen = list(labels.values())
     unique = {name: label for name, label in labels.items() if seen.count(label) == 1}
     shown = frame.rename(columns=unique)

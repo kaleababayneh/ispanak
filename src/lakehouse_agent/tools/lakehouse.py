@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field, model_validator
 from lakehouse_agent.agent.context import TableNotFound, ToolContext
 from lakehouse_agent.agent.formatting import preview_rows
 from lakehouse_agent.analysis import transforms
+from lakehouse_agent.analysis.transforms import is_total_label
 from lakehouse_agent.contracts import (
     ColumnInfo,
     Kind,
@@ -1117,7 +1118,12 @@ def _top(
 
     values = pd.to_numeric(frame[column], errors="coerce")
     labels = _row_labels(frame, _label_freq(frame, ref, ctx))
-    order = values.sort_values(ascending=args.ascending, na_position="last").dropna()
+    # A total row is not a period. Ranked with the months it wins every
+    # "highest month" and the model reported "TOPLAM / TOTAL" as one, then
+    # read the three rows it got back as the only filled months (23 Sep).
+    totals = [labels[index] for index in frame.index if is_total_label(labels[index])]
+    ranked = values[[not is_total_label(labels[index]) for index in frame.index]]
+    order = ranked.sort_values(ascending=args.ascending, na_position="last").dropna()
     chosen = order.head(args.n)
     # The whole row, not only the ranked column. The model never sees the
     # table itself, and "what was the rate in the month the share peaked"
@@ -1142,10 +1148,15 @@ def _top(
         for index in chosen.index
     )
     direction = "en dusuk" if args.ascending else "en yuksek"
-    missing = int(values.isna().sum())
-    summary = f"'{column}' sutununda {direction} {len(chosen)} satir ({ref}): {listed}."
+    missing = int(ranked.isna().sum())
+    summary = (
+        f"'{column}' sutununda {direction} {len(chosen)} satir ({ref}, "
+        f"{len(order)} dolu satir arasindan): {listed}."
+    )
     if missing:
         summary += f" {missing} satir bos deger yuzunden siralamaya girmedi."
+    if totals:
+        summary += f" Toplam satiri siralamaya alinmadi: {', '.join(totals)}."
     return ToolResult(
         ok=True,
         summary=summary,

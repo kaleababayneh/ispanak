@@ -2461,3 +2461,30 @@ Karar:  `charts.without_totals`: x sütunu metinse ve hücresi
         başlığının kelime kelime onarımından; değerler doğru sütunda,
         dokunulmadı.
 
+## `top` toplam satırını "en yüksek ay" saydı; model üç satırdan "yalnızca üç ay dolu" çıkardı (23 Eyl)
+Ölçüm:  A1'in ikinci koşumunda cevap doğru (Mart; 258.809 / 91.977 kg) ama
+        "dosyada yalnızca Ocak–Mart dolu" dedi — 8 ay dolu. Kayıt: `top
+        n=3` "TOPLAM / TOTAL: 614.671.873.305, Mart, Ocak" döndürmüştü;
+        model TOPLAM'ı ay saymayacak kadar dikkatliydi ama dönen üç satırı
+        dolu ayların tamamı sandı. Özet kaç satır arasından seçtiğini
+        söylemiyordu.
+Karar:  Toplam satırı kuralı tek yerde: `analysis.transforms.is_total_label`
+        (toplam/total/genel toplam/grand total, tam kelime). `top` bu
+        satırları sıralamaya almaz ("Toplam satiri siralamaya alinmadi: …")
+        ve "N dolu satir arasindan" yazar; grafik aynı kuralla çizmez.
+
+## Adında nokta olan sütun tarayıcı tablosunda boş göründü (23 Eyl, A1 görüntüsünden)
+Ölçüm:  Altın PDF'i tablosunda "Sayısı/ Trans.", "Sayısı/ Trans. 2" ve
+        "… 3" sütunları boş, noktasız sekiz sütun dolu. Değerler Python
+        tarafında sonuna kadar var: oturum çerçevesi (float64, 1017.0…),
+        `display_frame` kopyası aynı; `cl.Dataframe` `to_json(orient=
+        "split")` ile gönderiyor. Ön yüz paketinde mekanizmayı bulamadım
+        (`accessorKey` yok; minified). Katalogda 22.032 / 45.422 serinin
+        adında nokta var ("8.İşsizlik oranı", "1.Cari İşlemler Hesabı"),
+        yani gözlem doğruysa etki geniş.
+Karar:  Gözleme dayalı, **mekanizması doğrulanmamış** düzeltme, yalnız
+        tarayıcı gösterim kopyasında: başlıktaki "." → U+2024 (one dot
+        leader), görünüşü aynı, yol ayracı değil. Çerçeve adları, terminal
+        ve grafik dokunulmadı. Doğrulama elle: A1 tekrar sorulunca "Sayısı/
+        Trans" 1.017 göstermeli; göstermezse hipotez yanlış, geri alınır.
+
