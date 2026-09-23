@@ -26,6 +26,7 @@ Tüm üçüncü taraf bağımlılıklar permissive açık kaynak lisanslıdır
 | scipy                          | 1.18.1      | BSD License                                        |
 | Pygments                       | 2.21.0      | BSD-2-Clause                                       |
 | wrapt                          | 2.4.1       | BSD-2-Clause                                       |
+| click                          | 8.5.0       | BSD-3-Clause                                       |
 | httpcore2                      | 2.13.0      | BSD-3-Clause                                       |
 | httpx2                         | 2.13.0      | BSD-3-Clause                                       |
 | idna                           | 3.19        | BSD-3-Clause                                       |
@@ -39,6 +40,7 @@ Tüm üçüncü taraf bağımlılıklar permissive açık kaynak lisanslıdır
 | anyio                          | 4.15.1      | MIT                                                |
 | cfgv                           | 3.5.0       | MIT                                                |
 | charset-normalizer             | 3.5.1       | MIT                                                |
+| ddgs                           | 9.16.0      | MIT                                                |
 | filelock                       | 3.32.6      | MIT                                                |
 | formulaic                      | 1.2.2       | MIT                                                |
 | identify                       | 2.6.19      | MIT                                                |
@@ -66,6 +68,7 @@ Tüm üçüncü taraf bağımlılıklar permissive açık kaynak lisanslıdır
 | openpyxl                       | 3.1.5       | MIT License                                        |
 | pdfplumber                     | 0.11.10     | MIT License                                        |
 | pluggy                         | 1.6.0       | MIT License                                        |
+| primp                          | 2.0.1       | MIT License                                        |
 | python-discovery               | 1.6.0       | MIT License                                        |
 | six                            | 1.17.0      | MIT License                                        |
 | cffi                           | 2.1.1       | MIT-0                                              |

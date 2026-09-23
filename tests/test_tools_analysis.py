@@ -614,6 +614,10 @@ def test_causality_differences_a_level_in_logs_and_an_index_as_it_is(analysis_to
             strict=True,
         )
     )
-    assert transforms["fiyat -> kredi"] == "fark"  # the index
-    assert transforms["kredi -> fiyat"] == "log-fark"  # the balance
+    # Every row names both series' transforms, so a reader can see that an
+    # index's plain difference was regressed against a balance's log
+    # difference. The column used to carry only the cause's transform.
+    both = "fiyat: fark | kredi: log-fark"
+    assert transforms["fiyat -> kredi"] == both
+    assert transforms["kredi -> fiyat"] == both
     assert all(c.source_series == ["bddk:x", "evds:y"] for c in result.columns)

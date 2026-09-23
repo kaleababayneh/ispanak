@@ -586,3 +586,33 @@ def test_a_search_from_an_earlier_turn_does_not_bind_this_one():
     state.turn_starts.append(len(state.messages))
 
     assert VERIFY("Bu turda yalnizca tablo yorumlandi.", state).passed
+
+
+def test_a_number_that_exists_only_in_a_search_snippet_is_not_grounded():
+    """`_stated_text` treated every tool message as text a number may
+    honestly come from, which is right for a lake tool and wrong for a page
+    someone else wrote. Measured 23 Sep: "dolar kuru 99,99 oldu" passed with
+    no flags against a table that held nothing of the sort, although
+    `web_search`'s own text and `answer.md` rule 5 both promise it cannot."""
+    from lakehouse_agent.agent.formatting import fence
+
+    state = _state(
+        tool_text=(
+            "'TCMB Temmuz 2023' icin 1 sonuc.\n"
+            + fence("1. Haber — https://ornek.com/x\n   dolar kuru 99,99 oldu.")
+        ),
+        kredi=[1.0],
+    )
+
+    assert not VERIFY("Dolar kuru 99,99 oldu.", state).passed
+    # The event and its address are still quotable; only the figure is not.
+    assert VERIFY("2023-07'de TCMB faizi artirdi (ornek.com).", state).passed
+
+
+def test_a_number_a_lake_tool_printed_is_still_grounded():
+    """The fence must not cost the ordinary case: a tool's own text is ours."""
+    state = _state(
+        tool_text="4 ay kosullarin hepsini sagliyor. 288 hafta.", kredi=[1.0]
+    )
+
+    assert VERIFY("288 haftalik veri var.", state).passed

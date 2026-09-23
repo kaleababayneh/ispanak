@@ -43,6 +43,12 @@ ADHOC_ROOT = Path("data/adhoc/search")
 REGION = "tr-tr"
 DEFAULT_RESULTS = 5
 MAX_RESULTS = 10
+#: Pinned. `ddgs` defaults to "auto", which fans the query out across
+#: google, bing, brave, startpage, mojeek and others -- so the demo would
+#: scrape search engines this project never names, and a DuckDuckGo rate
+#: limit would silently become a Google result instead of an honest
+#: failure. Every document here says DuckDuckGo; this makes that true.
+BACKEND = "duckduckgo"
 TIMEOUT_S = 20.0
 
 
@@ -66,7 +72,9 @@ def ddg_provider(query: str, k: int) -> list[SearchResult]:
     from ddgs import DDGS
 
     try:
-        rows = DDGS(timeout=TIMEOUT_S).text(query, region=REGION, max_results=k)
+        rows = DDGS(timeout=TIMEOUT_S).text(
+            query, region=REGION, max_results=k, backend=BACKEND
+        )
     except Exception as exc:  # noqa: BLE001 - every provider failure reads alike
         raise WebSearchError(
             f"Arama yapilamadi ({type(exc).__name__}): {str(exc)[:120]}"

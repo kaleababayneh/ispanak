@@ -30,6 +30,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from lakehouse_agent.agent.context import ToolContext
+from lakehouse_agent.agent.formatting import fence, one_line
 from lakehouse_agent.contracts import Source, ToolResult
 from lakehouse_agent.tools.registry import ToolSpec
 from lakehouse_agent.web.search import (
@@ -70,6 +71,12 @@ class WebSearchArgs(BaseModel):
 
 def _approval_preview(args: BaseModel, _ctx: ToolContext) -> dict[str, Any]:
     return {
+        # `source`/`detail` are the keys the card's question is built from
+        # (agent/approvals.py); with only `sorgu` it read "dis kaynak
+        # uzerinden veri cekilsin mi?" and the person approved a query they
+        # were never shown -- the same regression `read_url` already fixed.
+        "source": args.query,
+        "detail": f"{args.k} sonuc",
         "sorgu": args.query,
         "sonuc": args.k,
         "not": "Web'de arama yapilacak; sonuclar kaynak olarak kaydedilir.",
@@ -103,20 +110,31 @@ def make_web_search() -> ToolSpec:
                 ),
             )
 
-        lines = [f"'{args.query}' icin {len(results)} sonuc.", UNTRUSTED_NOTE]
+        # Every field a stranger wrote goes through `one_line` (no newline, no
+        # control character can start a line of its own) and then inside the
+        # fence, which is both the model's boundary and what keeps these
+        # numbers out of the verifier's grounded set.
+        found = []
         for number, result in enumerate(results, start=1):
-            lines.append(f"{number}. {result.title} — {result.url}")
+            found.append(
+                f"{number}. {one_line(result.title, 200)} — {one_line(result.url, 300)}"
+            )
             if result.snippet:
-                lines.append(f"   {result.snippet}")
-        lines.append("Bir sayfanin tamamini okumak gerekiyorsa read_url ile ac.")
+                found.append(f"   {one_line(result.snippet, 500)}")
+        lines = [
+            f"'{args.query}' icin {len(results)} sonuc.",
+            UNTRUSTED_NOTE,
+            fence("\n".join(found)),
+            "Bir sayfanin tamamini okumak gerekiyorsa read_url ile ac.",
+        ]
 
         return ToolResult(
             ok=True,
             summary="\n".join(lines),
             sources=[
                 Source(
-                    url=result.url,
-                    name=result.title or result.url,
+                    url=one_line(result.url, 300),
+                    name=one_line(result.title or result.url, 200),
                     fetched_at=fetched_at,
                 )
                 for result in results

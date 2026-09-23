@@ -83,16 +83,18 @@ def test_two_unrelated_walks_come_back_as_nothing_found():
     assert "anlamli onculluk yok" in summary
 
 
-def test_trying_six_lags_tightens_the_threshold():
+def test_trying_six_lags_in_two_directions_tightens_the_threshold():
     """Keeping the best of six lags turns a one-in-twenty false alarm into
-    nearly one in four, so the threshold is divided by the number tried and
-    the summary says so."""
+    nearly one in four, so the threshold is corrected. The family is twelve,
+    not six: both directions are tested and the pair gets one verdict.
+    Measured at 22 observations, dividing by six alone let 9% of independent
+    pairs through while the sentence said 5%."""
     _result, _correlation, summary = lead_lag(
         _leading_pair(), "fiyat", "kredi", max_lag=6
     )
 
-    assert f"{ALPHA / 6:.4f}" in summary
-    assert "6 gecikme denendi" in summary
+    assert f"{ALPHA / 12:.4f}" in summary
+    assert "6 gecikme, iki yon denendi" in summary
 
 
 # --- how the input is prepared -----------------------------------------------
@@ -103,7 +105,9 @@ def test_a_trending_series_is_differenced_and_the_summary_says_which():
         _leading_pair(), "fiyat", "kredi", max_lag=4, log_x=True, log_y=True
     )
 
-    assert set(result["donusum"]) == {"log-fark"}
+    # Both series named, not just the cause's: a row used to read "yok"
+    # while the other side had been differenced.
+    assert set(result["donusum"]) == {"fiyat: log-fark | kredi: log-fark"}
     assert "duraganlastirildi" in summary
 
 
@@ -119,7 +123,7 @@ def test_a_stationary_series_is_left_alone():
 
     result, _correlation, _summary = lead_lag(frame, "a", "b", max_lag=4)
 
-    assert set(result["donusum"]) == {"yok"}
+    assert set(result["donusum"]) == {"a: yok | b: yok"}
 
 
 def test_periods_missing_in_either_series_are_dropped_not_filled():
@@ -198,3 +202,55 @@ def test_the_summary_always_says_this_is_not_proof_of_cause():
 
     assert "nedensellik kaniti degildir" in summary
     assert "ucuncu etkenler" in summary
+
+
+# --- what the 23 Sep review found --------------------------------------------
+
+
+def test_a_series_that_needs_two_differences_gets_them():
+    """One difference was applied and never re-checked, although the contract
+    says "durağanlık şart". Measured on 120 independent twice-integrated
+    pairs: 117 were still non-stationary after the single difference and
+    27,5% of the pairs came back as "öncül"; with the loop that is 5,0%."""
+    rng = np.random.default_rng(1001)
+    frame = pd.DataFrame(
+        {
+            "period": _periods(66),
+            "x": pd.Series(rng.normal(size=66)).cumsum().cumsum(),
+            "y": pd.Series(rng.normal(size=66)).cumsum().cumsum(),
+        }
+    )
+
+    result, _correlation, _summary = lead_lag(frame, "x", "y", max_lag=6)
+
+    assert all("x2" in value for value in result["donusum"])
+
+
+def test_a_series_that_stays_non_stationary_says_so_instead_of_answering():
+    """Granger on a unit root left in the data is the spurious-regression
+    setup, and its p-value looks exactly like a real one."""
+    rng = np.random.default_rng(17)
+    frame = pd.DataFrame(
+        {
+            "period": _periods(80),
+            "x": pd.Series(rng.normal(size=80)).cumsum().cumsum().cumsum(),
+            "y": pd.Series(rng.normal(size=80)).cumsum().cumsum().cumsum(),
+        }
+    )
+
+    _result, _correlation, summary = lead_lag(frame, "x", "y", max_lag=4)
+
+    assert "DIKKAT" in summary
+    assert "duragan degil" in summary
+
+
+def test_the_transform_column_names_both_series():
+    """It carried only the cause's transform, so a row could read "yok" while
+    the effect had been differenced: a level regressed on a difference,
+    labelled as if nothing had happened."""
+    result, _correlation, _summary = lead_lag(
+        _leading_pair(), "fiyat", "kredi", max_lag=4
+    )
+
+    for value in result["donusum"]:
+        assert value.startswith("fiyat: ") and " | kredi: " in value

@@ -903,8 +903,18 @@ async def _chat(
     floor = config.answer_min_s if last_chance else 0.0
     allowance = max(config.total_budget_s - state.active_s, floor)
 
+    # What this call has spent, not what the whole retry pair has. `spent` is
+    # shared with the caller's earlier `_chat` (the empty-answer retry in
+    # `_answer`, the uncapped retry in `_llm_step`), and `allowance` is
+    # recomputed from `state.active_s`, which that earlier attempt already
+    # increased. Subtracting it again charged it twice: measured, the answer
+    # retry was handed -15 s once the turn had spent 125 s, which `llm._call`
+    # turns into `LlmTimeoutError` and `_answer` then suppresses -- so the
+    # retry silently did not happen on exactly the late turns it exists for.
+    already = spent.seconds
+
     def left() -> float:
-        return allowance - spent.seconds
+        return allowance - (spent.seconds - already)
 
     async def attempt(
         think: bool, max_tokens: int | None, timeout: float

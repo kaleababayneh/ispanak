@@ -1326,3 +1326,72 @@ Karar:  Başlık bandı hücre hücre değil kelime kelime okunuyor: her kelime
 Sonuç:  Aynı PDF'te 11 başlığın 11'i doğru: `AY/MONTH`, `Hacim/Volume (TL)`,
         `TOPLAM / TOTAL Miktar/Amount (KG)` ... Yinelenen `Sayısı/ Trans.`
         adları `_unique` ile ayrılıyor. Veri satırları değişmedi.
+
+## 23 Eylül incelemesi, üçüncü tur (nedensellik ve arama dalı)
+Bağlam: `feat/causality` üç incelemeden geçti; aşağıdakilerin hepsi ölçülerek
+        doğrulandı ve testle sabitlendi.
+Karar:  Güven hikâyesi (en önemlisi):
+        - **Arama sonucundaki sayı artık cevaba kanıt olamıyor.** Doğrulayıcı
+          her araç mesajını kanıtlanmış metin sayıyordu; `web_search` sonucu
+          da bir araç mesajı olduğu için yalnızca bir haber parçacığında geçen
+          "dolar kuru 99,99" bayraksız geçiyordu (ölçüldü). Oysa aracın kendi
+          metni, cevap isteminin 5. kuralı ve sözleşme §7.3 bunun
+          olamayacağını söylüyordu. Çit (`agent/formatting.fence`) artık tek
+          yerde tanımlı: `read_url` ve `web_search` yabancının yazdığı her
+          şeyi ona sarıyor, `_stated_text` çitli bölgeleri kesiyor. Ölçüm:
+          aynı cümle artık bayrak alıyor, tablodan gelen sayı ve kaynaklı
+          olay iddiası geçiyor.
+        - **Arama metni satır uyduramıyor.** `ddgs` adresleri `unquote`
+          ediyor ve sağlayıcı yalnızca başlık ile özeti sıkıştırıyordu; tek
+          bir `%0A` üç satıra dönüşüp `Uyarilar:`, `Kalite:` satırlarını
+          sıfırıncı sütunda taklit edebiliyordu (ölçüldü). Üç alan da
+          `one_line`'dan geçiyor ve çit içine giriyor.
+        - **Onay kartı sorguyu gösteriyor.** `web_search` önizlemesi
+          `source`/`detail` vermiyordu, kart "dis kaynak uzerinden veri
+          cekilsin mi?" diyordu. `read_url`'de düzeltilen regresyonun aynısı.
+        - **Arama motoru sabitlendi.** `ddgs` varsayılanı `auto`, yani google,
+          bing, brave, startpage de taranıyordu; her doküman DuckDuckGo
+          diyor. `BACKEND = "duckduckgo"`.
+        Süre bütçesi:
+        - **Boş cevap yeniden denemesi geç turlarda çalışmıyordu.** `_chat`
+          payı `active_s`'ten yeniden hesaplıyor, `left()` ise aynı
+          `_Spent`'ten ilk denemeyi bir kez daha düşüyordu. Ölçüm: tur 125 sn
+          harcamışken yeniden denemeye −15 sn veriliyor, bu `LlmTimeoutError`
+          oluyor ve `_answer` onu yutuyordu. Artık her çağrı yalnızca kendi
+          harcadığını düşüyor: 135 / 75 / 30 / 30 sn.
+        Nedensellik:
+        - **Durağanlık iddia edilmek yerine sağlanıyor.** Tek fark alınıp bir
+          daha bakılmıyordu. Ölçüm: 120 bağımsız iki-kez-entegre çiftin
+          117'si tek farktan sonra hâlâ durağan değildi ve %27,5'i "öncül"
+          çıkıyordu. Fark en çok iki kez yineleniyor; hâlâ durağan değilse
+          özet "DIKKAT ... sonucu kullanma" diyor. Yeni oran **%5,0** ve
+          kalan altı vakanın altısı da uyarı taşıyor.
+        - **Bonferroni ailesi iki yönü de sayıyor.** Eşik gecikme sayısına
+          bölünüyordu ama iki yön test edilip çifte tek karar veriliyor; 22
+          gözlemde gerçek oran %9 iken metin %5 diyordu. Artık `2 x gecikme`.
+        - **`donusum` iki serinin de dönüşümünü yazıyor.** Yalnızca neden
+          serisininkini yazıyordu, dolayısıyla bir satır "yok" derken diğer
+          taraf farklanmış olabiliyordu: seviyeye karşı fark regresyonu,
+          hiçbir şey olmamış gibi etiketlenmiş.
+        - Yan etki, ölçüldü: gerçek havuz çiftinde sonuç artık `kind` alanının
+          dolu olup olmamasına göre ters dönmüyor (p=0,6237 ve p=0,0312, ikisi
+          de anlamsız). Önceki halde biri "öncül" diğeri "öncüllük yok"
+          diyordu.
+        Belgeler: `answer.md` v3 (iki tane 9 numaralı kural vardı, rebase
+        artığı; ikincisi 10 oldu), `contracts.md` sekiz aracı ve `fetch`
+        kapısının iki aracını sayıyor, `docs/licenses.md` 69 paketle yeniden
+        üretildi (ddgs, primp, click dahil, hepsi permissive).
+Uygulanmadı (gerekçesiyle):
+        - **22 gözlemde testin gücü düşük** (güçlü etkide 0,42). Bu verinin
+          sınırı, kodun değil; "öncüllük yok" cevabını "ilişki yok" diye
+          okutmamak için ayrı bir güç cümlesi gerekir, o da ölçüm ister.
+        - **Tekil tasarım** (bir seri diğerinin katı) hâlâ "p=1,0, öncüllük
+          yok" diyor. Dürüst bir ret yazmak `_granger`'ın statsmodels
+          uyarısını ayırt etmesini gerektiriyor.
+        - **Tekrarlanan dönem, takvim boşluğu, karışık frekans** kontrol
+          edilmiyor. Üçü de `lead_lag`'in elindeki `period` sütunuyla
+          bakılabilir; ayrı bir adım.
+        - **Önbellekte süre sınırı yok**, boş sonuç kalıcı olarak saklanıyor
+          ve `force` parametresinin çağıranı yok.
+        - **Yeni araç testleri** hâlâ `sys.modules` saplaması kuran dosyanın
+          içinde; gerçek sözleşme nesneleriyle denenmiyor.

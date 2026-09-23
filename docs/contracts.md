@@ -219,9 +219,10 @@ adımın çalışma süresinden düşülüyor. Jüri kartı okurken tur düşmes
 
 Aktif tablo kuralı: `get_series(into="new")`, `run_sql`, `ingest` ve `read_url`
 aktif tabloyu değiştirir; analiz sonucu tabloları değiştirmez. Üretim kaydı
-(`tools/toolset.py`): search_catalog, get_series, transform_table,
-detect_anomalies, detect_changes, **read_url**. `run_sql` ve `ingest` henüz
-yalnızca sahte araçlarda; kural sıraları geldiğinde uyacakları kural.
+(`tools/toolset.py`, sekiz araç): search_catalog, get_series,
+transform_table, detect_anomalies, detect_changes, **read_url**,
+**test_causality**, **web_search**. `run_sql` ve `ingest` henüz yalnızca
+sahte araçlarda; kural sıraları geldiğinde uyacakları kural.
 
 `read_url` aktif tabloyu devraldığında bunu **uyarıda söyler** ve önceki
 tablonun adını verir: analizin ortasında okunan bir adres, sonraki her
@@ -420,7 +421,7 @@ anılmış sayılır (uzun adresler "tcmb.gov.tr/…/duy2023-25" diye kısaltıl
 | Tür | Ne zaman | Seçenekler |
 |---|---|---|
 | `series_choice` | ilk iki adayın skor oranı eşiği aşarsa (sorguda koduyla geçen seriler hariç) | aday `series_id`'leri |
-| `fetch` | havuzda olmayan veri çekilmeden önce (bugün: `read_url`) | `approve`, `cancel` |
+| `fetch` | havuzda olmayan veri çekilmeden önce (`read_url` ve `web_search`) | `approve`, `cancel` |
 | `quality` | eksik oranı eşiği aşarsa, tekrar varsa, birim bilinmiyorsa | `continue`, `change_assumption`, `cancel` |
 
 Kimlikler İngilizce çünkü kodda karşılaştırılıyor; etiketler Türkçe çünkü

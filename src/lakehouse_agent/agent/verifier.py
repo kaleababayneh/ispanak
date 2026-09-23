@@ -42,6 +42,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+from lakehouse_agent.agent.formatting import without_fenced
 from lakehouse_agent.agent.state import (
     SessionState,
     VerificationFlag,
@@ -192,9 +193,18 @@ def _stated_text(state: SessionState) -> str:
     number it can still see while waving through numbers it can no longer
     read. Whichever way the asymmetry falls it is wrong; the cheap side is
     the one that does not print a flag under a faithful answer.
+
+    Fenced regions are cut out (`agent/formatting.without_fenced`). A web
+    page's text and a search result's snippet arrive inside a tool message,
+    and treating them as grounded meant any number a stranger wrote passed
+    the answer's number check as if a tool had computed it. Measured 23 Sep:
+    an answer reading "dolar kuru 99,99 oldu" passed with no flags against a
+    table that held nothing of the sort, because the figure sat in a search
+    snippet. `web_search`'s own text and `answer.md` rule 5 both promise that
+    cannot happen; this is what makes the promise true rather than advisory.
     """
     parts = [
-        str(message.get("content") or "")
+        without_fenced(str(message.get("content") or ""))
         for message in state.messages
         if message.get("role") in ("tool", "user")
     ]
