@@ -738,6 +738,12 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
     prompt = load_prompt("answer")
     system = render(
         prompt,
+        # The question itself, restated. It is the first user message and by
+        # now fifteen steps of tool output sit between it and the model:
+        # measured 23 Sep, a three-part question came back answered with
+        # "Simdi ek bir isaretleme yapiyorum" while the tool that answered it
+        # had already printed "3 ay: 2021-05, 2023-11, 2024-01".
+        question=question,
         tables_summary=build_tables_summary(state.tables, state.active_table),
         charts=", ".join(chart_ref_of(chart) for chart in state.charts) or "yok",
         sources=format_sources(state.sources),
@@ -1833,7 +1839,7 @@ def _cli(argv: list[str] | None = None) -> int:
             # the interface, and the engine must not depend on it.
             from lakehouse_agent.agent.console import Terminal
 
-            terminal = Terminal()
+            terminal = Terminal(tables=state.tables.get)
             deps.sink = _Both(deps.sink, terminal)
             deps.approve = terminal.approve
         return asyncio.run(_run_cli(state, deps, questions, terminal, args.fake))

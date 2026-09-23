@@ -12,6 +12,7 @@ reading one file.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -92,6 +93,54 @@ def needs_fetch_approval(
     )
 
 
+#: How much of their wording the candidates must share before the choice is
+#: put to a person. Measured 23 Sep over 29 real queries against the 45k
+#: pool: the gate fired on all 29, so every search stopped for a click. The
+#: four that clear this bar are the ones where the candidates are the same
+#: quantity defined differently -- deposit rates by maturity (1,00), credit
+#: card balances by card group (0,80), housing loan rate as interest or
+#: profit share and flow or stock (0,60), consumer loan rate (0,44). The 25
+#: that fall below are the search being unsure between different quantities:
+#: "konut fiyat endeksi" offering the house price index and "Konut
+#: Sigortası" (0,00), "dolar kuru" offering the Kuwaiti dinar (0,00),
+#: "toplam konut kredisi bakiyesi" offering non-performing loans, consumer
+#: housing loans and total loans (0,14). Those are not a choice a person can
+#: make better than the model, which reads every candidate's name, unit and
+#: coverage.
+MIN_SHARED_WORDS = 0.40
+
+_TR_FOLD = str.maketrans("çğıöşüâîû", "cgiosuaiu")
+
+
+def _words(name: str) -> set[str]:
+    """A candidate's name as comparable words.
+
+    Folded like the pool's own search text, but written here rather than
+    imported: the agent layer depends on nothing in `lake`, and one helper is
+    not worth the first edge between them.
+    """
+    folded = str(name).replace("İ", "i").replace("I", "ı").lower().translate(_TR_FOLD)
+    return set(re.findall(r"[a-z]+", folded))
+
+
+def _same_quantity(labels: list[str]) -> float:
+    """How much wording all the candidates share, 0 to 1.
+
+    High when they are one quantity written several ways ("Konut Kredisi (TL,
+    Akım, %)" against "Konut Kredisi (TL, Stok, %)"), low when they are
+    different quantities the search could not separate. Measured across all
+    the candidates shown, not the top two: the top two of a bad card can look
+    alike by accident -- "Takipteki Konut Kredileri" and "Tüketici Kredileri
+    - Konut" share three words -- while the four together share only
+    "toplam".
+    """
+    sets = [_words(label) for label in labels if label]
+    if len(sets) < 2:
+        return 0.0
+    union = set.union(*sets)
+    return len(set.intersection(*sets)) / len(union) if union else 0.0
+
+
 def needs_series_choice(
     result: ToolResult,
     state: SessionState,
@@ -127,6 +176,19 @@ def needs_series_choice(
     if not (top_score > 0 and second_score >= top_score * ratio):
         return None
 
+    shown = candidates[:top_k]
+    # Close scores alone are not a choice. Over 29 real queries the gate
+    # fired on all 29, because in a 45k pool everything scores close to
+    # everything. What makes a card worth a person's time is that the
+    # candidates are one quantity defined several ways; when they are
+    # different quantities, the model reading their names and coverage
+    # decides better than a person reading four lines.
+    # The same text the card would label them with, so the gate and the card
+    # never disagree about what a candidate is called.
+    labels = [str(c.get("name_tr") or c.get("series_id") or "") for c in shown]
+    if _same_quantity(labels) < MIN_SHARED_WORDS:
+        return None
+
     options = [
         ApprovalOption(
             id=str(candidate.get("series_id")),
@@ -142,7 +204,7 @@ def needs_series_choice(
             )
             or None,
         )
-        for candidate in candidates[:top_k]
+        for candidate in shown
     ]
     return ApprovalRequest(
         request_id=next_request_id(state),

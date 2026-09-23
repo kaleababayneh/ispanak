@@ -2241,7 +2241,8 @@ def test_chat_mode_runs_a_turn_for_every_question_typed(monkeypatch, tmp_path, c
     answer, not written on the command line before the first one."""
     from lakehouse_agent.agent.loop import _cli
 
-    _typing(monkeypatch, "konut kredisi faizi\nya endeks\n")
+    # A blank line sends each question; the last one ends the session.
+    _typing(monkeypatch, "konut kredisi faizi\n\nya endeks\n\n")
     events = tmp_path / "oturum.jsonl"
 
     assert _cli(["--fake", "--chat", "--events", str(events)]) == 0
@@ -2306,7 +2307,8 @@ def test_an_approval_card_reaches_the_person_in_chat_mode(monkeypatch, tmp_path)
             settings=AgentSettings(MIA_API_KEY="fake-key-unused-offline"),
         ),
     )
-    _typing(monkeypatch, "konut kredisi\n2\n\n")
+    # Question, blank line to send it, then the card's answer.
+    _typing(monkeypatch, "konut kredisi\n\n2\n")
     events = tmp_path / "oturum.jsonl"
 
     _cli(["--fake", "--chat", "--events", str(events)])

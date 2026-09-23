@@ -1784,16 +1784,115 @@ Bağlam: `--chat`'in ilk gerçek koşusunda şartnamenin üç satırlık senaryo
 Neden:  Okuyucuyu satır bazlı yazmıştım. Bir soru satır değil paragraf, ve
         jüri demoda yapıştıracak; şartnamedeki soruların kendisi çok satırlı
         basılmış.
-Karar:  İlk satır okunduktan sonra terminalde bekleyen başka satır var mı diye
-        bakılıyor (`select`, sıfır beklemeyle). Varsa o metin kişi yazarken
-        değil yapıştırılırken geldi demektir, aynı soruya aittir; boş satır ya
-        da girdinin bitmesi paragrafı kapatır. Tek satırlık soru tek Enter'la
-        gitmeye devam ediyor, çünkü kişi yazarken tamponda bir şey beklemiyor.
-        Alternatif olan "boş satır gönderir" tahmin edilebilirdi ama tek
-        satırlık soruda bile iki Enter isterdi; kullanıcı otomatik algılamayı
-        seçti.
-Sonuç:  Kontrol enjekte edilebilir (`Terminal(pending=...)`), çünkü gerçek
-        cevap dosya tanıtıcısı istiyor ve testlerin `StringIO`'sunda yok.
-        Tanıtıcısı olmayan akış "bekleyen yok" diyor, yani mevcut testler
-        satır satır çalışmaya devam ediyor. Üç yeni test; birleştirme
-        kaldırılınca ikisi kırmızıya düşüyor.
+Karar:  İlk denemem "terminalde bekleyen satır var mı" diye bakmaktı
+        (`select`, sıfır beklemeyle). ÇALIŞMADI ve nedeni ölçüldü: yapıştırma
+        terminale parça parça geliyor, sıfır beklemeli kontrol sonraki parça
+        gelmeden "bekleyen yok" diyor, kalan satırlar tamponda kalıp bir
+        sonraki okumaya, yani onay kartının cevabına gidiyor. pty ile yeniden
+        üretildi: 120 ms arayla gelen üç satırlık yapıştırmada soru "ilk
+        satir" olarak kesildi ve onay kartı iki kez "Gecerli bir numara yaz."
+        dedi. Kullanıcının gerçek koşumundaki belirti buydu.
+        Bekleme penceresi ölçüldü: 150 ms 120 ms'lik boşluğu kapatıyor ve
+        insanın 400 ms sonra yazdığı satırı yutmuyor. Ama pencere ne olursa
+        olsun yarışı yalnızca daraltıyor, kapatmıyor; yavaş bir bağlantıda
+        demo sırasında tekrar edebilirdi.
+        Bu yüzden KESİN ÇÖZÜM seçildi: **boş satır soruyu gönderir**,
+        satırlar o ana kadar biriktirilir, oturum Ctrl-D ile biter. Terminal
+        hızından bağımsız, yarış yok. Bedeli tek satırlık soruda da ikinci
+        bir Enter. Yarım yazılmış soruda Ctrl-D soruyu kaybetmiyor, gönderiyor.
+Sonuç:  300 ms arayla gelen parçalı yapıştırmada bile soru bütün geliyor ve
+        onay kartı uyarı vermiyor (pty ile doğrulandı). Beş test; paragraf
+        birleştirmesi kaldırılınca ikisi kırmızıya düşüyor.
+
+## Ekran tabloyu tam gösterir, önizlemeyi değil (23 Eyl, ilk `--real --chat` koşumundan)
+Bağlam: Jüri sorusu 60 aylık veri istiyordu, ekranda 10 satır göründü. Veri
+        eksik değildi: adım satırı "2 seri, 60 ay" diyordu ama tablo yalnızca
+        önizlemeyi çiziyordu ve bunu hiç belli etmiyordu. Demoda bu "veri
+        eksik" diye okunur.
+Neden:  `table_update` olayı bilerek yalnızca önizleme taşıyor; yükte toplam
+        satır sayısı diye bir alan bile yok. Ama sözleşme bu durumu zaten
+        çözmüş: §4 "model tabloyu görmez, özetini görür. **Tam tablo oturum
+        deposunda kalır ve doğrudan arayüze gider.**" Yani ekranın tabloyu
+        depodan okuması tasarlanmış yol, sözleşme değişikliği değil.
+Karar:  `Terminal` bir çözücü alıyor (`tables=state.tables.get`) ve tabloyu
+        tam çiziyor. Üst sınır 200 satır, yalnızca kırk bin satırlık bir
+        tabloya karşı koruma; kesildiğinde gerçek toplamı söylüyor. Depo
+        bağlanmamışsa olayın önizlemesine düşüyor, yani eski çağıran bozulmuyor.
+        Yanında iki ekran hatası daha düzeldi: kayan nokta gürültüsü
+        (`-0.40299999999999997` ekranda `-0.403`) ve kesilen sütun adları
+        (`overflow="fold"`; ad bir sonraki sorunun kullanacağı şey, okunur
+        kalmalı). Onay isteminde "bos=varsayilan" yerine "bos=1" yazıyor,
+        çünkü kullanıcı hangi numaranın varsayılan olduğunu aramak zorunda
+        kalmıştı.
+Sonuç:  Gerçek gold verisiyle çizdirildi: 60 aylık tablo 60 satır çıkıyor,
+        sütun adı sarılıyor, sayı gürültüsü yok. Altı yeni test. Üç düzeltme
+        tek tek bozulup kırmızıya düştü; bu sırada katlama testinin geniş
+        ekranda ayırt etmediği görüldü ve dar ekrana çekildi.
+
+## Onay kapısı daraltıldı: kart seçim içindir, aramanın kararsızlığı için değil (23 Eyl)
+Bağlam: İlk `--real --chat` koşumunda iki kart çıktı. İkincisi gerçek bir
+        seçimdi (faiz mi kâr payı mı, akım mı stok mu) ve eklenen tablo adı
+        sayesinde insan ayırt edebildi. Birincisi değildi: takipteki konut
+        kredileri, tüketici konut kredileri, toplam krediler ve kısa vadeli
+        toplam krediler, yani **dört ayrı büyüklük**. Kullanıcı "bunlar
+        arasında toplam konut kredileri diye bir seçenek yok ki" dedi ve
+        haklıydı; varsayılan da yanlıştı (takipteki krediler).
+Neden:  Kapı yalnızca skor yakınlığına bakıyordu. 45 bin serilik havuzda her
+        şey her şeye yakın skor alıyor. **Ölçüldü: 29 gerçek sorgunun 29'unda
+        da kart çıkıyordu**, yani her arama tıklama için duruyordu. Skor
+        yakınlığı iki ayrı şeyi karıştırıyor: aynı büyüklüğün birkaç yazılışı
+        (gerçek seçim) ile aramanın farklı büyüklükler arasında kararsız
+        kalması (seçim değil, ve orada adayların adını ve kapsamını okuyan
+        model insandan daha iyi karar verir).
+Karar:  Kart yalnızca adaylar **aynı büyüklüğün varyantları** görünüyorsa
+        çıkıyor: gösterilen bütün adayların ortak kelime oranı 0,40'ın
+        üstündeyse. Ölçüm, 29 sorgu: dört kart kalıyor, 25'i kayboluyor.
+        Kalanlar — mevduat faizi vadeye göre (1,00), bireysel kredi kartı
+        borçları kart grubuna göre (0,80), konut kredisi faizi (0,60),
+        ihtiyaç kredisi faizi (0,44) — dördü de "bir büyüklük, birkaç tanım".
+        Kaybolanlar: "konut fiyat endeksi" KFE ile "Konut Sigortası"nı yan
+        yana koyuyordu (0,00), "dolar kuru" Kuveyt dinarını (0,00), "toplam
+        konut kredisi bakiyesi" o dört ayrı büyüklüğü (0,14).
+        Oran **gösterilen bütün adaylar** üzerinden ölçülüyor, ilk ikili
+        üzerinden değil: kötü kartın ilk ikilisi de üç kelime paylaşıyor
+        ("Takipteki Konut Kredileri" ile "Tüketici Kredileri - Konut"), yani
+        ilk ikiliye bakmak o kartı tutardı. Dördü birden yalnızca "toplam"
+        paylaşıyor.
+        Kelime katlama `approvals.py` içinde yerel yazıldı; agent katmanı
+        `lake`'ten hiçbir şey import etmiyor ve bir yardımcı için ilk kenarı
+        açmaya değmez.
+Sonuç:  Uçtan uca ölçüm 12/12'de kaldı, gerileme yok. Dört yeni test; daraltma
+        kaldırılınca ve oran yalnızca ilk ikiliye bakacak şekilde bozulunca
+        kırmızıya düşüyor.
+        AÇIK: insanın seçtiği serinin bağlayıcı olup olmayacağı hâlâ karara
+        bağlı. Kapı daraldığı için artık güvenli, çünkü kart yalnızca iki
+        seçeneğin de soruyu cevapladığı durumlarda çıkıyor.
+
+## Cevap soruyu görmüyordu, ekran tabloyu beş kez çiziyordu (23 Eyl, demo provasından)
+Bağlam: Şartnamenin üç parçalı sorusu koşuldu. Araç doğru cevabı buldu
+        (`'faiz_dustu_kredi_artmadi' sutunu eklendi. 3 ay kosullarin hepsini
+        sagliyor: 2021-05, 2023-11, 2024-01`) ama modelin yazdığı son cevap
+        şuydu: "Faizin düştüğü ayların sayısını ve dağılımını görmek için ek
+        bir işaretleme yapıyorum." Yani iş bittiğini fark etmemiş, niyet
+        cümlesi yazmış. Tur kesilmemişti, doğrulama da geçmişti; cevap
+        boştu ama "geçerli" görünüyordu.
+Neden:  **Soru cevap promptuna hiç verilmiyordu.** `_answer` `question`
+        parametresini alıyor ama `render`'a geçirmiyordu; model, aralarında on
+        beş adımlık araç çıktısı olan ilk kullanıcı mesajından soruyu
+        hatırlamak zorundaydı. `_answer_messages`'ın docstring'i aynı modelde
+        çok yakın bir bozulmayı zaten kaydetmişti (22 Eyl, "16 token saçmalık").
+Karar:  `answer.md` v4: soru promptun içinde, "Sorunun her parçasını cevapla",
+        "bir araç sana dönem listesi verdiyse onu yaz", ve "ne yapacağını
+        anlatma, yaptığının sonucunu söyle; bu adım bitti, yeni araç
+        çağıramazsın".
+Sonuç:  Aynı soru tekrar koşuldu. Cevap: "Faizin düştüğü ama kredinin
+        artmadığı aylar sorusunun cevabı net: tabloda işaretlenen dört ay var
+        — 2021-02, 2021-05, 2023-12 ve 2024-01." Üç alt sorunun üçü de
+        cevaplanıyor, karşı örnekler veriliyor, doğrulama 0 bayrak.
+
+        Aynı provada ekran da düzeldi: tablo her dönüşümden sonra yeniden
+        çiziliyordu, dört sütun eklenen bir tur aynı 60 satırlık tabloyu beş
+        kez bastı ve cevap ekranın üstünden kaydı. Artık tur sürerken yalnızca
+        "tablo t01_get_series: X eklendi" satırı çıkıyor, tablo `done` ile bir
+        kez çiziliyor. Tablo deposu bağlanmamış bir çağıran için eski davranış
+        (olayın kendi önizlemesi) korundu, yoksa hiç tablo görmezdi.

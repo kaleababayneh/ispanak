@@ -20,8 +20,6 @@ bracket, or worse, be coloured by text we did not write.
 from __future__ import annotations
 
 import asyncio
-import select
-import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -29,14 +27,23 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from lakehouse_agent.agent.formatting import json_safe, preview_rows
+
 if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime, types only
     from lakehouse_agent.agent.events import Event
     from lakehouse_agent.agent.state import ApprovalDecision, ApprovalRequest
 
-#: Preview rows drawn per table. The payload already carries `preview_rows`'
-#: head-and-tail selection (`agent/formatting.py`); this is the ceiling in
-#: case a tool sends more.
-TABLE_ROWS = 12
+#: Rows drawn before a table is cut down to its two ends. A question asking
+#: for sixty months must show sixty rows -- the screen is where a person
+#: checks the data, and `docs/contracts.md` section 4 says the full table
+#: goes to the interface for exactly this reason. The ceiling is only a guard
+#: against a tool that built forty thousand rows.
+TABLE_ROWS = 200
+#: Decimals kept when a float is drawn. Binary arithmetic turns a monthly
+#: difference into 0.4029999999999999, and a person reading that on a screen
+#: cannot tell noise from precision. `tools/lakehouse._preview` rounds the
+#: model's copy for the same reason.
+DECIMALS = 4
 #: Sources listed under a turn, matching the headless recap's own limit.
 SOURCES_SHOWN = 12
 
@@ -49,16 +56,21 @@ class Terminal:
         console: Console | None = None,
         stream: Any = None,
         *,
-        pending: Callable[[], bool] | None = None,
+        tables: Callable[[str], Any] | None = None,
         quiet: bool = False,
     ) -> None:
         self.console = console or Console(stderr=True)
         #: Where a question or an approval is read from. `None` means the
         #: real stdin; the tests pass a `StringIO`.
         self.stream = stream
-        #: Is there more input waiting right now? Injectable because the
-        #: real answer needs a file descriptor and a `StringIO` has none.
-        self._pending = pending or self._input_waiting
+        #: The table a turn built, drawn when the turn ends rather than after
+        #: every column added to it.
+        self._pending_table = ""
+        self._fresh: set[str] = set()
+        #: Resolves a table reference to the whole frame. The event only
+        #: carries a preview; `docs/contracts.md` section 4 keeps the full
+        #: table in the session store for the interface to read.
+        self._tables = tables
         #: True while an answer is streaming, so the next event starts on a
         #: fresh line instead of running into it.
         self._streaming = False
@@ -122,8 +134,37 @@ class Terminal:
         )
 
     def _draw_table_update(self, payload: dict[str, Any]) -> None:
-        """The table with its values. The headless recap prints a one-line
-        description; on a screen the numbers are the point."""
+        """A line while the table is being built; the table itself at the end.
+
+        Drawn in full on every update, a turn that adds four columns to sixty
+        months printed the same table five times, some three hundred lines,
+        and the answer scrolled off the top. The person wants the finished
+        table, not each intermediate. So an update notes what changed and the
+        reference is remembered; `done` draws it once.
+        """
+        ref = str(payload.get("table_ref") or "")
+        fresh = [str(name) for name in payload.get("new_columns") or []]
+        if self._tables is None:
+            # No store to read from at the end, so the event's own preview is
+            # all there will ever be: drawn now rather than lost.
+            self._draw_preview(payload)
+            return
+        self._pending_table = ref or self._pending_table
+        self._fresh.update(fresh)
+        if fresh:
+            self._say(f"  tablo {ref}: {', '.join(fresh)} eklendi", style="dim")
+        else:
+            self._say(f"  tablo {ref} kuruldu", style="dim")
+
+    def _draw_done(self, _payload: dict[str, Any]) -> None:
+        """The turn is over: draw the table it ended with, once."""
+        ref, self._pending_table = self._pending_table, ""
+        fresh, self._fresh = set(self._fresh), set()
+        if ref:
+            self._draw_table(ref, fresh)
+
+    def _draw_preview(self, payload: dict[str, Any]) -> None:
+        """The event's ten rows, for a caller that wired no table store."""
         columns = [str(name) for name in payload.get("columns") or []]
         rows = list(payload.get("rows") or [])
         if not columns:
@@ -131,14 +172,68 @@ class Terminal:
         fresh = set(payload.get("new_columns") or [])
         table = Table(title=str(payload.get("table_ref") or ""), title_style="bold")
         for name in columns:
-            table.add_column(name, style="yellow" if name in fresh else None)
-        for row in rows[:TABLE_ROWS]:
-            table.add_row(
-                *["" if row.get(c) is None else str(row.get(c)) for c in columns]
+            table.add_column(
+                name, style="yellow" if name in fresh else None, overflow="fold"
             )
+        for row in rows:
+            table.add_row(*[self._cell(row.get(name)) for name in columns])
         self.console.print(table)
-        if len(rows) > TABLE_ROWS:
-            self._say(f"  ... {len(rows) - TABLE_ROWS} satir daha", style="dim")
+
+    def _draw_table(self, ref: str, fresh: set[str]) -> None:
+        """The table with its values, in full.
+
+        The event carries only a preview -- ten rows, enough for the model.
+        A person needs the table they asked for: sixty months of a sixty
+        month question. `docs/contracts.md` section 4 keeps the whole frame
+        in the session store precisely so the interface can draw it, so that
+        is where this reads from, falling back to the preview when no store
+        was wired (an older caller, or a test).
+        """
+        frame = self._tables(ref) if self._tables else None
+        if frame is None:
+            return
+        else:
+            columns = [str(name) for name in frame.columns]
+            total = len(frame)
+            shown = frame if total <= TABLE_ROWS else None
+            rows = (
+                [
+                    {str(k): json_safe(v) for k, v in row.items()}
+                    for row in shown.to_dict("records")
+                ]
+                if shown is not None
+                else preview_rows(frame, rows=TABLE_ROWS // 2)
+            )
+        if not columns:
+            return
+        table = Table(title=ref, title_style="bold")
+        for name in columns:
+            # Folded, not truncated: a generated name like
+            # `aylik_tuketici_tuketici_kredileri_konut_toplam_sektor` is
+            # unreadable cut off, and it is the name the next question has to
+            # use.
+            table.add_column(
+                name, style="yellow" if name in fresh else None, overflow="fold"
+            )
+        for row in rows:
+            table.add_row(*[self._cell(row.get(name)) for name in columns])
+        self.console.print(table)
+        if len(rows) < total:
+            self._say(
+                f"  {total} satirin ilk ve son {TABLE_ROWS // 2}'i gosteriliyor",
+                style="dim",
+            )
+
+    @staticmethod
+    def _cell(value: Any) -> str:
+        """One cell as text, floats rounded so the screen shows no noise."""
+        if value is None:
+            return ""
+        if isinstance(value, float):
+            if value != value:  # NaN
+                return ""
+            return f"{round(value, DECIMALS):g}"
+        return str(value)
 
     def _draw_quality_report(self, payload: dict[str, Any]) -> None:
         bits = [f"{payload.get('rows', '?')} satir"]
@@ -208,40 +303,33 @@ class Terminal:
             self.console.print()
         return line if line else None
 
-    def _input_waiting(self) -> bool:
-        """Is another line already sitting in the terminal's buffer?
-
-        True only for text that arrived without the person typing it, which
-        in practice means a paste. `select` with a zero timeout asks exactly
-        that and never blocks. A stream with no file descriptor -- the tests'
-        `StringIO` -- answers no, so they stay line by line.
-        """
-        stream = self.stream if self.stream is not None else sys.stdin
-        try:
-            return bool(select.select([stream.fileno()], [], [], 0)[0])
-        except Exception:  # noqa: BLE001 - no descriptor is simply "nothing waiting"
-            return False
-
     def _read_question(self) -> str | None:
         """One question, however many lines it was pasted as.
 
-        A question is a paragraph, not a line. Measured 23 Sep on the first
-        chat run: the brief's own scenario is three lines long, and pasting
-        it ran three turns -- the second on the fragment "gösteriniz. Buna ek
-        olarak ...". Whatever the terminal already holds when the first line
-        lands was pasted with it and belongs to the same question; a blank
-        line or the end of input closes it.
+        A question is a paragraph and a blank line ends it. `None` -- the end
+        of input, Ctrl-D -- ends the session.
+
+        Deliberately not clever. The first version stopped at the first line
+        unless the terminal already held more, which read a pasted paragraph
+        as several questions: measured 23 Sep, the brief's three-line
+        scenario ran three turns, the second on the fragment "gosteriniz.
+        Buna ek olarak ...". A paste arrives in chunks, so "is there more
+        waiting" is a race with no safe answer -- a settling window of 150 ms
+        covered a 120 ms gap and nothing covers a slow link. A blank line is
+        the person saying they are done, and it cannot be raced.
         """
-        first = self._read("\n[bold]soru>[/bold] ")
-        if first is None:
-            return None
-        parts = [first.strip()]
-        while self._pending():
-            more = self._read("")
-            if more is None or not more.strip():
+        parts: list[str] = []
+        while True:
+            line = self._read("\n[bold]soru>[/bold] " if not parts else "")
+            if line is None:
+                # Ctrl-D: ends the question if one is half-written, else the
+                # session.
                 break
-            parts.append(more.strip())
-        return " ".join(part for part in parts if part).strip() or None
+            text = line.strip()
+            if not text:
+                break
+            parts.append(text)
+        return " ".join(parts).strip() or None
 
     async def ask(self) -> str | None:
         """The next question, or `None` to end the session.
@@ -281,10 +369,21 @@ class Terminal:
             request_id=request.request_id, choice=chosen, note="terminalden secildi"
         )
 
+    @staticmethod
+    def _default_number(request: ApprovalRequest) -> str:
+        """Which number Enter picks. "bos=varsayilan" made a person look for
+        the word rather than the option."""
+        for number, option in enumerate(request.options, start=1):
+            if option.id == request.default:
+                return str(number)
+        return "1"
+
     def _choose(self, request: ApprovalRequest) -> str:
         """Block until a number is typed. Empty input takes the default."""
         while True:
-            line = self._read(f"  secim [1-{len(request.options)}, bos=varsayilan]> ")
+            line = self._read(
+                f"  secim [1-{len(request.options)}, bos={self._default_number(request)}]> "
+            )
             if line is None:
                 return request.default or ""
             answer = line.strip()
