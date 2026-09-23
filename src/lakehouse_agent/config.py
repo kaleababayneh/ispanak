@@ -51,8 +51,14 @@ class AgentSettings(BaseSettings):
 
     data_dir: Path = Field(Path("data"), alias="DATA_DIR")
 
-    # 45s, not 60: with three attempts the worst case is 135s, still inside the
-    # 180s per-turn budget the agent loop enforces.
+    # The HTTP timeout of a call with no budget of its own (embedding, OCR),
+    # and the agent loop's cap on one planning or observing call and on a
+    # thinking-on answer attempt, so a slow call leaves the turn time for what
+    # follows. A last-chance answer is not held to it: it gets whatever the
+    # turn has left. A timed-out request is not retried (llm._is_retryable),
+    # so this is no longer multiplied by three: the old "3 x 45 = 135s fits in
+    # 180s" ignored both the backoff sleeps and the time the turn had already
+    # spent, and one call really did take 138s.
     llm_timeout_s: float = Field(45.0, alias="LLM_TIMEOUT_S")
 
     @property

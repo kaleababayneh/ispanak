@@ -266,6 +266,22 @@ def test_multiple_tool_calls_are_trimmed_in_both_places(settings):
     assert len(result.as_message()["tool_calls"]) == 1
 
 
+def test_a_call_with_no_id_is_answered_under_the_id_we_gave_it(settings):
+    """A provider that sends no id gets `call_0`, and the tool message is
+    written against that. Leaving the assistant message's own call without an
+    id made the reply an answer to nothing, which the history view then drops
+    -- a request carrying a tool call with no reply, the protocol error the
+    trimming exists to prevent."""
+    call = {"type": "function", "function": {"name": "a", "arguments": "{}"}}
+    llm, _ = make_llm(settings, [_completion(None, [call], "tool_calls")])
+
+    result = llm.chat([{"role": "user", "content": "x"}], tools=[{"a": 1}])
+
+    assert result.tool_calls[0].id == "call_0"
+    assert result.raw_message["tool_calls"][0]["id"] == "call_0"
+    assert result.as_message()["tool_calls"][0]["id"] == "call_0"
+
+
 def test_malformed_arguments_do_not_raise(settings):
     llm, _ = make_llm(
         settings, [_completion(None, [_tool_call("c1", "a", "{bozuk")], "tool_calls")]
@@ -350,6 +366,103 @@ def test_timeout_is_mapped(settings):
     llm, _ = make_llm(settings, [timeout] * 3)
     with pytest.raises(LlmTimeoutError):
         llm.chat([{"role": "user", "content": "x"}])
+
+
+def test_a_timeout_is_not_retried(settings):
+    """The identical request against the same server load takes as long again.
+    Measured 22 Sep 2026: three 45 s timeouts in a row, 138 s, turn lost."""
+    timeout = openai.APITimeoutError(request=SimpleNamespace(url="https://mia.test/v1"))
+    llm, client = make_llm(settings, [timeout] * 3)
+    with pytest.raises(LlmTimeoutError):
+        llm.chat([{"role": "user", "content": "x"}])
+    assert len(client.calls) == 1
+
+
+def test_a_dropped_connection_is_still_retried(settings):
+    """A connection that never got going says nothing about how long the
+    answer takes, so trying again is still reasonable."""
+    dropped = openai.APIConnectionError(
+        request=SimpleNamespace(url="https://mia.test/v1")
+    )
+    llm, client = make_llm(settings, [dropped, _completion("ok")])
+    assert llm.chat([{"role": "user", "content": "x"}]).content == "ok"
+    assert len(client.calls) == 2
+
+
+def test_without_a_budget_the_request_carries_no_timeout(settings):
+    llm, client = make_llm(settings, [_completion("x")])
+    llm.chat([{"role": "user", "content": "x"}])
+    assert "timeout" not in client.calls[0]
+
+
+def test_a_budget_caps_the_attempt_timeout(settings):
+    llm, client = make_llm(settings, [_completion("x")])
+    llm.chat([{"role": "user", "content": "x"}], timeout_s=20.0)
+    assert client.calls[0]["timeout"] == pytest.approx(20.0, abs=0.5)
+
+
+def test_a_budget_is_obeyed_even_past_the_client_timeout(settings):
+    """The caller chose the number. The agent loop gives a last-chance answer
+    all the time it has; capping that at the client timeout is how the third
+    22 Sep run lost an answer with a minute of its budget unused."""
+    llm, client = make_llm(settings, [_completion("x")])
+    llm.chat([{"role": "user", "content": "x"}], timeout_s=120.0)
+    assert settings.llm_timeout_s < 120.0
+    assert client.calls[0]["timeout"] == pytest.approx(120.0, abs=0.5)
+
+
+def test_retries_stop_when_the_budget_runs_out(settings):
+    """A retry that cannot finish inside the budget is not started, and the
+    call is reported as out of time: the clock stopped it, not the server, so
+    the caller's "answer with what there is" handling is what applies."""
+    now = [0.0]
+    client = FakeClient([_status_error(503)] * 3)
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    llm = MiaLLM(settings, client=client, sleep=sleep, clock=lambda: now[0])
+
+    with pytest.raises(LlmTimeoutError, match="son hata: InternalServerError") as err:
+        llm.chat([{"role": "user", "content": "x"}], timeout_s=7.0)
+
+    # Attempt 1 at t=0; after ~1 s of backoff ~6 s are left, so attempt 2 runs
+    # with that as its timeout; a ~2 s backoff would leave under 5 s: stop.
+    assert len(client.calls) == 2
+    assert 5.5 <= client.calls[1]["timeout"] <= 6.0
+    assert isinstance(err.value.__cause__, openai.InternalServerError)
+    assert now[0] <= 7.0  # the budget is a total, sleeps included
+    assert _log_lines(settings)[-1]["error"] == "budget_after_InternalServerError"
+
+
+def test_no_backoff_is_slept_before_a_retry_that_cannot_start(settings):
+    """Sleeping first and then finding the time gone only carries the call
+    past its budget. Measured shape: a 503 near the end of an observe call."""
+    sleeps: list[float] = []
+    llm, client = make_llm(settings, [_status_error(503)] * 3, sleeps=sleeps)
+
+    with pytest.raises(LlmTimeoutError):
+        llm.chat([{"role": "user", "content": "x"}], timeout_s=5.5)
+
+    assert len(client.calls) == 1
+    assert sleeps == []
+
+
+def test_a_server_error_on_every_attempt_is_still_a_server_error(settings):
+    """Only a retry the budget stopped becomes a timeout. Three 503s with
+    time to spare mean MIA is down, and the caller must hear exactly that."""
+    llm, client = make_llm(settings, [_status_error(503)] * 3)
+    with pytest.raises(LlmServerError):
+        llm.chat([{"role": "user", "content": "x"}], timeout_s=100.0)
+    assert len(client.calls) == 3
+
+
+def test_a_budget_too_small_to_try_raises_without_calling(settings):
+    llm, client = make_llm(settings)
+    with pytest.raises(LlmTimeoutError, match="sure kalmadi"):
+        llm.chat([{"role": "user", "content": "x"}], timeout_s=1.0)
+    assert client.calls == []
+    assert _log_lines(settings)[0]["status"] == "error"
 
 
 # --- usage log ------------------------------------------------------------

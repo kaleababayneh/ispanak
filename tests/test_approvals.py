@@ -147,11 +147,9 @@ def test_two_far_apart_candidates_of_the_same_shape_do_not_ask(state):
 
 
 def test_ambiguity_is_measured_as_a_ratio_not_a_gap(state):
-    """Hybrid search returns fused ranks, roughly `1/(60+rank)`.
-
-    Those values are only comparable inside one query, so a fixed gap like
-    0.05 would either fire on every search or on none. The ratio holds whatever
-    scale the real catalog ends up returning.
+    """The pool search scores by cosine similarity and falls back to keyword
+    scores on another scale; a ratio means the same on both, a fixed gap
+    like 0.05 would not.
     """
     close = [FLOW_RATE, {**FLOW_RATE, "series_id": "evds:B", "score": 0.0150}]
     far = [FLOW_RATE, {**FLOW_RATE, "series_id": "evds:B", "score": 0.0100}]
@@ -168,6 +166,66 @@ def test_ambiguity_is_measured_as_a_ratio_not_a_gap(state):
         )
         is None
     )
+
+
+def test_a_clear_winner_does_not_ask_even_in_another_unit(state):
+    """The gate also fired whenever the top two differed in unit or kind,
+    whatever the gap: 31 of the 36 pairs in the nine-series pool, so nearly
+    every search stopped. The model sees the units; a winner by score is its
+    call (planner rule 12)."""
+    winner = {**FLOW_RATE, "score": 0.80}
+    other = {**STOCK_RATE, "unit": "milyon TL", "kind": "stock", "score": 0.45}
+    result = ToolResult(ok=True, summary="2 aday", preview=[winner, other])
+
+    assert approvals.needs_series_choice(result, state, 1) is None
+
+
+def test_series_the_query_named_by_code_are_not_a_choice(state):
+    """ "evds:TP.KTF12 ve evds:TP.KFE.TR" returns both at 1.0. Asking which one
+    and sending back "use this, do not search again" dropped the other series
+    the person had asked for by name."""
+    named = [
+        {**FLOW_RATE, "score": 1.0, "eslesme": "kod"},
+        {**STOCK_RATE, "score": 1.0, "eslesme": "kod"},
+    ]
+    result = ToolResult(ok=True, summary="2 aday", preview=named)
+
+    assert approvals.needs_series_choice(result, state, 1) is None
+
+
+def test_a_fallen_back_answer_is_not_a_persons_choice(state):
+    """A stale or invalid answer falls back to the card's default -- the top
+    search hit -- which nobody chose, so the model must not hear it as "a
+    person picked this, do not search again"."""
+    result = ToolResult(ok=True, summary="2 aday", preview=[FLOW_RATE, STOCK_RATE])
+    request = approvals.needs_series_choice(result, state, 1)
+    settled = approvals.settle(
+        request, ApprovalDecision(request_id=request.request_id, choice="evds:YOK")
+    )
+
+    assert settled.automatic is True
+    assert approvals.decision_message(request, settled) is None
+
+
+def test_an_automatic_quality_default_does_not_claim_a_person_saw_it(state):
+    request = approvals.needs_quality_gate(
+        ToolResult(
+            ok=True,
+            summary="",
+            quality=QualityReport(
+                table_ref="t01", rows=10, missing_periods=5, unit_guess=None
+            ),
+        ),
+        state,
+        1,
+    )
+    decision = asyncio.run(approvals.auto_default(request))
+
+    message = approvals.decision_message(request, decision)
+
+    assert message.startswith("[Otomatik]")
+    assert "gorulup" not in message
+    assert "sinirlari belirt" in message
 
 
 def test_the_choice_card_shows_at_most_four_options(state):
@@ -264,10 +322,21 @@ def test_a_series_choice_is_reported_back_as_a_person_speaking(state):
     request = approvals.needs_series_choice(
         ToolResult(ok=True, summary="", preview=[FLOW_RATE, STOCK_RATE]), state, 1
     )
-    decision = asyncio.run(approvals.auto_default(request))
+    decision = ApprovalDecision(request_id=request.request_id, choice="evds:TP.KTF12")
     message = approvals.decision_message(request, decision)
     assert "evds:TP.KTF12" in message
     assert "tekrar katalog aramasi yapma" in message
+
+
+def test_a_default_series_choice_is_not_reported_as_a_person_speaking(state):
+    """The default is just the top search hit. Saying a person chose it would
+    overrule the model's own reading of the candidates with the ranker's."""
+    request = approvals.needs_series_choice(
+        ToolResult(ok=True, summary="", preview=[FLOW_RATE, STOCK_RATE]), state, 1
+    )
+    decision = asyncio.run(approvals.auto_default(request))
+    assert decision.automatic is True
+    assert approvals.decision_message(request, decision) is None
 
 
 def test_changing_the_assumption_carries_the_person_s_own_words_forward(state):

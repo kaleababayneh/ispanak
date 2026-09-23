@@ -57,10 +57,15 @@ def test_the_planner_is_told_that_tool_output_is_data_not_instructions():
 
 
 def test_the_prompts_are_turkish_and_name_only_tools_that_exist():
-    """CLAUDE.md rule 8: prompts in Turkish, code in English."""
-    from lakehouse_agent.testing.fake_tools import make_fake_registry
+    """CLAUDE.md rule 8: prompts in Turkish, code in English.
 
-    known = set(make_fake_registry().names())
+    Checked against the production registry: the prompt describes the tools
+    the demo runs with, and a name it mentions that is not registered is a
+    tool the model will call and be told does not exist.
+    """
+    from lakehouse_agent.tools.toolset import make_registry
+
+    known = set(make_registry().names())
     planner = load_prompt("planner").text
     named = {
         word.strip("`")

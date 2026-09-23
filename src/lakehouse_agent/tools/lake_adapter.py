@@ -14,9 +14,12 @@ them and the data lane does not provide them:
   unknown id with an empty frame, which reaches the model as "no data for
   2021-2025" when the real problem is a typo in a series id. The exception
   carries the ids, so the loop turns it into a message the model can act on.
-* **`search` returns `list[CatalogHit]`.** `catalog.search_catalog` hands back
-  the raw bronze EVDS catalog columns plus a LanceDB table handle in its
-  arguments; the agent should not know either exists.
+* **`search` answers over the pool's own catalog.** The organisers' guidance
+  (Slack, recorded in docs/decisions.md): a vector index is for "which data is
+  in which table, what does each column mean" -- a map of *our* lake. The
+  earlier index mapped EVDS's catalog instead (19.6k series, almost none of
+  them in the lake) and, because BDDK has no such catalog, could never return
+  a BDDK series at all, although the scenario's credit balance is one.
 
 `prepare_table` is implemented here too: nothing in the data lane offers it,
 and the demo-time path (a table arriving from a URL) needs it.
@@ -25,40 +28,92 @@ and the demo-time path (a table arriving from a URL) needs it.
 from __future__ import annotations
 
 import logging
+import re
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from lakehouse_agent.analysis import transforms
 from lakehouse_agent.contracts import CatalogHit, QualityReport, SeriesNotFound
-from lakehouse_agent.lake import gold, quality, silver
+from lakehouse_agent.lake import gold, quality
+from lakehouse_agent.tools.lakehouse import column_name
 
 logger = logging.getLogger(__name__)
 
-#: Where `build_index.py` writes the LanceDB catalog index.
-CATALOG_INDEX_PATH = Path("data/catalog.lance")
+#: Candidates below this cosine similarity are not offered at all: a series
+#: that has nothing to do with the question is worse than no candidate, since
+#: the model will happily build an analysis on it.
+#:
+#: Measured 22 Sep 2026, Qwen3-Embedding-8B, the 9-series pool. The weakest
+#: *relevant* top hit was 0.470 ("enflasyon" -> TÜFE). Of seven unrelated
+#: queries, four top out below 0.40 (dolar kuru 0.329, altın 0.262, cari açık
+#: 0.230, işsizlik 0.386) and three do not (BIST 100 0.495, mevduat faizi
+#: 0.462, otomobil kredisi 0.457). No threshold separates those three from
+#: relevant hits, so this one only removes the clearly unrelated; telling
+#: "BIST 100" from CPI is left to the model reading the candidates' names.
+MIN_SIMILARITY = 0.40
 
-#: `catalog.search_catalog` fuses its two rankings with reciprocal rank fusion
-#: at k=60 but does not hand the fused value back -- the score columns that do
-#: come back are per-backend and were measured as NaN. The order is the real
-#: output, so the score is rebuilt from the rank with the same formula. What
-#: matters downstream is that consecutive hits sit close together: the
-#: ambiguity gate compares the top two as a *ratio*, never as an absolute gap.
-RRF_K = 60
+#: The keyword fallback's floor: at least one of the query's words matched.
+MIN_LEXICAL_SCORE = 1e-9
 
-_BRONZE_TO_HIT = {
-    "name_tr": "SERIE_NAME",
-    "name_en": "SERIE_NAME_ENG",
-    "source": "DATASOURCE",
-    "unit": "BIRIMI",
-    "start_date": "START_DATE",
-    "end_date": "END_DATE",
+#: After a failed embedding call, searches skip it for this long and use the
+#: keyword match straight away. A hung endpoint costs a whole client timeout
+#: (45 s) per call, so re-trying it on every search spent most of a turn;
+#: one turn's budget later it is worth trying again.
+EMBED_RETRY_AFTER_S = 180.0
+
+#: The note a keyword-fallback search carries (see `search_detailed`).
+KEYWORD_FALLBACK_NOTE = (
+    "Anlamsal arama yapilamadi; seriler kelime eslesmesiyle bulundu, "
+    "siralama daha kaba olabilir."
+)
+
+_FREQ_LABEL_TR = {
+    "D": "günlük",
+    "W": "haftalık",
+    "M": "aylık",
+    "Q": "üç aylık",
+    "A": "yıllık",
 }
+_KIND_LABEL_TR = {
+    "stock": "stok (bakiye)",
+    "flow": "akım",
+    "rate": "oran",
+    "index": "endeks",
+}
+_SOURCE_LABEL_TR = {"EVDS": "TCMB EVDS", "BDDK-Aylik": "BDDK Aylık Bülten"}
+
+#: Short, frequent words that say nothing about which series is meant, in
+#: their folded spelling (see `_tokens`).
+_STOPWORDS = frozenset({"ve", "ile", "icin", "bir", "bu", "mi", "ne", "nasil"})
+
+#: Turkish letters folded to ASCII, so "tufe" meets "TÜFE" and "satis" meets
+#: "Satışlar": a query typed without them is the ordinary case.
+_FOLD = str.maketrans("çğıöşüâîû", "cgiosuaiu")
+
+EmbedDocuments = Callable[[list[str]], np.ndarray]
+EmbedQuery = Callable[[str], np.ndarray]
 
 
-class LakeIndexMissing(RuntimeError):
-    """The catalog search index has not been built yet."""
+def _embed_documents_cached(texts: list[str]) -> np.ndarray:
+    """Pool catalog texts as vectors, through the on-disk embedding cache, so
+    after the first search of a new catalog no document is embedded again."""
+    from lakehouse_agent.lake import catalog
+
+    vectors, failed = catalog.embed_with_cache(texts)
+    if failed:
+        raise RuntimeError(f"{len(failed)} katalog metni embed edilemedi")
+    return vectors
+
+
+def _embed_query(query: str) -> np.ndarray:
+    from lakehouse_agent.lake import catalog
+
+    return catalog.embed_query(query)
 
 
 class LakeAdapter:
@@ -67,13 +122,19 @@ class LakeAdapter:
     def __init__(
         self,
         *,
-        index_path: Path = CATALOG_INDEX_PATH,
         catalog_path: Path | None = None,
+        embed_documents: EmbedDocuments | None = None,
+        embed_query: EmbedQuery | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._index_path = Path(index_path)
         self._catalog_path = Path(catalog_path or gold.SERIES_CATALOG_PATH)
         self._catalog: pd.DataFrame | None = None
-        self._table: Any = None
+        self._embed_documents = embed_documents or _embed_documents_cached
+        self._embed_query = embed_query or _embed_query
+        self._clock = clock
+        self._doc_vectors: np.ndarray | None = None
+        self._embed_down_until: float | None = None
+        self._coverage_cache: dict[str, tuple[str, str]] | None = None
 
     # -- catalog -----------------------------------------------------------
 
@@ -169,78 +230,150 @@ class LakeAdapter:
 
     # -- search ------------------------------------------------------------
 
-    def _open_index(self) -> Any:
-        if self._table is None:
-            if not self._index_path.exists():
-                raise LakeIndexMissing(
-                    f"Katalog arama indeksi yok: {self._index_path}. "
-                    "Once `uv run python build_index.py` calistirin."
-                )
-            import lancedb
-
-            self._table = lancedb.connect(self._index_path).open_table("catalog")
-        return self._table
-
     def search(self, query: str, k: int = 20) -> list[CatalogHit]:
-        """Catalog hits, narrowed to series the pool can actually serve.
+        """Pool series matching a natural-language query, best first."""
+        hits, _notes = self.search_detailed(query, k)
+        return hits
 
-        The index and the pool are not the same universe. `build_index.py`
-        indexes the filtered bronze EVDS catalog (~19.6k series); gold holds
-        the handful `build_gold` was run for. Returning an unfiltered hit
-        hands the model a series id that the very next `get()` rejects with
-        "not in the catalog -- search first", which is the advice it just
-        followed: the loop does not close. Measured on a real index: the top
-        hit for "konut kredisi faiz orani" was `TP.KBK.TRY.18`, which is not
-        in gold.
+    def search_detailed(
+        self, query: str, k: int = 20
+    ) -> tuple[list[CatalogHit], list[str]]:
+        """`search`, plus notes the caller should pass on to the user.
 
-        So hits outside the pool are dropped and counted. An empty result is
-        the honest answer to "we have nothing for that" -- pulling a series
-        that is not in the pool is the `ingest` tool's job, not search's.
+        Searches exactly what the pool holds: every row of `series_catalog`,
+        whatever its source, and nothing else -- so a hit is always a series
+        the very next `get()` can serve, and an empty result is the honest
+        "we do not have that".
+
+        A query naming a series outright -- by id, bare code or the column
+        name the tools give it (`evds:TP.KTF12`, `TP.KTF12'nin`, `TP_KTF12`)
+        -- is answered by those series alone (`match="code"`). Otherwise the
+        score is the cosine similarity between the query and each series'
+        search text (`search_text`), an absolute value comparable across
+        queries. If the embedding call fails (no key, MIA down), a keyword
+        match stands in and `KEYWORD_FALLBACK_NOTE` says the ranking is
+        coarser -- and that an empty result proves nothing; failing the whole
+        search when the pool is nine rows of text would be the worse outcome.
+        A failure is remembered for `EMBED_RETRY_AFTER_S`, so the searches
+        after it do not each wait out the same dead endpoint.
         """
-        from lakehouse_agent.lake import catalog
+        catalog_df = self._series_catalog().reset_index(drop=True)
+        named = named_series(query, catalog_df["series_id"])
+        if named:
+            return [self._hit(catalog_df.iloc[i], 1.0, match="code") for i in named][
+                :k
+            ], []
 
-        hits = catalog.search_catalog(query, self._open_index(), top_k=k)
-        known = set(self._series_catalog()["series_id"])
-
-        kept: list[CatalogHit] = []
-        for _, row in hits.iterrows():
-            hit = self._to_hit(row, len(kept))
-            if hit.series_id in known:
-                kept.append(hit)
-
-        dropped = len(hits) - len(kept)
-        if dropped:
-            logger.info(
-                "search(%r): %d isabetin %d'i havuzda yok, elendi",
-                query,
-                len(hits),
-                dropped,
-            )
-        return kept
-
-    def _to_hit(self, row: pd.Series, rank: int) -> CatalogHit:
-        """One bronze catalog row as the contract's `CatalogHit`.
-
-        `kind`, `agg_method` and `cum_type` stay None on purpose: they are not
-        EVDS catalog fields, they are decided per series in `gold.py`, and a
-        guessed value here would be presented to the model as a fact.
-        """
-        values: dict[str, Any] = {
-            field: _clean(row.get(source)) for field, source in _BRONZE_TO_HIT.items()
-        }
-        raw_freq = _clean(row.get("FREQUENCY_STR"))
+        texts = [search_text(row) for _, row in catalog_df.iterrows()]
+        notes: list[str] = []
         try:
-            freq = silver.map_freq(raw_freq) if raw_freq else None
-        except ValueError:
-            logger.warning("search: bilinmeyen frekans %r, bos birakildi", raw_freq)
-            freq = None
+            scores = self._semantic_scores(query, texts)
+            floor, match = MIN_SIMILARITY, "semantic"
+        except Exception as exc:  # noqa: BLE001 - any embedding failure falls back
+            logger.warning(
+                "search: anlamsal arama yapilamadi (%s: %s), kelime eslesmesi",
+                type(exc).__name__,
+                exc,
+            )
+            # The id joins the keyword text only: "toplam tuketici kredileri"
+            # can then find the BDDK row named "Tüketici Kredileri (2+3+4)".
+            # The embedded text is left as calibrated (MIN_SIMILARITY).
+            scores = np.array(
+                [
+                    lexical_score(query, f"{text} | {series_id}")
+                    for text, series_id in zip(
+                        texts, catalog_df["series_id"], strict=True
+                    )
+                ]
+            )
+            floor, match = MIN_LEXICAL_SCORE, "keyword"
+            notes.append(KEYWORD_FALLBACK_NOTE)
+
+        order = np.argsort(-scores, kind="stable")
+        hits = [
+            self._hit(catalog_df.iloc[i], float(scores[i]), match=match)
+            for i in order
+            if scores[i] >= floor
+        ]
+        return hits[:k], notes
+
+    def _semantic_scores(self, query: str, texts: list[str]) -> np.ndarray:
+        """Cosine similarity of the query to every pool series' text.
+
+        The document vectors are computed once per adapter: the catalog is
+        read once too, so the two cannot drift apart. Raises while a recent
+        failure is still cooling down, without calling the endpoint.
+        """
+        if (
+            self._embed_down_until is not None
+            and self._clock() < self._embed_down_until
+        ):
+            raise RuntimeError("embedding kisa sure once basarisiz oldu")
+        try:
+            if self._doc_vectors is None:
+                self._doc_vectors = _unit_rows(self._embed_documents(texts))
+            query_vector = _unit_rows(np.reshape(self._embed_query(query), (1, -1)))[0]
+        except Exception:
+            self._embed_down_until = self._clock() + EMBED_RETRY_AFTER_S
+            raise
+        self._embed_down_until = None
+        return self._doc_vectors @ query_vector
+
+    def _hit(
+        self, row: pd.Series, score: float, *, match: str | None = None
+    ) -> CatalogHit:
+        """One pool catalog row as the contract's `CatalogHit`.
+
+        Everything comes from `series_catalog`, so `kind`, `agg_method` and
+        `cum_type` are the values the lake itself computes with, not guesses.
+        `start_date`/`end_date` are the pool's coverage, not the catalog's:
+        see `_coverage`.
+        """
+        first, last = self._coverage().get(row["series_id"], (None, None))
         return CatalogHit(
-            series_id=f"evds:{row['SERIE_CODE']}",
-            name_tr=values.pop("name_tr") or str(row["SERIE_CODE"]),
-            freq=freq,
-            score=1.0 / (RRF_K + rank + 1),
-            **values,
+            series_id=row["series_id"],
+            name_tr=_clean(row.get("name_tr")) or row["series_id"],
+            name_en=_clean(row.get("name_en")),
+            source=_clean(row.get("source")),
+            freq=_clean(row.get("freq")),
+            unit=_clean(row.get("unit")) or None,
+            kind=_clean(row.get("kind")),
+            agg_method=_clean(row.get("agg_method")),
+            cum_type=_clean(row.get("cum_type")),
+            start_date=first,
+            end_date=last,
+            score=round(score, 4),
+            match=match,
         )
+
+    def _coverage(self) -> dict[str, tuple[str, str]]:
+        """First and last period holding a value, per pool series, 'YYYY-MM'.
+
+        The catalog's own `start_date`/`end_date` are the source's publication
+        range -- TP.KTF12 reads 2002 to 2026-09 there, while the pool holds
+        2021 to 2026-06, and TP.HPBITABLO6.3 has no values before 2024-06. A
+        candidate shown with the source's range invites promising data the
+        lake does not have. Empty (not an error) if gold cannot be read, and
+        then not cached: one failed read (a rebuild holding the file, say)
+        would otherwise blank the coverage for the adapter's whole life.
+        """
+        if self._coverage_cache is None:
+            try:
+                frame = gold.run_sql(
+                    "SELECT series_id, MIN(period) AS first, MAX(period) AS last "
+                    "FROM observations WHERE value IS NOT NULL GROUP BY series_id"
+                )
+            except Exception as exc:  # noqa: BLE001 - coverage is decoration
+                logger.warning("search: kapsam okunamadi (%s)", exc)
+                return {}
+            self._coverage_cache = {
+                row.series_id: (
+                    pd.Timestamp(row.first).strftime("%Y-%m"),
+                    pd.Timestamp(row.last).strftime("%Y-%m"),
+                )
+                for row in frame.itertuples(index=False)
+            }
+        return self._coverage_cache
 
     def catalog_lookup(self, series_ids: list[str]) -> pd.DataFrame:
         """The catalog rows for these ids, in the order asked for."""
@@ -333,6 +466,101 @@ def _periods_as_dates(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["period"] = pd.to_datetime(out["period"], errors="coerce").dt.date
     return out
+
+
+def search_text(row: pd.Series) -> str:
+    """What a pool series is matched on.
+
+    Plan 2.5's fields -- name, topic, tags, unit, frequency, source -- plus
+    what kind of quantity it is. The last one carries weight for BDDK rows,
+    which have no topic or tags: "stok (bakiye)" is what lets "konut kredisi
+    bakiyesi" find "Tüketici Kredileri - Konut". Only labels for codes the
+    catalog already holds are added; no description is invented.
+    """
+    source = _clean(row.get("source"))
+    parts = [
+        _clean(row.get("name_tr")),
+        _clean(row.get("topic")),
+        _clean(row.get("tags")),
+        _clean(row.get("unit")),
+        _FREQ_LABEL_TR.get(_clean(row.get("freq"))),
+        _KIND_LABEL_TR.get(_clean(row.get("kind"))),
+        _SOURCE_LABEL_TR.get(source, source),
+    ]
+    return " | ".join(str(part).strip() for part in parts if part not in (None, ""))
+
+
+def _tokens(text: str) -> list[str]:
+    """Words, lower-cased with Turkish dotted/dotless I handled and then
+    folded to ASCII, split on underscores too ("Türkiye_Konut_Toplam" is three
+    words), short and meaningless words dropped."""
+    folded = text.replace("I", "ı").replace("İ", "i").lower().translate(_FOLD)
+    return [
+        word
+        for word in re.findall(r"[^\W_]+", folded)
+        if len(word) >= 3 and word not in _STOPWORDS
+    ]
+
+
+def lexical_score(query: str, text: str) -> float:
+    """Share of the query's words that appear in `text`.
+
+    Matched on the first five letters, so Turkish suffixes do not decide it:
+    "kredisi" and "kredileri" both reach "kredi". The fallback for when the
+    embedding call is unavailable -- coarse on purpose, and reported as such.
+    """
+    words = _tokens(query)
+    if not words:
+        return 0.0
+    candidates = _tokens(text)
+
+    def found(word: str) -> bool:
+        return any(
+            other.startswith(word[:5]) or word.startswith(other[:5])
+            for other in candidates
+        )
+
+    return sum(found(word) for word in words) / len(words)
+
+
+#: A run of the characters a series id, code or column name is made of.
+_CODE_RUN = re.compile(r"[0-9a-z_.:+-]+")
+
+
+def named_series(query: str, series_ids: Any) -> list[int]:
+    """Positions of series the query names outright: by id, bare code or the
+    column name the tools give it (`column_name`).
+
+    Whole tokens only, so "TP.KTF12 serisini getir" counts and "TP.KTF1" does
+    not. A token ends at anything a code cannot hold, which takes care of
+    quotes, brackets and a Turkish suffix after an apostrophe ("TP.KTF12'nin",
+    "(TP.KTF12)"); a trailing full stop or colon is punctuation, not code.
+    """
+    tokens = {
+        token.strip(".:-+")
+        for token in _CODE_RUN.findall(query.casefold())
+        if token.strip(".:-+")
+    }
+    matches = []
+    for position, series_id in enumerate(series_ids):
+        code = series_id.partition(":")[2]
+        forms = {series_id, code, column_name(series_id)} - {""}
+        if any(form.casefold() in tokens for form in forms):
+            matches.append(position)
+    return matches
+
+
+def _unit_rows(vectors: Any) -> np.ndarray:
+    """Rows scaled to length one, so a dot product is a cosine similarity.
+
+    Refuses a missing or all-zero vector: a failed embedding comes back as
+    NaN, and a NaN score would quietly sort to one end of the list.
+    """
+    matrix = np.asarray(vectors, dtype=np.float64)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    if not np.all(np.isfinite(norms)) or np.any(norms == 0):
+        raise ValueError("gecersiz embedding vektoru (NaN veya sifir)")
+    return matrix / norms
 
 
 def _clean(value: Any) -> Any:

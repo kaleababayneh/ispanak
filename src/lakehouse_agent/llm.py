@@ -11,6 +11,8 @@ Verified against openai 3.14.0 / httpx2 2.13.0 on 15 Sep 2026:
     extra_body / stream.
   - Exception classes are still at `openai.*` and `APIStatusError.status_code`
     is set in `__init__`.
+Re-checked on openai 3.16.2 on 22 Sep 2026: `create()` also accepts a
+per-request `timeout=`, which is how a call's time budget reaches the wire.
 `max_retries=0` is passed on purpose: the SDK's own retry is silent, ours is
 logged and measured.
 """
@@ -39,6 +41,11 @@ MAX_IMAGES_PER_OCR = 3
 MAX_ATTEMPTS = 3
 BACKOFF_BASE_S = 1.0  # sleeps are 1s, 2s (+ jitter) between three attempts
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+#: An attempt with less time than this left before the caller's budget runs out
+#: is not started: it could not finish, it would only add load to a server that
+#: is already slow, and the caller is better off hearing "out of time" now.
+MIN_ATTEMPT_S = 5.0
 
 # Measured against MIA: 256 texts take ~5.6s, 1024 take ~22.4s. 256 keeps every
 # batch comfortably inside the 45s client timeout while still being one request
@@ -80,11 +87,12 @@ class LlmRateLimitError(LlmError):
 
 
 class LlmServerError(LlmError):
-    """5xx after all attempts were used."""
+    """5xx or a dropped connection after all attempts were used."""
 
 
 class LlmTimeoutError(LlmError):
-    """The request did not finish inside the configured timeout."""
+    """The call ran out of time: the request timed out, or the caller's budget
+    ended before a retry could start (the last server error is `__cause__`)."""
 
 
 class LlmBadRequestError(LlmError):
@@ -229,7 +237,13 @@ def parse_tool_calls(
         parse_error=parse_error,
     )
     trimmed = dict(raw_message)
-    trimmed["tool_calls"] = [first]
+    # The id we answer with, not the one that arrived: a provider that sends
+    # no id gets `call_0` above, and the tool message is written against that.
+    # Leaving the raw call without an id made the reply an answer to nothing,
+    # which `history._without_stray_replies` then drops -- a request carrying
+    # a tool call with no reply, the protocol error both of them exist to
+    # prevent.
+    trimmed["tool_calls"] = [{**first, "id": tool_call.id}]
     return [tool_call], trimmed
 
 
@@ -248,6 +262,7 @@ class LLM(Protocol):
         max_tokens: int | None = None,
         tag: str | None = None,
         session_id: str | None = None,
+        timeout_s: float | None = None,
     ) -> ChatResult: ...
 
     def embed(
@@ -304,7 +319,17 @@ class MiaLLM:
         max_tokens: int | None = None,
         tag: str | None = None,
         session_id: str | None = None,
+        timeout_s: float | None = None,
     ) -> ChatResult:
+        """One chat completion.
+
+        `timeout_s` is the most this call may take in total, retries and their
+        sleeps included, and each attempt's HTTP timeout is what is left of it
+        -- the client timeout does not cap it, because the caller chose the
+        number (the agent loop gives a last-chance answer all the time it has).
+        Without it every attempt gets the full client timeout, which is how
+        one answer call once spent 138 seconds of a 180-second turn.
+        """
         if not messages:
             raise LlmInputError(
                 "Bos mesaj listesi gonderilemez; en az bir mesaj gerekli."
@@ -340,11 +365,18 @@ class MiaLLM:
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
+        def create(timeout: float | None) -> Any:
+            # Sent only when there is a budget, so a call without one looks
+            # exactly like it did before and uses the client's own timeout.
+            extra = {} if timeout is None else {"timeout": timeout}
+            return self._client.chat.completions.create(**kwargs, **extra)
+
         response, duration_ms, attempts = self._call(
             "chat",
-            lambda: self._client.chat.completions.create(**kwargs),
+            create,
             tag=tag,
             session_id=session_id,
+            budget_s=timeout_s,
             extra_log={
                 "thinking": thinking,
                 "tools": len(tools or []),
@@ -392,7 +424,7 @@ class MiaLLM:
             batch = texts[start : start + EMBED_BATCH_SIZE]
             response, _duration_ms, _attempts = self._call(
                 "embed",
-                lambda batch=batch: self._client.embeddings.create(
+                lambda _timeout, batch=batch: self._client.embeddings.create(
                     model=self.settings.mia_embed_model,
                     input=batch,
                     encoding_format="float",
@@ -435,7 +467,7 @@ class MiaLLM:
 
         response, duration_ms, _ = self._call(
             "ocr",
-            lambda: self._client.chat.completions.create(
+            lambda _timeout: self._client.chat.completions.create(
                 model=self.settings.mia_ocr_model,
                 messages=[{"role": "user", "content": content}],
                 max_tokens=OCR_MAX_TOKENS,
@@ -461,33 +493,69 @@ class MiaLLM:
         *,
         tag: str | None,
         session_id: str | None,
+        budget_s: float | None = None,
         extra_log: dict[str, Any] | None = None,
     ) -> tuple[Any, int, int]:
-        """Run one logical call: retry, time it, log it, map the error."""
+        """Run one logical call: retry, time it, log it, map the error.
+
+        `fn` takes the HTTP timeout for this attempt (None: the client's own).
+        With a `budget_s`, each attempt's timeout is what remains of it, and no
+        attempt starts -- nor is a backoff slept -- unless at least
+        `MIN_ATTEMPT_S` would be left for it.
+        """
         started = self._clock()
+        deadline = None if budget_s is None else started + budget_s
         last_error: Exception | None = None
 
+        def fail(attempt: int, error_name: str) -> None:
+            self._log(
+                kind=kind,
+                tag=tag,
+                session_id=session_id,
+                duration_ms=int((self._clock() - started) * 1000),
+                attempts=attempt,
+                status="error",
+                error=error_name,
+                extra=extra_log,
+            )
+
+        def out_of_time(attempts: int) -> LlmTimeoutError:
+            """The budget, not the server, ended this call.
+
+            Reported as a timeout even when a 503 came first: what stopped the
+            retry was the clock, and the caller's out-of-time handling (answer
+            with what the turn has) is what applies. A 5xx that used every
+            attempt is still a server error. The log says which it was.
+            """
+            cause = type(last_error).__name__ if last_error else None
+            fail(attempts, f"budget_after_{cause}" if cause else "budget")
+            detail = f"; son hata: {cause}" if cause else ""
+            return LlmTimeoutError(
+                f"MIA cagrisi icin sure kalmadi ({budget_s:.0f} sn butce{detail})."
+            )
+
         for attempt in range(1, MAX_ATTEMPTS + 1):
+            timeout: float | None = None
+            if deadline is not None:
+                timeout = deadline - self._clock()
+                if timeout < MIN_ATTEMPT_S:
+                    raise out_of_time(attempt - 1) from last_error
             try:
-                response = fn()
+                response = fn(timeout)
             except Exception as exc:  # noqa: BLE001 - re-raised as LlmError below
                 last_error = exc
                 if not _is_retryable(exc) or attempt == MAX_ATTEMPTS:
-                    duration_ms = int((self._clock() - started) * 1000)
-                    self._log(
-                        kind=kind,
-                        tag=tag,
-                        session_id=session_id,
-                        duration_ms=duration_ms,
-                        attempts=attempt,
-                        status="error",
-                        error=type(exc).__name__,
-                        extra=extra_log,
-                    )
+                    fail(attempt, type(exc).__name__)
                     raise _map_error(exc) from exc
-                self._sleep(
-                    BACKOFF_BASE_S * (2 ** (attempt - 1)) + random.uniform(0, 0.25)
-                )
+                delay = BACKOFF_BASE_S * (2 ** (attempt - 1)) + random.uniform(0, 0.25)
+                if (
+                    deadline is not None
+                    and deadline - self._clock() - delay < MIN_ATTEMPT_S
+                ):
+                    # The retry could not start in time after its backoff, so
+                    # sleeping first would only carry the call past its budget.
+                    raise out_of_time(attempt) from exc
+                self._sleep(delay)
                 continue
 
             duration_ms = int((self._clock() - started) * 1000)
@@ -542,7 +610,19 @@ def _usage_from(response: Any, duration_ms: int) -> Usage:
 
 
 def _is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, openai.APITimeoutError | openai.APIConnectionError):
+    """Whether sending the same request again could plausibly work.
+
+    A timeout is not retried. It means the server took longer than the timeout
+    to produce this answer, and the identical request against the same server
+    load takes as long again: measured 22 Sep 2026, a thinking-on answer timed
+    out three times in a row, 3 x 45 s, and the turn was lost anyway. The
+    caller can change the request instead (the loop retries a thinking-on
+    call once with thinking off), which a blind retry here cannot.
+    `APITimeoutError` subclasses `APIConnectionError`, hence the order.
+    """
+    if isinstance(exc, openai.APITimeoutError):
+        return False
+    if isinstance(exc, openai.APIConnectionError):
         return True
     if isinstance(exc, openai.APIStatusError):
         return exc.status_code in RETRYABLE_STATUS

@@ -70,6 +70,7 @@ class FakeLLM:
         max_tokens: int | None = None,
         tag: str | None = None,
         session_id: str | None = None,
+        timeout_s: float | None = None,
     ) -> ChatResult:
         self.calls.append(
             {
@@ -80,6 +81,8 @@ class FakeLLM:
                 "schema": schema,
                 "tag": tag,
                 "session_id": session_id,
+                "max_tokens": max_tokens,
+                "timeout_s": timeout_s,
             }
         )
         if not self._script:

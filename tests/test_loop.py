@@ -12,18 +12,29 @@ loudly instead of passing quietly.
 """
 
 import asyncio
+import json
 
 import pandas as pd
 import pytest
 
 from lakehouse_agent.agent.events import ListSink
 from lakehouse_agent.agent.loop import AgentConfig, AgentDeps, AgentError, run_turn
+from lakehouse_agent.agent.prompts import load_prompt
 from lakehouse_agent.agent.state import ApprovalDecision, initial_state
-from lakehouse_agent.llm import LlmServerError
+from lakehouse_agent.llm import LlmServerError, LlmTimeoutError
 from lakehouse_agent.testing.fake_llm import FakeLLM, ScriptExhausted
 from lakehouse_agent.testing.fake_tools import make_fake_registry
 
 SEARCH = ("search_catalog", {"query": "konut kredisi faiz orani"})
+CREDIT = "aylik_tuketici_konut_TL_sektor"
+FETCH_CREDIT = (
+    "get_series",
+    {
+        "series_ids": ["bddk:aylik:tuketici:konut:TL:sektor"],
+        "start": "2021-01",
+        "end": "2025-12",
+    },
+)
 FETCH_RATE = (
     "get_series",
     {
@@ -179,12 +190,12 @@ def test_two_tools_in_sequence_share_one_table_and_build_a_lineage_chain():
     state = initial_state("s1")
     deps = build(
         [
-            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            FakeLLM.tool_call(*FETCH_CREDIT, call_id="c1"),
             FakeLLM.tool_call(
-                "transform_table", {"op": "deflate", "column": "TP_KTF12"}, call_id="c2"
+                "transform_table", {"op": "deflate", "column": CREDIT}, call_id="c2"
             ),
             FakeLLM.text("Hazir."),
-            FakeLLM.text("Reel faiz hesaplandi."),
+            FakeLLM.text("Reel kredi hesaplandi."),
         ],
         sink=sink,
     )
@@ -192,14 +203,40 @@ def test_two_tools_in_sequence_share_one_table_and_build_a_lineage_chain():
     turn(state, deps)
 
     frame = state.tables["t01_get_series"]
-    assert list(frame.columns) == ["period", "TP_KTF12", "reel_TP_KTF12"]
+    assert list(frame.columns) == ["period", CREDIT, f"reel_{CREDIT}"]
     assert state.active_table == "t01_get_series"
-    assert sink.of_type("table_update")[-1].payload["new_columns"] == ["reel_TP_KTF12"]
+    assert sink.of_type("table_update")[-1].payload["new_columns"] == [f"reel_{CREDIT}"]
 
-    column = state.lineage["t01_get_series.reel_TP_KTF12"]
+    column = state.lineage[f"t01_get_series.reel_{CREDIT}"]
     assert column.op == "deflate"
-    assert column.inputs == ["TP_KTF12"]
-    assert column.source_series == ["evds:TP.KTF12", "evds:TP.TUKFIY2025.GENEL"]
+    assert column.inputs == [CREDIT]
+    assert column.source_series == [
+        "bddk:aylik:tuketici:konut:TL:sektor",
+        "evds:TP.TUKFIY2025.GENEL",
+    ]
+
+
+def test_the_fake_refuses_to_deflate_a_rate_like_the_real_tool():
+    """The 22 Sep live run deflated an interest rate through the fake, because
+    the fake allowed what the real tool refuses. The loop tests judge control
+    flow on these fakes, so they call the real tool's rule
+    (`tools.lakehouse.deflate_refusal`) instead of restating it."""
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            FakeLLM.tool_call(
+                "transform_table", {"op": "deflate", "column": "TP_KTF12"}, call_id="c2"
+            ),
+            FakeLLM.text("Oran reellestirilemez."),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    turn(state, deps)
+
+    assert "oran" in tool_messages(state)[-1]["content"]
+    assert "reel_TP_KTF12" not in state.tables["t01_get_series"].columns
 
 
 # --------------------------------------------------------------------------
@@ -486,6 +523,460 @@ def test_the_budget_does_stop_a_turn_that_is_genuinely_slow():
     assert orphan_call_ids(state) == []
 
 
+def _times_out(messages, tools, thinking):
+    raise LlmTimeoutError("MIA zaman asimi: Request timed out.")
+
+
+def test_every_model_call_is_held_to_what_is_left_of_the_budget():
+    """The 22 Sep live run: 57 s of work, then one answer call that retried
+    its way to 138 s -- 195 s against a 180 s budget, because the budget was
+    only checked between tool steps and each retry got a fresh 45 s."""
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1", duration_ms=140_000),
+            FakeLLM.text("Tamam.", duration_ms=5_000),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    turn(state, deps)
+
+    plan, observe, answer = (call["timeout_s"] for call in deps.llm.calls)
+    # Planning is capped at the client timeout, so it leaves the turn time.
+    assert plan == pytest.approx(deps.settings.llm_timeout_s)
+    # 180 - 140 = 40 left: under the cap, so that is the limit.
+    assert observe == pytest.approx(40.0, abs=0.5)
+    # 180 - 140 - 5 = 35 left, and the answer, the last call, gets all of it.
+    assert answer == pytest.approx(35.0, abs=0.5)
+
+
+def test_the_answer_still_gets_its_minimum_after_the_budget_is_spent():
+    """A turn that did its work and ran out of time to say so is the worst
+    way for one to end. The answer is the one call allowed past the budget."""
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1", duration_ms=100_000),
+            FakeLLM.text("Tamam.", duration_ms=100_000),
+            FakeLLM.text("Cevap."),
+        ],
+        config=AgentConfig(total_budget_s=150.0),
+    )
+
+    result = turn(state, deps)
+
+    assert result.answer == "Cevap."
+    assert deps.llm.calls[-1]["timeout_s"] == pytest.approx(30.0)
+
+
+def test_with_no_budget_left_to_observe_the_turn_goes_straight_to_the_answer():
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1", duration_ms=175_000),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    result = turn(state, deps)
+
+    assert result.answer == "Cevap."
+    assert result.truncated_reason == "time_budget"
+    assert [call["tag"] for call in deps.llm.calls] == [
+        f"plan@{load_prompt('planner').tag}",
+        f"answer@{load_prompt('answer').tag}",
+    ]
+    assert orphan_call_ids(state) == []
+
+
+def test_a_timed_out_answer_is_retried_once_without_thinking():
+    """Retrying the identical request cannot help when the server is slow:
+    the same answer takes as long again. Thinking is where the time goes, so
+    the one retry turns it off and caps the output instead."""
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            FakeLLM.text("Tamam."),
+            _times_out,
+            FakeLLM.text("Cevap, dusunmeden."),
+        ]
+    )
+
+    result = turn(state, deps)
+
+    assert result.answer == "Cevap, dusunmeden."
+    first, retry = deps.llm.calls[-2:]
+    assert (first["thinking"], first["max_tokens"]) == (True, None)
+    assert (retry["thinking"], retry["max_tokens"]) == (False, 1024)
+    assert state.steps[-2].node == "answer"
+    assert state.steps[-2].thinking is False
+
+
+def test_a_timed_out_plan_is_retried_once_without_thinking():
+    state = initial_state("s1")
+    deps = build(
+        [
+            _times_out,
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    result = turn(state, deps)
+
+    assert result.answer == "Cevap."
+    assert [call["thinking"] for call in deps.llm.calls[:2]] == [True, False]
+
+
+def test_a_timed_out_observe_is_not_retried_and_the_turn_still_answers():
+    """Observe runs with thinking off, so there is no cheaper request to fall
+    back to, and a second identical attempt is what not to send. But observing
+    only decides the next move: the tool results are already in the session.
+    Measured 22 Sep: this timeout came right after the scenario's last tool
+    had listed the months, and the finished analysis was thrown away."""
+    sink = ListSink()
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            _times_out,
+            FakeLLM.text("Cevap."),
+        ],
+        sink=sink,
+    )
+
+    result = turn(state, deps)
+
+    assert result.answer == "Cevap."
+    assert result.truncated_reason == "llm_error"
+    assert [call["tag"].split("@")[0] for call in deps.llm.calls] == [
+        "plan",
+        "observe",
+        "answer",
+    ]
+    assert state.tables  # the work done before the timeout is kept
+    assert orphan_call_ids(state) == []
+    # The observe card that opened is closed, as failed.
+    failed = [e for e in sink.of_type("step_end") if e.payload["ok"] is False]
+    assert [e.payload["node"] for e in failed] == ["observe"]
+    assert failed[0].payload["error"] == "LlmTimeoutError"
+
+
+def test_a_server_error_while_observing_still_fails_the_turn():
+    """Only slowness is recovered from. A 5xx after every retry means MIA is
+    down, and the answer call would meet the same server. (A 5xx whose retry
+    the budget stopped is slowness: the client reports it as a timeout, see
+    test_llm.)"""
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            lambda *_: (_ for _ in ()).throw(LlmServerError("MIA 503")),
+        ]
+    )
+
+    with pytest.raises(AgentError, match="MIA 503"):
+        turn(state, deps)
+
+
+class _Clock:
+    """A clock the scripted model moves: a timeout takes the time it was given."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _times_out_on(clock, holder, overshoot=0.0):
+    """Script entry for a call that runs its whole timeout and fails.
+
+    `overshoot` is what a real timeout costs beyond the number it was given:
+    httpx fires the read timeout at or after the deadline, and the exception
+    still has to travel back through the worker thread. It is small and it is
+    never zero, which is the whole of the bug the caller below reproduces.
+    """
+
+    def reply(messages, tools, thinking):
+        clock.now += holder[0].llm.calls[-1]["timeout_s"] + overshoot
+        raise LlmTimeoutError("MIA zaman asimi: Request timed out.")
+
+    return reply
+
+
+def _timed_turn(script_for, *, config=None, sink=None, overshoot=0.0):
+    """Run one turn whose failing calls advance a shared clock."""
+    clock = _Clock()
+    holder = []
+    deps = build(
+        script_for(_times_out_on(clock, holder, overshoot)),
+        clock=clock,
+        config=config,
+        sink=sink,
+    )
+    holder.append(deps)
+    state = initial_state("s1")
+    return state, deps, turn(state, deps)
+
+
+def test_the_answer_floor_is_one_allowance_not_one_per_attempt():
+    """The floor was re-applied to the retry: a thinking-on answer that timed
+    out at 30 s got a fresh 30 s for its retry, 60 s past the budget. The two
+    attempts now share one allowance."""
+    state, deps, result = _timed_turn(
+        lambda times_out: [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            # Slow in time, fast in tokens: the budget is spent, and the model
+            # is quick enough that the answer tries thinking first.
+            FakeLLM.text("Tamam.", duration_ms=170_000, completion_tokens=100_000),
+            times_out,
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    first, retry = (call["timeout_s"] for call in deps.llm.calls[-2:])
+    assert result.answer == "Cevap."
+    # 10 s of budget left, so the answer's 30 s floor is its allowance; the
+    # thinking attempt leaves the retry `min_call_s` of it.
+    assert first == pytest.approx(20.0, abs=0.5)
+    assert retry == pytest.approx(10.0, abs=0.5)
+    assert first + retry == pytest.approx(deps.config.answer_min_s, abs=0.5)
+
+
+def test_the_fallback_still_runs_when_the_timeout_overran_its_window():
+    """The blocker this guards against: the thinking-on attempt is capped at
+    `allowance - min_call_s`, so a timeout that fires a hair late leaves just
+    under `min_call_s`. Tested against a clock that advanced by exactly the
+    timeout, the old `left() < min_call_s` check passed; against any real
+    clock it raised and the turn ended with no answer at all -- and only on
+    the turns tight enough to need the fallback, which is every turn that had
+    already spent 125 s of its 180."""
+    state, deps, result = _timed_turn(
+        lambda times_out: [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            FakeLLM.text("Tamam.", duration_ms=170_000, completion_tokens=100_000),
+            times_out,
+            FakeLLM.text("Cevap."),
+        ],
+        overshoot=0.05,
+    )
+
+    first, retry = deps.llm.calls[-2:]
+    assert result.answer == "Cevap."
+    assert (first["thinking"], retry["thinking"]) == (True, False)
+    # What is left after the overshoot: under `min_call_s`, over what the
+    # client needs to start an attempt.
+    assert 5.0 <= retry["timeout_s"] < 10.0
+
+
+def test_the_last_chance_answer_gets_all_the_time_that_is_left():
+    """The third 22 Sep run: the thinking-off answer was capped at the 45 s
+    client timeout and timed out with about a minute of the budget unused."""
+    state, deps, result = _timed_turn(
+        lambda times_out: [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            FakeLLM.text("Tamam.", duration_ms=80_000, completion_tokens=100_000),
+            times_out,
+            FakeLLM.text("Cevap, dusunmeden."),
+        ]
+    )
+
+    first, retry = deps.llm.calls[-2:]
+    assert result.answer == "Cevap, dusunmeden."
+    assert (first["thinking"], first["timeout_s"]) == (True, pytest.approx(45.0))
+    # 180 - 80 - 45 = 55: more than the client timeout, and all of what is left.
+    assert (retry["thinking"], retry["max_tokens"]) == (False, 1024)
+    assert retry["timeout_s"] == pytest.approx(55.0, abs=0.5)
+
+
+def test_a_slow_model_answers_without_thinking_from_the_start():
+    """Measured in the third 22 Sep run: plan and observe calls at 7-10
+    tokens/s, and a thinking-on answer (750 tokens on 15 Sep) cannot fit in
+    45 s at that speed. Trying it anyway cost 45 s and then the answer."""
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1", duration_ms=27_321),
+            FakeLLM.text("Tamam.", completion_tokens=109, duration_ms=12_784),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    result = turn(state, deps)
+
+    answer = deps.llm.calls[-1]
+    assert result.answer == "Cevap."
+    assert (answer["thinking"], answer["max_tokens"]) == (False, 1024)
+    # Everything left, in one attempt: 180 - 27.3 - 12.8.
+    assert answer["timeout_s"] == pytest.approx(139.9, abs=0.5)
+    assert state.steps[-2].thinking is False
+
+
+def test_a_failed_model_step_reports_the_time_it_took():
+    """A timed-out observe call reported 0 ms: the step card and the recap
+    showed nothing for a quarter of the budget."""
+    sink = ListSink()
+    state, deps, result = _timed_turn(
+        lambda times_out: [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            times_out,
+            FakeLLM.text("Cevap."),
+        ],
+        sink=sink,
+    )
+
+    failed = [e for e in sink.of_type("step_end") if e.payload["ok"] is False]
+    assert [e.payload["duration_ms"] for e in failed] == [45_000]
+    observe = next(step for step in state.steps if step.node == "observe")
+    assert (observe.duration_ms, observe.thinking) == (45_000, False)
+
+
+def test_a_retried_step_reports_both_attempts():
+    """After a timeout and a successful retry the step is the whole of it,
+    not only the attempt that answered, and it says thinking was off."""
+    state, deps, result = _timed_turn(
+        lambda times_out: [
+            times_out,
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1", duration_ms=2_000),
+            FakeLLM.text("Tamam."),
+            FakeLLM.text("Cevap."),
+        ]
+    )
+
+    plan = state.steps[0]
+    assert plan.node == "plan"
+    assert plan.duration_ms == 47_000
+    assert plan.thinking is False
+
+
+def test_a_failed_retry_records_the_attempts_that_ran():
+    """The failed step recorded the thinking it was asked for (on), though
+    its last attempt, the one that failed it, ran with thinking off, and a
+    duration of 0 for two full timeouts."""
+    clock = _Clock()
+    holder = []
+    times_out = _times_out_on(clock, holder)
+    deps = build([times_out, times_out], clock=clock)
+    holder.append(deps)
+    state = initial_state("s1")
+
+    with pytest.raises(AgentError):
+        turn(state, deps)
+
+    plan = state.steps[0]
+    assert (plan.node, plan.ok, plan.thinking) == ("plan", False, False)
+    assert plan.duration_ms == 90_000  # 45 s thinking on, then 45 s off
+
+
+def test_a_failed_answer_is_in_the_step_log():
+    """Both answer attempts timing out ended the turn with no step saying
+    where it ended or what the answer had cost."""
+    clock = _Clock()
+    holder = []
+    times_out = _times_out_on(clock, holder)
+    deps = build(
+        [
+            FakeLLM.tool_call(*FETCH_RATE, call_id="c1"),
+            FakeLLM.text("Tamam."),
+            times_out,
+            times_out,
+        ],
+        clock=clock,
+    )
+    holder.append(deps)
+    state = initial_state("s1")
+
+    with pytest.raises(AgentError):
+        turn(state, deps)
+
+    answer = state.steps[-1]
+    assert (answer.node, answer.ok, answer.error) == (
+        "answer",
+        False,
+        "LlmTimeoutError",
+    )
+    # 45 s thinking on, then the rest of the allowance: 180 s less the 10 ms
+    # the plan and observe calls took.
+    assert answer.duration_ms == 179_990
+    assert answer.thinking is False
+
+
+def test_a_model_call_that_crashes_still_closes_its_card():
+    """Only `LlmError` closed the card: a cancelled turn or a client bug left
+    the plan step running forever on the screen."""
+    sink = ListSink()
+    state = initial_state("s1")
+
+    def crash(messages, tools, thinking):
+        raise RuntimeError("istemci hatasi")
+
+    deps = build([crash], sink=sink)
+
+    with pytest.raises(RuntimeError):
+        turn(state, deps)
+
+    ends = sink.of_type("step_end")
+    assert [(e.payload["node"], e.payload["ok"]) for e in ends] == [("plan", False)]
+    assert state.steps[0].error == "RuntimeError"
+
+
+def test_a_turn_stopped_at_the_approval_card_answers_the_call():
+    """Cancellation is not an `Exception`, so the approval gate's handler did
+    not see it and the call stayed unanswered: every later request a 400."""
+
+    async def stopped(request):
+        raise asyncio.CancelledError
+
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(
+                "ingest", {"source": "evds", "series_id": "evds:TP.YENI"}, call_id="c1"
+            ),
+        ],
+        approve=stopped,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        turn(state, deps)
+
+    assert orphan_call_ids(state) == []
+    assert "durduruldu" in tool_messages(state)[0]["content"]
+
+
+def test_a_stopped_turn_does_not_close_the_channel_as_a_finished_one():
+    """Cancellation is not an `Exception` either, so it fell through to the
+    `finally` and published `done` with `truncated_reason: null` -- the same
+    payload a turn that answered publishes. An interface reading that draws a
+    stopped turn as a success."""
+    sink = ListSink()
+
+    async def stopped(request):
+        raise asyncio.CancelledError
+
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(
+                "ingest", {"source": "evds", "series_id": "evds:TP.YENI"}, call_id="c1"
+            ),
+        ],
+        approve=stopped,
+        sink=sink,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        turn(state, deps)
+
+    assert state.truncated_reason == "cancelled"
+    assert sink.last("done").payload["truncated_reason"] == "cancelled"
+    assert sink.of_type("error")
+
+
 # --------------------------------------------------------------------------
 # Protocol details that break the next request if we get them wrong
 # --------------------------------------------------------------------------
@@ -585,11 +1076,12 @@ def test_thinking_is_on_where_judgement_is_needed_and_off_where_it_is_not():
 
     turn(state, deps)
 
+    planner, answer = load_prompt("planner").tag, load_prompt("answer").tag
     calls = [(call["tag"], call["thinking"]) for call in deps.llm.calls]
     assert calls == [
-        ("plan@planner@1", True),
-        ("observe@planner@1", False),
-        ("answer@answer@1", True),
+        (f"plan@{planner}", True),
+        (f"observe@{planner}", False),
+        (f"answer@{answer}", True),
     ]
 
 
@@ -608,6 +1100,12 @@ def test_the_loop_takes_no_more_steps_than_the_script_expects():
 
 def test_an_ambiguous_search_stops_and_the_choice_comes_back_as_a_person_speaking():
     """The flow/stock trap, end to end."""
+
+    async def person(request):
+        return ApprovalDecision(
+            request_id=request.request_id, choice=request.options[0].id
+        )
+
     sink = ListSink()
     state = initial_state("s1")
     deps = build(
@@ -617,6 +1115,7 @@ def test_an_ambiguous_search_stops_and_the_choice_comes_back_as_a_person_speakin
             FakeLLM.text("Akim serisiyle devam ettim."),
         ],
         sink=sink,
+        approve=person,
         ambiguous_search=True,
     )
 
@@ -626,6 +1125,35 @@ def test_an_ambiguous_search_stops_and_the_choice_comes_back_as_a_person_speakin
     assert sink.last("approval_request").payload["kind"] == "series_choice"
     assert any(
         m.get("role") == "user" and "[Onay] Seri secimi" in m.get("content", "")
+        for m in state.messages
+    )
+
+
+def test_a_series_choice_nobody_made_is_not_put_in_a_persons_mouth():
+    """Without a person (CLI, eval) the card's default -- the top search hit --
+    is applied and recorded, but the model is not told a person chose it. The
+    search ranks by text similarity and on the real pool ranks non-performing
+    housing loans above the loan stock; the model reading the candidates is
+    the better judge, and "a person said so" would overrule it."""
+    sink = ListSink()
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.tool_call(*SEARCH, call_id="c1"),
+            FakeLLM.text("Adaylardan akim serisini seciyorum."),
+            FakeLLM.text("Akim serisiyle devam ettim."),
+        ],
+        sink=sink,
+        ambiguous_search=True,
+    )
+
+    result = turn(state, deps)
+
+    assert result.approvals == 1
+    assert state.approvals[0].automatic is True
+    assert sink.last("approval_decision").payload["automatic"] is True
+    assert not any(
+        m.get("role") == "user" and "[Onay]" in m.get("content", "")
         for m in state.messages
     )
 
@@ -960,6 +1488,76 @@ def test_live_mode_says_what_is_missing_instead_of_traceback(capsys, monkeypatch
     assert "MIA_API_KEY" in capsys.readouterr().err
 
 
+def test_real_mode_says_what_is_missing_instead_of_traceback(capsys, monkeypatch):
+    from lakehouse_agent.agent.loop import _cli
+
+    # A developer's real .env must not leak into the test process.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
+    monkeypatch.setattr(
+        "lakehouse_agent.config.get_agent_settings",
+        lambda: (_ for _ in ()).throw(RuntimeError("MIA_API_KEY yok")),
+    )
+    assert _cli(["--real"]) == 2
+    assert "MIA_API_KEY" in capsys.readouterr().err
+
+
+def test_real_mode_wires_real_tools_and_a_lake_and_no_fakes(monkeypatch):
+    """The demo's dependency set: the production registry, a real lake."""
+    from lakehouse_agent.agent.loop import _real_deps
+    from lakehouse_agent.config import AgentSettings
+    from lakehouse_agent.tools.lake_adapter import LakeAdapter
+
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
+    monkeypatch.setattr(
+        "lakehouse_agent.config.get_agent_settings",
+        lambda: AgentSettings(MIA_API_KEY="test-only-not-a-real-key"),
+    )
+
+    deps = _real_deps()
+
+    assert isinstance(deps.lake, LakeAdapter)
+    assert {"search_catalog", "get_series", "transform_table"} <= set(
+        deps.registry.names()
+    )
+    assert "failing_tool" not in deps.registry.names()
+
+
+def test_several_questions_are_turns_of_one_session(capsys):
+    """A follow-up like "tabloyu bozmadan ..." only works if it sees the table
+    the previous question built."""
+    from lakehouse_agent.agent.loop import _cli
+
+    assert _cli(["--fake", "--question", "bir", "--question", "iki"]) == 0
+
+    out, err = capsys.readouterr()
+    done = [json.loads(line) for line in out.splitlines()]
+    done = [event for event in done if event["type"] == "done"]
+    assert len(done) == 2
+    # Only one shared session produces these: `usage` in `done` is the
+    # session total, and table numbers count up across its turns.
+    assert [event["payload"]["usage"]["calls"] for event in done] == [5, 10]
+    assert "t02_get_series" in err
+
+
+def test_a_failed_turn_still_shows_what_it_built(capsys):
+    """The 22 Sep live run ended on a bare error line although its table was
+    built. The recap now prints the tables either way."""
+    from lakehouse_agent.agent.loop import _summarise
+
+    state = initial_state("cli")
+    state.turn_no = 1
+    state.tables["t01_get_series"] = pd.DataFrame(
+        {"period": pd.date_range("2021-01-01", periods=3, freq="MS"), "x": [1, 2, 3]}
+    )
+    state.active_table = "t01_get_series"
+
+    _summarise(state, None)
+
+    err = capsys.readouterr().err
+    assert "TABLO t01_get_series: 3 satir" in err
+    assert "CEVAP YOK" in err
+
+
 # --------------------------------------------------------------------------
 # What a rejected table takes with it
 # --------------------------------------------------------------------------
@@ -1096,6 +1694,25 @@ def test_a_failure_in_one_turn_is_not_reported_as_live_in_the_next():
     assert _collected_warnings(state) == []
 
 
+def test_a_unit_conversion_is_not_pushed_out_by_later_warnings():
+    """`get_series` puts its conversions first. Keeping the last four let one
+    call's coverage notes and a later deflate push them out of the answer
+    prompt, although the answer is obliged to repeat them (CLAUDE.md #3)."""
+    from lakehouse_agent.agent.loop import MAX_ANSWER_WARNINGS, _collected_warnings
+
+    state = initial_state("s1")
+    state.warnings = [
+        "TP_KTF12 haftalik yayimlaniyor; aylik degere ortalama alinarak cevrildi.",
+        *[f"uyari {i}" for i in range(MAX_ANSWER_WARNINGS + 1)],
+    ]
+
+    collected = _collected_warnings(state)
+
+    assert collected[0].startswith("TP_KTF12 haftalik")
+    assert len(collected) == MAX_ANSWER_WARNINGS + 1
+    assert collected[-1].startswith("(+2 uyari daha")
+
+
 def test_a_tool_warning_reaches_the_answer_prompt_in_its_own_turn():
     """The route CLAUDE.md #3 depends on: a conversion the answer must repeat."""
     from lakehouse_agent.agent.loop import _collected_warnings
@@ -1103,10 +1720,10 @@ def test_a_tool_warning_reaches_the_answer_prompt_in_its_own_turn():
     state = initial_state("s1")
     deps = build(
         [
-            FakeLLM.tool_call(*FETCH_RATE),
+            FakeLLM.tool_call(*FETCH_CREDIT),
             FakeLLM.tool_call(
                 "transform_table",
-                {"table_ref": "t01_get_series", "column": "TP_KTF12", "op": "deflate"},
+                {"table_ref": "t01_get_series", "column": CREDIT, "op": "deflate"},
             ),
             FakeLLM.text("Tamam."),
             FakeLLM.text("Cevap."),
@@ -1165,13 +1782,33 @@ def test_an_unexpected_crash_is_reported_as_an_error_not_as_a_clean_finish():
     def explode(*args, **kwargs):
         raise RuntimeError("beklenmedik")
 
-    deps.verifier.verify = explode
+    deps.llm.chat = explode
 
     with pytest.raises(RuntimeError):
         turn(state, deps)
 
     assert sink.of_type("error")
     assert sink.last("done").payload["truncated_reason"] == "llm_error"
+
+
+def test_a_verifier_that_crashes_does_not_cost_the_turn_its_answer():
+    """The one crash that must not propagate. The answer is already written
+    when the verifier runs, and throwing away finished work to report a doubt
+    is the worst trade in the turn."""
+    sink = ListSink()
+    state = initial_state("s1")
+    deps = build([FakeLLM.text("Plan."), FakeLLM.text("Cevap.")], sink=sink)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("beklenmedik")
+
+    deps.verifier.verify = explode
+
+    result = turn(state, deps)
+
+    assert result.answer == "Cevap."
+    assert result.truncated_reason is None
+    assert sink.last("verification").payload["passed"] is True
 
 
 def test_a_model_that_returns_no_answer_is_not_a_finished_turn():

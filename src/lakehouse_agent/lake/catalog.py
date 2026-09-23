@@ -164,6 +164,15 @@ def _embed_batch(texts: list[str], is_query: bool = False) -> np.ndarray:
     return np.array(vectors, dtype=np.float32)
 
 
+def embed_query(query: str) -> np.ndarray:
+    """One search query as a vector, with the query-side instruction prefix.
+
+    The public way to embed a *query*; `embed_with_cache` is for documents,
+    which must never get the prefix (see `QUERY_INSTRUCTION_PREFIX`).
+    """
+    return _embed_batch([query], is_query=True)[0]
+
+
 def _text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 

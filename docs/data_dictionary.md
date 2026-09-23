@@ -80,9 +80,11 @@ zaten NaN olarak taşır, ikisi de doldurma yapmaz.
 ## Senaryo serileri (16 Eylül entegrasyon)
 
 `lake/gold.py`'deki `SCENARIO_SERIES` sabitiyle birebir. `data/gold/` gerçek
-EVDS verisiyle üretildi (16 Eyl 2026, `--datagroups bie_kt100h,bie_kfe,
-bie_tukfiy2025,bie_akonutsat1,bie_akonutsat2,bie_hpbitablo6 --since 2021-01
---until 2026-06`).
+EVDS ve BDDK verisiyle üretildi ve repoya eklendi (22 Eyl 2026, `--datagroups
+bie_kt100h,bie_kfe,bie_tukfiy2025,bie_akonutsat1,bie_akonutsat2,bie_hpbitablo6
+--since 2021-01 --until 2026-06`). EVDS çekimi takvim yılını bütün olarak aldığı
+için `build_gold` gözlemleri `GOLD_UNTIL = "2026-06"` sonrasında keser (bronze
+dokunulmadan kalır); haftalık serilerde son hafta 2026-06-29 Pazartesi haftasıdır.
 
 | series_id | datagroup | Frekans | Birim | kind | agg | cum_type | Kapsam |
 |---|---|---|---|---|---|---|---|
@@ -113,6 +115,11 @@ yani seri zaten aylık akım (flow), BDDK kâr-zarar kalemleri gibi ytd değil.
 `kind=flow, agg_method=sum, cum_type=none` bu yüzden doğru.
 
 ## Senaryo doğrulaması (16 Eylül, gerçek veriyle)
+
+Tarihsel kayıt: bu ölçüm gold 2026-06'da kesilmeden önce yapıldı (baz 2026-08,
+aylar 2026-08'e kadar). Bugünkü gold ile aynen tekrarlanamaz; `deflate` 2026-08
+baz ayını havuzda olmadığı için reddeder. Güncel sonuç aşağıdaki 17 Eylül
+bölümünde ve `tests/test_scenario.py`'de.
 
 Faiz (TP.KTF12, aylık ortalama) düşerken konut kredisi bakiyesi
 (TP.HPBITABLO6.3) davranışı, 2024-06 – 2026-08 arası 27 ay:
@@ -149,6 +156,13 @@ ayrıldı: `seviye_degisim_yuzde` (eski hesap, ortalamalar arası fark) ve
 arasındaki gerçek tek dönem sıçraması). Özet metni ikisini ayrı ayrı adlandırıyor.
 
 ## Katalog arama indeksi (`lake/catalog.py`, plan 2.5)
+
+> **22 Eylül'den beri agent bu indeksi kullanmıyor.** `search_catalog` aracı
+> `LakeAdapter.search_detailed` üzerinden havuzun kendi kataloğunda (gold
+> `series_catalog`) arıyor: skor kosinüs benzerliği, embedding yapılamazsa
+> kelime eşleşmesi. Gerekçe `docs/decisions.md`, "Arama indeksi havuzun kendi
+> kataloğundan". Aşağıdaki LanceDB indeksi havuz **dışı** EVDS keşfi için
+> duruyor (`build_index.py`), agent yolunda değil.
 
 `data/bronze/evds/catalog.parquet` 53792 satır — agent'ın arayacağı ham
 kapsam bu kadar büyük olunca embedding maliyeti kabul edilemez hale geliyor
@@ -197,8 +211,11 @@ EVDS serisi ay sonuna alınıp (last) 1000'e bölünerek milyon TL'ye çevrildi.
 - 25 ayın 19'unda fark %0.2'nin altında
 
 Sapma tanım farkından kaynaklanıyor: BDDK ayın son iş gününü raporluyor,
-EVDS haftalık serisinin ay sonuna en yakın Cuma değeri alınıyor. Ay sonunun
-hafta ortasına denk geldiği aylarda fark büyüyor. Veri hatası değil.
+EVDS haftalık serisinde ise Pazartesi'si o ayda olan son haftanın (Cuma) değeri
+alınıyor. Gold haftayı Pazartesi'sine yazdığı için ayın ilk günlerine düşen bir
+Cuma önceki aya sayılabiliyor (2025'te 12 ayın 6'sında "ay sonu" değeri
+sonraki ayın ilk Cuma'sı). Fark bu aylarda büyüyor. Veri hatası değil; haftayı
+gözlem tarihine göre aya koymak adım 2'de.
 
 Sonuç: iki kaynak birbirini doğruluyor. Senaryoda BDDK serisi kullanılıyor
 (2021-01'den itibaren tam kapsam; EVDS serisi 2024-06'da başlıyor).

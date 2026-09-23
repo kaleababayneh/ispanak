@@ -288,7 +288,7 @@ def build_gold(
     return OBSERVATIONS_PATH, SERIES_CATALOG_PATH
 
 
-def _ensure_tables(db_path: Path = GOLD_DB_PATH) -> None:
+def _ensure_tables(db_path: Path | None = None) -> None:
     """(Re)materialize the two parquet files as native tables inside the
     DuckDB file itself, not as views over external parquet paths.
 
@@ -299,7 +299,9 @@ def _ensure_tables(db_path: Path = GOLD_DB_PATH) -> None:
     external access) means later read-only queries never need to touch the
     filesystem beyond that one file.
     """
-    con = duckdb.connect(str(db_path))
+    # Resolved at call time: a default bound at import would ignore a test's
+    # (or a caller's) change of GOLD_DB_PATH.
+    con = duckdb.connect(str(db_path or GOLD_DB_PATH))
     try:
         con.execute(
             "CREATE OR REPLACE TABLE observations AS "
@@ -313,6 +315,23 @@ def _ensure_tables(db_path: Path = GOLD_DB_PATH) -> None:
         con.close()
 
 
+def _stale(db_path: Path) -> bool:
+    """Missing, or older than a parquet file it copies.
+
+    The file is derived and gitignored. Built only when missing, it kept
+    serving the old tables after a pull that updated the committed parquet --
+    and the adapter, which reads the catalog parquet directly, then disagreed
+    with it about which series exist.
+    """
+    if not db_path.exists():
+        return True
+    built = db_path.stat().st_mtime
+    return any(
+        source.exists() and source.stat().st_mtime > built
+        for source in (OBSERVATIONS_PATH, SERIES_CATALOG_PATH)
+    )
+
+
 def connect() -> duckdb.DuckDBPyConnection:
     """Read-only DuckDB connection over the `observations` / `series_catalog`
     tables.
@@ -324,8 +343,22 @@ def connect() -> duckdb.DuckDBPyConnection:
     GOLD_DB_PATH (see _ensure_tables), ordinary SELECTs against them still
     work with external access fully disabled.
     """
-    if not GOLD_DB_PATH.exists():
-        _ensure_tables()
+    if _stale(GOLD_DB_PATH):
+        try:
+            _ensure_tables()
+        except Exception:
+            # Rebuilding opens the same file for writing, and DuckDB refuses
+            # that while a read-only connection is open on it in the same
+            # process (measured, duckdb 1.5.5, in both orders) -- a tool that
+            # overran its step timeout and is still reading in its thread is
+            # enough. An out-of-date copy of the tables answers the query;
+            # failing the call does not. If the file is missing altogether
+            # the `connect` below raises, which is the honest outcome.
+            if not GOLD_DB_PATH.exists():
+                raise
+            logger.warning(
+                "gold: %s yenilenemedi, eski kopya kullaniliyor", GOLD_DB_PATH
+            )
     return duckdb.connect(
         str(GOLD_DB_PATH), read_only=True, config={"enable_external_access": "false"}
     )

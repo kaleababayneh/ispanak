@@ -246,10 +246,11 @@ class QualityReport(BaseModel):
 class CatalogHit(BaseModel):
     """One candidate from a catalog search.
 
-    `score` is a ranking score whose scale depends on the backend. Hybrid search
-    returns reciprocal-rank-fusion values that are not in 0..1 and are only
-    comparable inside a single query, so ambiguity is measured as a ratio between
-    the top two hits, never as an absolute gap.
+    `score` is the pool search's cosine similarity (tools/lake_adapter.py),
+    1.0 for a series the query names by code, and the share of the query's
+    words found when the embedding call is unavailable; `match` says which.
+    Ambiguity is measured as a ratio between the top two hits, which means
+    the same on either scale.
     """
 
     series_id: str = Field(..., description="Katalog kimligi.")
@@ -270,8 +271,15 @@ class CatalogHit(BaseModel):
     score: float = Field(
         ...,
         description=(
-            "Siralama skoru. Olcegi kaynaga baglidir ve yalnizca ayni sorgu "
-            "icindeki adaylar arasinda karsilastirilabilir."
+            "Siralama skoru: kosinus benzerligi; kodla eslesmede 1.0; kelime "
+            "eslesmesinde sorgu kelimelerinin bulunan orani."
+        ),
+    )
+    match: Literal["code", "semantic", "keyword"] | None = Field(
+        None,
+        description=(
+            "Nasil bulundu: sorguda kodu gecti, anlam benzerligi ya da kelime "
+            "eslesmesi."
         ),
     )
 

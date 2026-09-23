@@ -296,6 +296,6 @@ def make_detect_changes() -> ToolSpec:
     )
 
 
-#: Track B's tools/registry.py wires these into the live registry -- this
-#: module only builds the specs, it never registers itself.
+#: `tools.toolset.make_registry` wires these into the production registry --
+#: this module only builds the specs, it never registers itself.
 TOOLS = [make_detect_anomalies(), make_detect_changes()]

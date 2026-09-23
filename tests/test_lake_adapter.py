@@ -4,19 +4,25 @@ The adapter is thin on purpose, so what is worth testing is exactly the part
 that is *not* forwarding: the unknown-series guard, the catalog-hit mapping,
 and the errors raised when the files those depend on have not been built.
 
-No network and no LanceDB index: the catalog is a small parquet written into
-`tmp_path`, and the one test that reaches for the index asserts the error you
-get when it is missing.
+No network: the catalog is a small parquet written into `tmp_path`, and
+search gets two-dimensional stand-in embeddings instead of MIA.
 """
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from lakehouse_agent.contracts import CatalogHit, QualityReport, SeriesNotFound
 from lakehouse_agent.lake import gold
-from lakehouse_agent.tools.lake_adapter import LakeAdapter, LakeIndexMissing
+from lakehouse_agent.tools.lake_adapter import (
+    EMBED_RETRY_AFTER_S,
+    LakeAdapter,
+    lexical_score,
+    named_series,
+    search_text,
+)
 
 KNOWN = "evds:TP.KTF12"
 OTHER = "evds:TP.KFE.TR"
@@ -41,7 +47,7 @@ def catalog_path(tmp_path):
 
 @pytest.fixture
 def adapter(catalog_path, tmp_path):
-    return LakeAdapter(index_path=tmp_path / "yok.lance", catalog_path=catalog_path)
+    return LakeAdapter(catalog_path=catalog_path)
 
 
 @pytest.fixture
@@ -195,70 +201,167 @@ def test_the_catalog_is_read_once_not_per_call(adapter, catalog_path, monkeypatc
     assert reads == 1
 
 
-# --- search ----------------------------------------------------------------
+# --- search: over the pool's own catalog ----------------------------------
+
+# Two-dimensional stand-ins for embeddings: "faiz" points one way, "fiyat" the
+# other. Enough to check ranking, scores and filtering without a network.
+_FAIZ, _FIYAT = [1.0, 0.0], [0.0, 1.0]
 
 
-def test_search_without_an_index_says_which_command_builds_it(adapter):
-    with pytest.raises(LakeIndexMissing, match="build_index.py"):
-        adapter.search("konut kredisi faizi")
+def _fake_documents(texts):
+    return np.array([_FAIZ if "Faiz" in text else _FIYAT for text in texts])
 
 
-def test_a_bronze_row_becomes_a_contract_catalog_hit(adapter):
-    row = pd.Series(
-        {
-            "SERIE_CODE": "TP.KTF12",
-            "SERIE_NAME": "Konut Kredisi (TL, Akım)",
-            "SERIE_NAME_ENG": "Housing Loan (TRY, Flow)",
-            "FREQUENCY_STR": "HAFTALIK(CUMA)",
-            "BIRIMI": "%",
-            "DATASOURCE": "TCMB",
-            "START_DATE": "01-01-2002",
-            "END_DATE": "31-12-2026",
-        }
+def _fake_query(query):
+    if "faiz" in query:
+        return np.array([1.0, 0.6])
+    if "fiyat" in query:
+        return np.array([0.6, 1.0])
+    return np.array([-1.0, -1.0])  # unrelated: points away from both
+
+
+def _unavailable(*_args):
+    raise RuntimeError("MIA_API_KEY ortam degiskeni ayarli degil")
+
+
+@pytest.fixture
+def searchable(catalog_path):
+    adapter = LakeAdapter(
+        catalog_path=catalog_path,
+        embed_documents=_fake_documents,
+        embed_query=_fake_query,
     )
+    adapter._coverage = lambda: {KNOWN: ("2021-01", "2026-06")}
+    return adapter
 
-    hit = adapter._to_hit(row, rank=0)
+
+def test_search_ranks_the_pool_by_similarity_to_the_query(searchable):
+    hits = searchable.search("konut kredisi faiz orani")
+
+    assert [hit.series_id for hit in hits] == [KNOWN, OTHER]
+    # Cosine of (1, 0.6) with (1, 0) and with (0, 1): 0.857 and 0.514.
+    assert hits[0].score == pytest.approx(1 / np.hypot(1, 0.6), abs=1e-4)
+    assert hits[1].score == pytest.approx(0.6 / np.hypot(1, 0.6), abs=1e-4)
+
+
+def test_a_candidate_below_the_similarity_floor_is_not_offered(searchable):
+    """(1, 0.2) is 0.196 from the price index: not a candidate, not a guess."""
+    searchable._embed_query = lambda _query: np.array([1.0, 0.2])
+
+    assert [hit.series_id for hit in searchable.search("faiz")] == [KNOWN]
+
+
+def test_a_hit_carries_the_lakes_own_kind_frequency_and_source(searchable):
+    """Everything comes from series_catalog -- the values the lake computes
+    with -- so kind is known, not left empty as the EVDS index had to."""
+    hit = searchable.search("faiz")[0]
 
     assert isinstance(hit, CatalogHit)
-    assert hit.series_id == "evds:TP.KTF12", "series_id kaynak önekli olmalı"
-    assert hit.freq == "W", "frekans sözleşme koduna çevrilmeli"
-    assert hit.unit == "%"
+    assert (hit.kind, hit.freq, hit.source) == ("rate", "M", "EVDS")
 
 
-def test_a_hit_leaves_kind_empty_rather_than_guessing_it(adapter):
-    """`kind` is not an EVDS catalog field -- it is decided per series in
-    gold.py. A guess here would be handed to the model as a fact, and `kind`
-    is what decides whether a series is summed or averaged."""
-    row = pd.Series({"SERIE_CODE": "TP.X", "SERIE_NAME": "X", "FREQUENCY_STR": "AYLIK"})
+def test_a_hit_carries_the_pools_coverage_not_the_sources(searchable):
+    """The catalog's dates are the source's publication range; TP.KTF12 reads
+    2002 to 2026-09 there. What a candidate must show is what the lake holds."""
+    hit = searchable.search("faiz")[0]
 
-    hit = adapter._to_hit(row, rank=0)
-
-    assert hit.kind is None
-    assert hit.agg_method is None
-    assert hit.cum_type is None
+    assert (hit.start_date, hit.end_date) == ("2021-01", "2026-06")
 
 
-def test_an_unknown_frequency_leaves_freq_empty_instead_of_raising(adapter):
-    """A catalog row the frequency map does not cover must not take down a
-    whole search; the field is optional and the rest of the row is useful."""
-    row = pd.Series(
-        {"SERIE_CODE": "TP.X", "SERIE_NAME": "X", "FREQUENCY_STR": "SAATLIK"}
+@pytest.mark.parametrize("query", ["TP.KTF12 serisini getir", "evds:TP.KTF12"])
+def test_a_query_naming_a_series_returns_that_series_alone(catalog_path, query):
+    adapter = LakeAdapter(
+        catalog_path=catalog_path,
+        embed_documents=_unavailable,
+        embed_query=_unavailable,
+    )
+    adapter._coverage = dict
+
+    hits = adapter.search(query)
+
+    assert [(hit.series_id, hit.score) for hit in hits] == [(KNOWN, 1.0)]
+
+
+def test_a_query_about_something_the_pool_lacks_finds_nothing(searchable):
+    """Empty is the honest answer. A far-fetched candidate is worse: the model
+    will happily build an analysis on it."""
+    assert searchable.search("dolar kuru") == []
+
+
+def test_without_embeddings_search_falls_back_to_keywords_and_says_so(catalog_path):
+    """No key or MIA down must not take search with it: the pool is a few
+    rows of text, and a coarser ranking beats none."""
+    adapter = LakeAdapter(
+        catalog_path=catalog_path,
+        embed_documents=_fake_documents,
+        embed_query=_unavailable,
+    )
+    adapter._coverage = dict
+
+    hits, notes = adapter.search_detailed("konut kredisi faizi")
+
+    assert hits[0].series_id == KNOWN
+    assert notes and "kelime" in notes[0]
+
+
+def test_a_broken_document_vector_also_falls_back(catalog_path):
+    """A failed embedding comes back as NaN; a NaN score would sort quietly."""
+    adapter = LakeAdapter(
+        catalog_path=catalog_path,
+        embed_documents=lambda texts: np.full((len(texts), 2), np.nan),
+        embed_query=_fake_query,
+    )
+    adapter._coverage = dict
+
+    _hits, notes = adapter.search_detailed("faiz")
+
+    assert notes
+
+
+def test_the_pool_is_embedded_once_not_per_search(catalog_path):
+    calls = []
+
+    def counting(texts):
+        calls.append(len(texts))
+        return _fake_documents(texts)
+
+    adapter = LakeAdapter(
+        catalog_path=catalog_path, embed_documents=counting, embed_query=_fake_query
+    )
+    adapter._coverage = dict
+
+    adapter.search("faiz")
+    adapter.search("fiyat")
+
+    assert calls == [2]
+
+
+def test_search_text_says_what_kind_of_quantity_a_series_is():
+    """A BDDK row has no topic or tags; its kind is what lets "konut kredisi
+    bakiyesi" reach it. Absent fields are skipped, never written as "nan"."""
+    text = search_text(
+        pd.Series(
+            {
+                "name_tr": "Tüketici Kredileri - Konut",
+                "topic": float("nan"),
+                "tags": None,
+                "unit": "milyon TL",
+                "freq": "M",
+                "kind": "stock",
+                "source": "BDDK-Aylik",
+            }
+        )
     )
 
-    assert adapter._to_hit(row, rank=0).freq is None
+    assert text == (
+        "Tüketici Kredileri - Konut | milyon TL | aylık | stok (bakiye) "
+        "| BDDK Aylık Bülten"
+    )
 
 
-def test_scores_fall_with_rank_and_stay_close_together(adapter):
-    """The ambiguity gate compares the top two as a ratio, never as a gap, so
-    what matters is that neighbouring hits sit close -- the same shape the
-    real reciprocal-rank fusion produces."""
-    row = pd.Series({"SERIE_CODE": "TP.X", "SERIE_NAME": "X", "FREQUENCY_STR": "AYLIK"})
-
-    first = adapter._to_hit(row, rank=0).score
-    second = adapter._to_hit(row, rank=1).score
-
-    assert first > second > 0
-    assert second / first > 0.9
+def test_keyword_matching_survives_turkish_suffixes():
+    assert lexical_score("konut kredisi", "Tüketici Kredileri - Konut") == 1.0
+    assert lexical_score("dolar kuru", "Tüketici Kredileri - Konut") == 0.0
 
 
 @pytest.mark.parametrize(
@@ -266,106 +369,20 @@ def test_scores_fall_with_rank_and_stay_close_together(adapter):
     [float("nan"), pd.NA, pd.NaT],
     ids=["float nan", "pd.NA", "pd.NaT"],
 )
-def test_every_pandas_spelling_of_missing_becomes_none(adapter, missing):
+def test_every_pandas_spelling_of_missing_becomes_none(searchable, missing):
     """pandas has three. An `isinstance(value, float)` check caught only the
     first and let the others through, so the hit carried the literal text
     "<NA>" or "NaT" into whatever rendered it."""
-    row = pd.Series(
-        {
-            "SERIE_CODE": "TP.X",
-            "SERIE_NAME": "X",
-            "SERIE_NAME_ENG": missing,
-            "FREQUENCY_STR": "AYLIK",
-        }
-    )
+    row = pd.Series({"series_id": KNOWN, "name_tr": "X", "name_en": missing})
 
-    assert adapter._to_hit(row, rank=0).name_en is None
+    assert searchable._hit(row, 0.5).name_en is None
 
 
-def test_missing_text_fields_become_none_not_nan(adapter):
-    """Parquet reads an absent string as NaN, and `CatalogHit` wants None --
-    a NaN would render as the literal "nan" wherever the hit is shown."""
-    row = pd.Series(
-        {
-            "SERIE_CODE": "TP.X",
-            "SERIE_NAME": "X",
-            "SERIE_NAME_ENG": float("nan"),
-            "FREQUENCY_STR": "AYLIK",
-        }
-    )
+def test_an_empty_unit_is_no_unit(searchable):
+    """Gold stores an index series' unit as the empty string."""
+    row = pd.Series({"series_id": OTHER, "name_tr": "KFE", "unit": ""})
 
-    assert adapter._to_hit(row, rank=0).name_en is None
-
-
-# --- search is narrowed to what the pool can serve --------------------------
-
-
-def _bronze_row(code: str) -> dict:
-    return {
-        "SERIE_CODE": code,
-        "SERIE_NAME": code,
-        "FREQUENCY_STR": "AYLIK",
-    }
-
-
-def test_search_drops_hits_the_pool_cannot_serve(adapter, monkeypatch):
-    """The index holds the filtered bronze catalog (~19.6k series); gold holds
-    the handful `build_gold` was run for. An unfiltered hit hands the model a
-    series id that the very next `get()` rejects with "search first" -- the
-    advice it just followed. Measured on a real index: the top hit for
-    "konut kredisi faiz orani" was TP.KBK.TRY.18, which is not in gold."""
-    from lakehouse_agent.lake import catalog
-
-    monkeypatch.setattr(adapter, "_open_index", lambda: object())
-    monkeypatch.setattr(
-        catalog,
-        "search_catalog",
-        lambda *a, **k: pd.DataFrame(
-            [_bronze_row("TP.KBK.TRY.18"), _bronze_row("TP.KTF12")]
-        ),
-    )
-
-    hits = adapter.search("konut kredisi faiz orani")
-
-    assert [h.series_id for h in hits] == [KNOWN]
-
-
-def test_a_search_with_nothing_in_the_pool_is_empty_not_wrong(adapter, monkeypatch):
-    """Empty is the honest answer to "we have nothing for that". Pulling a
-    series the pool does not hold is the `ingest` tool's job, not search's."""
-    from lakehouse_agent.lake import catalog
-
-    monkeypatch.setattr(adapter, "_open_index", lambda: object())
-    monkeypatch.setattr(
-        catalog, "search_catalog", lambda *a, **k: pd.DataFrame([_bronze_row("TP.YOK")])
-    )
-
-    assert adapter.search("havuzda olmayan bir sey") == []
-
-
-def test_surviving_hits_are_ranked_from_zero(adapter, monkeypatch):
-    """Scores come from position, so dropping a hit must not leave a gap --
-    otherwise the top hit's score depends on how many unusable series happened
-    to rank above it."""
-    from lakehouse_agent.lake import catalog
-
-    monkeypatch.setattr(adapter, "_open_index", lambda: object())
-    monkeypatch.setattr(
-        catalog,
-        "search_catalog",
-        lambda *a, **k: pd.DataFrame(
-            [
-                _bronze_row("TP.YOK.BIR"),
-                _bronze_row("TP.YOK.IKI"),
-                _bronze_row("TP.KTF12"),
-            ]
-        ),
-    )
-
-    hits = adapter.search("konut")
-
-    assert len(hits) == 1
-    assert hits[0].score == pytest.approx(1.0 / 61)
+    assert searchable._hit(row, 0.5).unit is None
 
 
 # --- transforms and quality forwarding -------------------------------------
@@ -463,3 +480,113 @@ def test_prepare_table_stays_quiet_when_nothing_was_dropped(adapter):
     _, report = adapter.prepare_table(clean)
 
     assert not any("dusuruldu" in issue for issue in report.issues)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "TP.KTF12'nin son degeri",
+        "TP.KTF12’nin son degeri",
+        "(TP.KTF12) nedir?",
+        '"TP.KTF12" serisi',
+        "TP.KTF12.",
+        "tp_ktf12 sutunu",
+    ],
+)
+def test_a_code_with_punctuation_or_in_column_form_is_still_named(query):
+    """Split on spaces only, "TP.KTF12'nin" and the tools' own column name
+    missed the exact path, and the keyword fallback cannot find a code."""
+    assert named_series(query, [OTHER, KNOWN]) == [1]
+
+
+def test_a_bddk_column_name_names_its_series():
+    bddk = "bddk:aylik:tuketici:konut:TL:sektor"
+    assert named_series("aylik_tuketici_konut_TL_sektor", [bddk]) == [0]
+
+
+def test_part_of_a_code_names_nothing():
+    assert named_series("TP.KTF1 ve konut", [KNOWN]) == []
+
+
+def test_a_named_hit_says_how_it_was_found(catalog_path):
+    adapter = LakeAdapter(
+        catalog_path=catalog_path,
+        embed_documents=_unavailable,
+        embed_query=_unavailable,
+    )
+    adapter._coverage = dict
+
+    hits = adapter.search("evds:TP.KTF12 ve TP.KFE.TR")
+
+    assert {(hit.series_id, hit.match) for hit in hits} == {
+        (KNOWN, "code"),
+        (OTHER, "code"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("query", "text"),
+    [
+        ("tufe", "Tüketici Fiyat Endeksi | TÜFE"),
+        ("konut satis", "Türkiye_Konut_Toplam Satışlar"),
+        ("toplam", "Türkiye_Konut_Toplam Satışlar"),
+        ("KONUT FIYAT ENDEKSI", "Konut Fiyat Endeksi"),
+    ],
+)
+def test_keyword_matching_folds_turkish_letters_and_splits_underscores(query, text):
+    """An ASCII query is the ordinary case, and "Türkiye_Konut_Toplam" was
+    one word, so "toplam" could never tell the two sales series apart."""
+    assert lexical_score(query, text) == 1.0
+
+
+def test_a_failed_embedding_is_not_retried_on_every_search(catalog_path):
+    """A hung endpoint costs a full client timeout per call; re-paying it on
+    every search spent most of a turn before each fallback."""
+    now = [0.0]
+    calls = []
+
+    def failing(query):
+        calls.append(query)
+        raise TimeoutError("embedding zaman asimi")
+
+    adapter = LakeAdapter(
+        catalog_path=catalog_path,
+        embed_documents=_fake_documents,
+        embed_query=failing,
+        clock=lambda: now[0],
+    )
+    adapter._coverage = dict
+
+    adapter.search("faiz")
+    adapter.search("fiyat")
+    assert calls == ["faiz"]
+
+    now[0] += EMBED_RETRY_AFTER_S
+    adapter.search("faiz")
+    assert calls == ["faiz", "faiz"]
+
+
+def test_a_failed_coverage_read_is_tried_again(adapter, monkeypatch):
+    """Cached as empty, one failed read blanked 'kapsam' for the adapter's
+    whole life -- and with it planner rule 12's coverage check."""
+    answers = [
+        RuntimeError("kilitli"),
+        pd.DataFrame(
+            {
+                "series_id": [KNOWN],
+                "first": [pd.Timestamp("2021-01-01")],
+                "last": [pd.Timestamp("2026-06-01")],
+            }
+        ),
+    ]
+
+    def run_sql(_sql):
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(gold, "run_sql", run_sql)
+
+    assert adapter._coverage() == {}
+    assert adapter._coverage() == {KNOWN: ("2021-01", "2026-06")}

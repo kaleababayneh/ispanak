@@ -16,6 +16,22 @@ from lakehouse_agent.ingest import bddk_monthly, evds
 from lakehouse_agent.lake import gold
 
 
+@pytest.fixture(autouse=True)
+def _gold_db_next_to_this_tests_own_parquet(monkeypatch, tmp_path):
+    """Every test here builds its own little gold in `tmp_path` and works
+    from there, so its DuckDB copy belongs there too.
+
+    The root conftest points `GOLD_DB_PATH` at one file for the whole
+    session, which is right for the tests that read the committed gold. These
+    tests would fill that same file with their three-row fixtures and every
+    later test would read them instead (measured: the scenario's turns came
+    back with no table at all).
+    """
+    monkeypatch.setattr(
+        gold, "GOLD_DB_PATH", tmp_path / "data" / "gold" / "catalog.duckdb"
+    )
+
+
 def _write_bronze_catalog_and_year(tmp_path):
     evds.CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
@@ -375,6 +391,24 @@ def test_get_filters_by_series_id_and_period_range(monkeypatch, tmp_path):
 
     assert len(result) == 1
     assert result["value"].iloc[0] == 151.5
+
+
+def test_a_duckdb_file_older_than_the_parquet_is_rebuilt(monkeypatch, tmp_path):
+    """catalog.duckdb is derived and gitignored; built only when missing, it
+    kept serving the old tables after a pull updated the committed parquet."""
+    import os
+
+    monkeypatch.chdir(tmp_path)
+    _write_bronze_catalog_and_year(tmp_path)
+    gold.build_gold(["evds:TP.KFE.TR"])
+    assert len(gold.get(["evds:TP.KFE.TR"])) == 2  # builds catalog.duckdb
+
+    observations = pd.read_parquet(gold.OBSERVATIONS_PATH)
+    observations.iloc[:1].to_parquet(gold.OBSERVATIONS_PATH, index=False)
+    built = gold.GOLD_DB_PATH.stat().st_mtime
+    os.utime(gold.OBSERVATIONS_PATH, (built + 10, built + 10))
+
+    assert len(gold.get(["evds:TP.KFE.TR"])) == 1
 
 
 def test_wide_pivots_one_column_per_series(monkeypatch, tmp_path):

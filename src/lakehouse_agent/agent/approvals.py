@@ -27,9 +27,10 @@ from lakehouse_agent.agent.state import (
 )
 from lakehouse_agent.contracts import ToolResult
 
-#: Two candidates this close in score are not distinguishable by score alone.
-#: A ratio, not an absolute gap: hybrid search fuses ranks into values that are
-#: only comparable inside one query, so "within 0.05" means nothing.
+#: Two candidates this close in score are not distinguishable by score alone:
+#: the runner-up within 10% of the top hit. A ratio rather than a gap, so the
+#: same rule holds on the pool's cosine similarities (tools/lake_adapter.py)
+#: and on the coarser keyword scores it falls back to.
 DEFAULT_AMBIGUITY_RATIO = 0.9
 
 #: Above this share of missing data, a person should see the table first.
@@ -106,21 +107,24 @@ def needs_series_choice(
     wrong produces a confident, wrong analysis. A person settles it in one
     click; the model would just guess.
 
-    Does not fire when there is one clear winner, which is why the scenario
-    itself runs without interruptions.
+    Fires only when the scores are close. It used to fire as well whenever
+    the top two differed in unit or kind, whatever the gap -- 31 of the 36
+    pairs in the nine-series pool, so nearly every search stopped for a
+    click. A clear winner by score is left to the model, which sees every
+    candidate's unit, kind and coverage and is told the top hit is not always
+    the right one (planner rule 12). Series the query named by code are not a
+    choice at all: the person asked for each of them.
     """
     candidates = result.preview or []
     if len(candidates) < 2:
         return None
 
     top, second = candidates[0], candidates[1]
+    if top.get("eslesme") == "kod" and second.get("eslesme") == "kod":
+        return None
     top_score = float(top.get("score") or 0)
     second_score = float(second.get("score") or 0)
-
-    close_scores = top_score > 0 and second_score >= top_score * ratio
-    different_unit = top.get("unit") != second.get("unit")
-    different_kind = top.get("kind") != second.get("kind")
-    if not (close_scores or different_unit or different_kind):
+    if not (top_score > 0 and second_score >= top_score * ratio):
         return None
 
     options = [
@@ -236,33 +240,42 @@ def settle(request: ApprovalRequest, decision: ApprovalDecision) -> ApprovalDeci
     )
     note = decision.note
     choice = decision.choice
+    automatic = decision.automatic
 
     if decision.request_id != request.request_id:
         note = f"[uyari] farkli karta ait cevap ({decision.request_id!r}); " + (
             note or "varsayilan uygulandi"
         )
-        choice = fallback
+        choice, automatic = fallback, True
     elif choice not in allowed:
         note = f"[uyari] kartta olmayan secenek ({choice!r}); " + (
             note or "varsayilan uygulandi"
         )
-        choice = fallback
+        choice, automatic = fallback, True
 
     if choice == decision.choice and note == decision.note:
         return decision
-    return ApprovalDecision(request_id=request.request_id, choice=choice, note=note)
+    # A fallen-back decision is automatic: nobody chose the default, and
+    # `decision_message` must not tell the model a person did.
+    return ApprovalDecision(
+        request_id=request.request_id,
+        choice=choice,
+        note=note,
+        automatic=automatic,
+    )
 
 
 async def auto_default(request: ApprovalRequest) -> ApprovalDecision:
-    """Pick the default without asking. Used by tests and the eval runner.
-
-    Never used in a demo: the point of the gate is that a person answers it.
+    """Pick the default without asking: whenever nobody can be asked -- the
+    tests, the eval runner and the CLI. The decision says so (`automatic`),
+    so nothing downstream passes it off as a person's.
     """
     return ApprovalDecision(
         request_id=request.request_id,
         choice=request.default
         or (request.options[0].id if request.options else CHOICE_CANCEL),
         note="otomatik onay (etkilesimsiz mod)",
+        automatic=True,
     )
 
 
@@ -273,13 +286,29 @@ def decision_message(
 
     Written as a user message rather than a tool result because it is a person
     speaking, and the model should treat it with that weight.
+
+    Which is why a series choice nobody made says nothing. The card's default
+    is simply the search's top hit, and the search ranks by text similarity:
+    measured 22 Sep 2026 on the real pool, "konut kredisi bakiyesi" ranks
+    "Takipteki Konut Kredileri" (non-performing loans) above the loan stock
+    itself. Telling the model "a person chose the top hit, do not search
+    again" would overrule the one reader that can tell those two apart -- the
+    model, looking at the candidates' names and coverage.
     """
     if request.kind == "series_choice":
+        if decision.automatic:
+            return None
         return (
             f"[Onay] Seri secimi: {decision.choice}. "
             "Bu seriyle devam et, tekrar katalog aramasi yapma."
         )
     if request.kind == "quality":
+        if decision.choice == CHOICE_CONTINUE and decision.automatic:
+            # The obligation stays, the claim goes: nobody saw this card.
+            return (
+                "[Otomatik] Tabloda kalite sorunlari var; kart kimseye "
+                "gosterilmeden devam edildi. Cevapta bu sinirlari belirt."
+            )
         if decision.choice == CHOICE_CONTINUE:
             return (
                 "[Onay] Kalite karti gorulup devam edildi. Cevapta bu sinirlari belirt."

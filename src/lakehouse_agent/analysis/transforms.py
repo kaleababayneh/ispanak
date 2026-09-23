@@ -9,7 +9,8 @@ stays NaN rather than becoming 0.
 """
 
 import logging
-from collections.abc import Mapping
+import operator
+from collections.abc import Mapping, Sequence
 
 import pandas as pd
 
@@ -162,10 +163,8 @@ def deflate(
     return result, formula
 
 
-def rebase(
-    df: pd.DataFrame, base_period, *, base_value: float = 100.0
-) -> tuple[pd.DataFrame, str]:
-    """Rescale an index series so `base_period` equals `base_value`."""
+def _base_value(df: pd.DataFrame, base_period) -> float:
+    """The value at `base_period`, refusing a base that cannot be divided by."""
     base_rows = df.loc[df["period"] == base_period, "value"]
     if base_rows.empty:
         raise ValueError(f"base_period {base_period} seride yok")
@@ -173,13 +172,115 @@ def rebase(
     if pd.isna(base_raw) or base_raw == 0:
         raise ValueError(
             f"base_period {base_period} değeri geçersiz (NaN veya 0): "
-            f"{base_raw!r} -- rebase 0'a bölemez."
+            f"{base_raw!r} -- 0'a bölünemez."
         )
+    return base_raw
 
+
+def rebase(
+    df: pd.DataFrame, base_period, *, base_value: float = 100.0
+) -> tuple[pd.DataFrame, str]:
+    """Rescale an index series so `base_period` equals `base_value`."""
+    base_raw = _base_value(df, base_period)
     result = df.copy()
     result["value"] = df["value"] / base_raw * base_value
     formula = f"value_rebased = value / value[{base_period}] * {base_value}"
     return result, formula
+
+
+def change_since(df: pd.DataFrame, base_period) -> tuple[pd.DataFrame, str]:
+    """Percent change of every period against one fixed `base_period`.
+
+    "How much has CPI risen since the start of 2021" is this, not
+    `pct_change`: that one compares each period with the one before it.
+    """
+    base_raw = _base_value(df, base_period)
+    result = df.copy()
+    result["value"] = (df["value"] / base_raw - 1) * 100
+    formula = f"change = (value / value[{base_period}] - 1) * 100"
+    return result, formula
+
+
+def ratio(
+    numerator: pd.DataFrame, denominator: pd.DataFrame, *, scale: float = 100.0
+) -> tuple[pd.DataFrame, str]:
+    """`numerator / denominator * scale` per period: a share, in percent by
+    default. Every period of `numerator` is kept; a period missing from the
+    denominator, or a zero denominator, gives NaN -- never 0 and never inf.
+
+    Refuses two different calendar frequencies for the same reason `deflate`
+    does: an exact-period merge of monthly against weekly is mostly NaN and
+    raises nothing.
+    """
+    num_freq = _try_infer_freq_alias(numerator)
+    den_freq = _try_infer_freq_alias(denominator)
+    if num_freq and den_freq and num_freq != den_freq:
+        raise ValueError(
+            f"ratio: pay ({num_freq}) ve payda ({den_freq}) farklı frekanslarda -- "
+            "önce to_freq ile aynı frekansa hizalayın."
+        )
+    merged = numerator.merge(
+        denominator, on="period", how="left", suffixes=("", "_den")
+    )
+    denominator_values = merged["value_den"].where(merged["value_den"] != 0)
+    merged["value"] = merged["value"] / denominator_values * scale
+    formula = f"ratio = numerator / denominator * {scale:g}"
+    return merged[["period", "value"]], formula
+
+
+_COMPARATORS = {
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+    "==": operator.eq,
+    "!=": operator.ne,
+}
+
+
+def mark_periods(
+    series: Mapping[str, pd.DataFrame],
+    conditions: Sequence[tuple[str, str, float]],
+) -> tuple[pd.DataFrame, str]:
+    """Flag the periods where every condition holds.
+
+    `series` maps a name to a "period"/"value" frame; each condition is
+    `(name, comparator, threshold)`, e.g. `("faiz_diff", "<", 0)`, and all of
+    them must hold (AND). This is how "months where the rate fell but credit
+    did not grow" is answered by the tool rather than by the model counting
+    rows in its head.
+
+    The result is "period"/"value" with a nullable boolean. A period where a
+    condition cannot be evaluated because its input is missing is <NA>, not
+    False: the first month of a difference has no previous month, which is
+    not the same as "the rate did not fall". AND follows Kleene logic, so a
+    period where some condition is definitely False is False regardless.
+    """
+    if not conditions:
+        raise ValueError("mark_periods: en az bir koşul gerekli")
+    names = [name for name, _, _ in conditions]
+    missing = [name for name in names if name not in series]
+    if missing:
+        raise ValueError(f"mark_periods: bilinmeyen seri(ler): {', '.join(missing)}")
+
+    joined, _ = align_join({name: series[name] for name in dict.fromkeys(names)})
+    flags = pd.Series(True, index=joined.index, dtype="boolean")
+    parts = []
+    for name, comparator, threshold in conditions:
+        compare = _COMPARATORS.get(comparator)
+        if compare is None:
+            raise ValueError(
+                f"mark_periods: bilinmeyen karşılaştırma {comparator!r}; "
+                f"geçerli olanlar: {', '.join(_COMPARATORS)}"
+            )
+        values = pd.to_numeric(joined[name], errors="coerce")
+        holds = compare(values, threshold).astype("boolean")
+        holds[values.isna()] = pd.NA
+        flags = flags & holds
+        parts.append(f"{name} {comparator} {threshold:g}")
+
+    result = pd.DataFrame({"period": joined["period"], "value": flags})
+    return result, "mark = " + " AND ".join(parts)
 
 
 def pct_change(df: pd.DataFrame, periods: int = 1) -> tuple[pd.DataFrame, str]:
