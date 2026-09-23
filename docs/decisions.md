@@ -1561,3 +1561,61 @@ Sonuç:  Açık iş. Bir tablonun toplamını öne almakla, adı anılan ili
         gelemez. A6 kırmızı kalıyor ve nedeni artık kayıtlı: sorun modelde
         ya da gömmede değil, `tables_asked`'ın hep-ya-hiç olmasında.
         Ölçüm: 11/12, `eval/results/answer_eval_2026-09-23.json`.
+
+## İnceleme bulguları: ölçüm kendi kendini vuruyordu (23 Eyl)
+Bağlam: `feat/answer-eval` dalının baştan incelemesi. Her bulgu bir kanıt
+        betiğine yazıldı, düzeltmeden önce 17 kontrolün 15'i kırmızıydı,
+        sonra 17'si de yeşil.
+Neden ve karar, en ağırdan başlayarak:
+  1. **Puanlama çökmesi bütün koşuyu siliyordu.** Kontroller `_one`'ın koruma
+     bloğunun dışındaydı ve rapor yalnızca `run()` bittikten sonra yazılıyor.
+     Yarım yazılmış tek bir `deger` kontrolü (`sutun` yok) `KeyError` ile
+     12 sorunun MIA maliyetini birden götürüyordu. Puanlama da korumaya
+     alındı: bozuk kontrol kendi satırını düşürüyor, koşu devam ediyor.
+  2. **Politika faizi sorusu yanlış ülkeyi döndürebiliyordu.** Ülke kalıbı üç
+     harfli kod arıyordu, Euro Bölgesi'nin kodu `(XM)` iki harf. 40 satırlık
+     `bie_bispolfaiz` ailesinden yalnızca Türkiye ve Euro Bölgesi geri
+     çekilmeden kalıyordu; aile tek adaya daraldığı için hangisinin
+     görüneceğine yalnızca kosinüs karar veriyordu. Kalıp bilerek gevşetildi
+     (2-3 harf, büyük/küçük farketmez, tire serbest, altı kelimeye kadar) ve
+     asıl koruma eşiğe bırakıldı. Ölçüm: 48 gerçek yabancı seri daha
+     yakalanıyor, yanlış pozitif sıfır, `Bosna-Hersek`, `Gürcistan(Geo)`,
+     `Güney Kıbrıs Rum Yönetimi` artık işaretli.
+  3. **Bronze olmadan kurulan indekste koruma çöküyordu.** Grubu olmayan
+     seriler `str(None)` ile tek kovaya düşüyor, o kova eşiği geçiyor ve
+     "Konut Fiyat Endeksi (KFE)" ülke sayılıyordu. `evds=None` belgelenmiş
+     bir mod ve bronze gitignore'da olduğu için taze klonun aldığı mod.
+     Grubu olmayan satır artık atlanıyor.
+  4. **Bayat indeks kimseyi uyarmıyordu.** Manifest digest'i kimlik ve arama
+     metnini hash'liyor, meta sütunu eklemek ikisini de değiştirmiyor.
+     Ölçüldü: `country` sütunu düşürülünce "tüketici fiyat endeksi" yine
+     Almanya'yı birinci getiriyor ve hiçbir not bunu söylemiyor. `meta_notes`
+     eklendi, eksik sütunu adıyla söyleyip yeniden kurmayı istiyor.
+  5. **Ülke adları alt dize olarak aranıyordu.** "içindeki" ve "cinsinden"
+     `cin`, "karşılık" `sili` eşliyordu. Eval'in kendi A3 sorusu Çin
+     serilerini kuraldan muaf tutuyordu, yani kural o soruda kapalıydı.
+     `_country_named` il kuralındaki kelime sınırını kullanıyor.
+  6. **Kontroller en eski tabloyu okuyordu.** `sorted()` ilk eşleşmeyi
+     alıyordu; agent seriyi yeniden çekince (A5'te haftalıktan aylığa) doğru
+     cevap `t02`'de, kontrol `t01`'e bakıyordu. Artık en yenisi okunuyor.
+  7. **Eksik değer hüküm sayılıyordu.** Boş bir `anlamli` sütunu
+     `beklenen: false` kontrolünü geçiyordu, yani "test hiç koşmadı" hali
+     "öncüllük yok" diye okunuyordu; `pd.NA` ise koşuyu öldürüyordu.
+  8. **Hayali araç çağrılmış sayılıyordu.** Registry'nin tanımadığı bir ad
+     `expected_tools`'u karşılıyordu. `unknown_tool` hatası artık sayılmıyor;
+     kapıda iptal edilen çağrı sayılmaya devam ediyor, o kasıtlı.
+  9. **Çöken satır maliyetini sıfır bildiriyor ve iki kez sayılıyordu.**
+     Gerçek maliyet `state.usage`'da duruyor; `kesintili` artık yalnızca
+     hatasız kesilen turları sayıyor.
+  10. Tek bir liste maddesine iki kontrol yazılırsa ikincisi sessizce
+      düşüyordu, artık biçim hatası olarak kırmızı veriyor. Testler çalışma
+      dizinine bağlıydı, `Path(__file__)` ile bağlandı. `dogrulandi` alanı
+      yazılıp okunmuyordu, artık verify adımı yoksa özet onu basıyor.
+Sonuç:  1021 test yeşil (23 yeni), ruff temiz. Arama ölçümü 25/27 ve ayrık
+        6/6 ile sabit, gerileme yok. Agent ölçümü 11/12, A6 hâlâ ve bilerek
+        kırmızı. Dört düzeltme tek tek bozulup testin kırmızıya düştüğü
+        görüldü. Doğrulanan ama DÜZELTİLMEYEN bir madde var: `_superseded`
+        bütün parantezleri attığı için ileride "Fiyat Endeksi (Üretici)"
+        gibi bir tablo tüketici endeksiyle aynı gövdeye düşebilir. Bugün
+        havuzda böyle bir çakışma yok, spekülatif olduğu için elle
+        değiştirilmedi.

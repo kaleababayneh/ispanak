@@ -97,10 +97,18 @@ def _called_tools(state: SessionState) -> set[str]:
 
     Filtered on `tool`, not on `node == "act"`: a call cancelled at the fetch
     gate is filed under `node="approval"` and would otherwise vanish from the
-    ledger. Filtered by turn because `state.steps` is never cleared.
+    ledger, and a person cancelling a fetch is not the agent failing to try.
+    Filtered by turn because `state.steps` is never cleared.
+
+    A name the registry does not know is the one thing that does not count.
+    The loop records the attempt with the name the model invented, so
+    `expected_tools` was satisfied by a hallucination -- a question could go
+    green on a tool that does not exist.
     """
     return {
-        step.tool for step in state.steps if step.turn_no == state.turn_no and step.tool
+        step.tool
+        for step in state.steps
+        if step.turn_no == state.turn_no and step.tool and step.error != "unknown_tool"
     }
 
 
@@ -110,8 +118,15 @@ def _table(state: SessionState, suffix: str) -> pd.DataFrame | None:
     References are generated as `t01_get_series`, `t02_causality`; the suffix
     is what the tool asked for, which is not always its own name
     (`test_causality` writes `causality` and `lag_corr`).
+
+    The NEWEST match wins. References are numbered in the order they were
+    made, and a tool can run twice: `get_series` with `into: "new"` mints a
+    fresh reference every time, and refetching is ordinary behaviour. Taking
+    the earliest scored A5 red against the very table the question is about
+    -- the agent pulled the weekly rate into `t01`, converted to a monthly
+    mean in `t02`, and the check read the Monday value out of `t01`.
     """
-    for ref in sorted(state.tables):
+    for ref in sorted(state.tables, reverse=True):
         if ref.split("_", 1)[-1] == suffix:
             return state.tables[ref]
     return None
@@ -134,15 +149,33 @@ def _same(cell: Any, expected: Any, tolerance_pct: float) -> bool:
     Everything else (dates, labels) is compared as text, with timestamps
     narrowed to their date.
     """
+    # Missing is not a verdict. `bool(None)` is False, so a table of empty
+    # cells used to satisfy `beklenen: false` -- exactly the "the test never
+    # ran" case this check exists to catch -- and `bool(pd.NA)` raises, which
+    # took the whole run down with it.
+    try:
+        if cell is None or bool(pd.isna(cell)):
+            return False
+    except (TypeError, ValueError):
+        return False  # a non-scalar cell is not a value either
     if isinstance(expected, bool):
         return bool(cell) is expected
     if isinstance(expected, int | float):
-        if pd.isna(cell):
-            return False
         margin = abs(expected) * tolerance_pct / 100 if expected else tolerance_pct
-        return abs(float(cell) - float(expected)) <= margin
-    text = cell.strftime("%Y-%m-%d") if isinstance(cell, pd.Timestamp) else str(cell)
-    return text == str(expected)
+        try:
+            return abs(float(cell) - float(expected)) <= margin
+        except (TypeError, ValueError):
+            # A number asked of a text or date column. Score it red; raising
+            # would abort the run and lose every question already paid for.
+            return False
+    return _as_text(cell) == str(expected)
+
+
+def _as_text(cell: Any) -> str:
+    """A cell as the question would have written it, dates narrowed to a day."""
+    if isinstance(cell, pd.Timestamp | datetime):
+        return cell.strftime("%Y-%m-%d")
+    return str(cell)
 
 
 def _check_deger(spec: dict, state: SessionState) -> tuple[bool, str]:
@@ -153,10 +186,12 @@ def _check_deger(spec: dict, state: SessionState) -> tuple[bool, str]:
         if frame is None:
             return False, f"'{suffix}' tablosu uretilmedi"
     else:
+        # Newest first, for the reason `_table` gives: a refetch writes the
+        # column the answer actually rests on into a later table.
         frame = next(
             (
                 state.tables[ref]
-                for ref in sorted(state.tables)
+                for ref in sorted(state.tables, reverse=True)
                 if spec["sutun"] in state.tables[ref]
             ),
             None,
@@ -213,7 +248,19 @@ def _check_donem_yok(spec: dict, state: SessionState) -> tuple[bool, str]:
 
 
 def _run_check(spec: dict, state: SessionState, answer: str) -> dict:
-    """Score one entry of a question's `checks:` list."""
+    """Score one entry of a question's `checks:` list.
+
+    A list entry carries exactly one check. Reading the first key and
+    ignoring the rest let a hand-edited file lose a check silently, and
+    silently is the wrong direction: the question then looks like it passed
+    more than it did.
+    """
+    if not isinstance(spec, dict) or len(spec) != 1:
+        return {
+            "tip": "bicim",
+            "gecti": False,
+            "detay": f"bir kontrol girdisi tam olarak bir anahtar tasimali: {spec!r}",
+        }
     (kind, value), *_ = spec.items()
     if kind == "cevapta_gecmeli":
         ok = str(value).casefold() in answer.casefold()
@@ -246,29 +293,47 @@ def _one(entry: dict, deps: AgentDeps) -> dict:
     follow-up can build on the previous table. Eval items are independent;
     sharing would let one question's table satisfy the next question's check.
     """
-    state = initial_state(f"eval-{entry['id']}")
-    error = None
+    entry = entry if isinstance(entry, dict) else {}
+    question_id = str(entry.get("id") or "?")
+    question = str(entry.get("question") or "")
+    state = initial_state(f"eval-{question_id}")
+    error = None if question else "bicim: soru metni yok"
+    answer, duration = "", 0
+    if question:
+        try:
+            result = asyncio.run(run_turn(state, deps, question))
+            answer = result.answer or ""
+            duration = result.duration_ms
+        except Exception as exc:  # noqa: BLE001 - one bad question must not end the run
+            logger.warning("%s dustu: %s", question_id, exc)
+            error = f"{type(exc).__name__}: {exc}"
+
+    # Scoring is inside the guard too. It reads a table a tool built and a
+    # spec a person typed, so it has its own ways to raise -- a column that
+    # is text where a number was expected, a half-written check. Outside the
+    # guard those killed the whole run, and because the report is written
+    # only after every question is scored, the measurement already paid for
+    # was lost with it.
     try:
-        result = asyncio.run(run_turn(state, deps, entry["question"]))
-        answer = result.answer or ""
-        usage, duration = result.usage, result.duration_ms
-    except Exception as exc:  # noqa: BLE001 - one bad question must not end the run
-        logger.warning("%s dustu: %s", entry["id"], exc)
-        error = f"{type(exc).__name__}: {exc}"
-        answer, usage, duration = "", None, 0
+        missing_series = sorted(
+            set(entry.get("expected_series") or []) - _used_series(state)
+        )
+        missing_tools = sorted(
+            set(entry.get("expected_tools") or []) - _called_tools(state)
+        )
+        checks = [_run_check(spec, state, answer) for spec in entry.get("checks") or []]
+    except Exception as exc:  # noqa: BLE001 - a bad check fails its row, not the run
+        logger.warning("%s puanlanamadi: %s", question_id, exc)
+        error = error or f"puanlama: {type(exc).__name__}: {exc}"
+        missing_series, missing_tools, checks = [], [], []
 
-    missing_series = sorted(
-        set(entry.get("expected_series") or []) - _used_series(state)
-    )
-    missing_tools = sorted(
-        set(entry.get("expected_tools") or []) - _called_tools(state)
-    )
-    checks = [_run_check(spec, state, answer) for spec in entry.get("checks") or []]
     flags = state.verification.flags if state.verification else []
-
+    # The real cost, not zero. `state.usage` is this turn's running total --
+    # `_one` builds a fresh state per question -- so it holds what a crashed
+    # question spent before it fell over, which `result.usage` never reaches.
     return {
-        "id": entry["id"],
-        "soru": entry["question"],
+        "id": question_id,
+        "soru": question,
         "kategori": entry.get("category"),
         "gecti": bool(
             error is None
@@ -289,7 +354,7 @@ def _one(entry: dict, deps: AgentDeps) -> dict:
         ),
         "kesinti": state.truncated_reason,
         "sure_ms": duration,
-        "token": usage.total_tokens if usage else 0,
+        "token": state.usage.total_tokens,
         "cevap": answer,
         "hata": error,
     }
@@ -305,7 +370,7 @@ def run(deps: AgentDeps | None = None, *, path: Path | None = None) -> dict:
     Writing is the caller's job -- `__main__` does it -- so a test can score
     a run without leaving a file behind.
     """
-    entries = yaml.safe_load((path or QUESTIONS_PATH).read_text(encoding="utf-8"))
+    entries = yaml.safe_load((path or QUESTIONS_PATH).read_text(encoding="utf-8")) or []
     deps = deps or _deps()
     rows = [_one(entry, deps) for entry in entries]
     return {
@@ -314,7 +379,11 @@ def run(deps: AgentDeps | None = None, *, path: Path | None = None) -> dict:
         "soru_sayisi": len(rows),
         "gecen": f"{sum(1 for row in rows if row['gecti'])}/{len(rows)}",
         "bayrakli": sum(1 for row in rows if row["bayrak"]),
-        "kesintili": sum(1 for row in rows if row["kesinti"]),
+        # A crash sets `truncated_reason` on its way out (`llm_error`), so a
+        # crashed row would be counted here as well as under `hata`. One
+        # failure, one count: this is the turns that ran out of budget or
+        # steps without raising.
+        "kesintili": sum(1 for row in rows if row["kesinti"] and not row["hata"]),
         "sure_ms": sum(row["sure_ms"] for row in rows),
         "token": sum(row["token"] for row in rows),
         "sorular": rows,
@@ -341,6 +410,9 @@ if __name__ == "__main__":
             ("eksik arac", ", ".join(row["eksik_arac"])),
             ("kesinti", row["kesinti"] or ""),
             ("hata", row["hata"] or ""),
+            # A turn that never reached the verifier produced an answer
+            # nothing checked, which is worth seeing even when the row passed.
+            ("dogrulanmadi", "" if row["dogrulandi"] else "verify adimi yok"),
         ):
             if detail:
                 print(f"          {reason}: {detail}")

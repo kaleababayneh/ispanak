@@ -195,42 +195,64 @@ def places(text: str) -> frozenset[str]:
     return frozenset(_PLACE.findall(_fold(cleaned)))
 
 
-#: A series about another country opens with its name and ISO code:
-#: "Almanya (DEU) Tüketici Fiyat Endeksi (2010=100)". Measured 23 Sep: 1259
-#: series across eight IMF datagroups, 209 country names, of which Türkiye's
-#: own 12 rows are not foreign.
+#: A series about another country opens with its name and code:
+#: "Almanya (DEU) Tüketici Fiyat Endeksi (2010=100)". Measured 23 Sep on the
+#: real pool: 1316 series across thirteen cross-country datagroups.
 #:
-#: The name is held to at most three words with no digit, dot or dash, which
-#: is what separates a country from everything else ending in three capitals.
-#: Without those limits the pattern also swallowed BDDK's province rows,
-#: where the three capitals are a currency: "ADANA - Diğer Mevduat (TRY)".
-_COUNTRY = re.compile(r"^([^\W\d_][^\d.()\-]{1,28})\(([A-Z]{3})\)")
+#: Deliberately loose, because `MIN_COUNTRY_CODES` below is the real guard.
+#: A tight pattern misses more than it saves: two-letter codes ("Euro Bölgesi
+#: (XM)"), a lower-case one ("Gürcistan(Geo)"), hyphenated names
+#: ("Bosna-Hersek"), and long ones ("Güney Kıbrıs Rum Yönetimi", "Hong Kong
+#: Çin Özel İdari Bölgesi") were all missed, 48 series in all -- and a missed
+#: row is worse than an unmarked one, because the family collapse leaves it
+#: standing as the single candidate for its table.
+_COUNTRY = re.compile(r"^([^\W\d_][^\d.()]{1,48})\(([A-Za-z]{2,3})\)")
 _HOME = "TUR"
+#: Words a country name may run to. Six covers "Hong Kong Çin Özel İdari
+#: Bölgesi"; past that it is a sentence, not a name.
+_COUNTRY_WORDS = 6
 #: Distinct codes a datagroup needs before its rows are read as countries.
-#: The pattern alone is not enough: "Konut Fiyat Endeksi (KFE)" is three
-#: words and three capitals too, and demoting the house price index would be
-#: the opposite of the point. Measured 23 Sep, the separation is total --
-#: twelve genuine cross-country tables carry 39 to 185 codes, every false
-#: positive carries exactly one, and nothing sits in between.
+#: This, not the pattern, is what keeps "Konut Fiyat Endeksi (KFE)" and
+#: "DÖVİZ/EFEKTİF Hacim (USD)" out. Measured 23 Sep with the loose pattern
+#: above: thirteen genuine cross-country tables carry 39 to 193 codes, every
+#: false positive sits in a table with one, and nothing lies in between.
 MIN_COUNTRY_CODES = 10
 
 
 def country_match(name: str) -> tuple[str, str] | None:
-    """(folded country name, ISO code) for a series about one country.
+    """(folded country name, code) for a series about one country.
 
     Ours is not abroad: Turkey's own rows sit in the same cross-country
     tables and must not be demoted, so the home code reads as no match.
 
-    The name is held to at most three words with no digit, dot or dash. That
-    is what separates a country from everything else ending in three
-    capitals; without it the pattern also swallowed BDDK's province rows,
-    where the capitals are a currency ("ADANA - Diğer Mevduat (TRY)").
+    A match here is a candidate, not a verdict. `_countries_of_tables` keeps
+    only the ones whose whole datagroup is a country breakdown, which is why
+    this pattern can afford to be generous.
     """
     match = _COUNTRY.match(str(name or ""))
-    if match is None or match.group(2) == _HOME:
+    if match is None or match.group(2).upper() == _HOME:
         return None
     label = match.group(1).strip()
-    return (_fold(label), match.group(2)) if len(label.split()) <= 3 else None
+    if not label or len(label.split()) > _COUNTRY_WORDS:
+        return None
+    return (_fold(label), match.group(2).upper())
+
+
+def _country_named(country: str, folded_query: str) -> bool:
+    """Does the query name this country, as a word rather than a fragment?
+
+    The province rule a hundred lines up already learned this: a bare
+    substring test reads "Çin" out of "içindeki" and "cinsinden", and "Şili"
+    out of "karşılık". Measured 23 Sep, the eval's own A3 ("...toplam konut
+    satışları içindeki payı nedir?") exempted every Chinese series from the
+    rule that way, which quietly switched it off.
+    """
+    if not country:
+        return False
+    return (
+        re.search(rf"(?<![a-z0-9]){re.escape(country)}(?![a-z0-9])", folded_query)
+        is not None
+    )
 
 
 #: "Tüketici Fiyat Endeksi (2025=100)" -> stem and base year. Price indices
@@ -367,18 +389,68 @@ def series_meta(
     return frame.assign(country=_countries_of_tables(frame))
 
 
+def _missing(value: Any) -> bool:
+    """`None`, NaN or empty -- a datagroup that is not there."""
+    return value is None or value == "" or (isinstance(value, float) and pd.isna(value))
+
+
 def _countries_of_tables(frame: pd.DataFrame) -> list[str]:
     """Keep the country name only where its whole datagroup is a country
-    breakdown, and drop the ISO code once it has done its counting."""
+    breakdown, and drop the code once it has done its counting.
+
+    A series with no datagroup is skipped rather than counted. It used to be
+    filed under the string "None", which put every group-less row in the pool
+    into one bucket: with `evds=None` -- the documented degraded build, and
+    what a fresh clone gets, since bronze is gitignored -- that bucket held
+    over two hundred codes, cleared the threshold, and marked "Konut Fiyat
+    Endeksi (KFE)" as a country. A row outside any datagroup cannot be part
+    of a datagroup's country breakdown by definition.
+
+    `isinstance(..., tuple)` rather than `is not None`, so running this over
+    its own output leaves everything unmarked instead of raising `IndexError`
+    on the empty strings it wrote. It is meant to run once, from
+    `series_meta`; this only decides how it fails if it ever runs twice.
+    """
     codes: dict[str, set[str]] = {}
     for group, match in zip(frame["group"], frame["country"], strict=True):
-        if match is not None:
+        if isinstance(match, tuple) and not _missing(group):
             codes.setdefault(str(group), set()).add(match[1])
     return [
         match[0]
-        if match is not None and len(codes.get(str(group), ())) >= MIN_COUNTRY_CODES
+        if isinstance(match, tuple)
+        and not _missing(group)
+        and len(codes.get(str(group), ())) >= MIN_COUNTRY_CODES
         else ""
         for group, match in zip(frame["group"], frame["country"], strict=True)
+    ]
+
+
+#: The ranking columns `series_meta` writes. A stored index predating a rule
+#: simply lacks its column, and every read is guarded, so the search still
+#: works -- it just silently ranks the way it used to.
+META_COLUMNS = ("series_id", "table", "places", "country", "archive", "family")
+
+
+def meta_notes(meta: pd.DataFrame | None) -> list[str]:
+    """What is missing from a stored index, in words a person can act on.
+
+    The manifest's digest cannot answer this: it hashes ids and search texts,
+    and a ranking rule that adds a column changes neither. Measured 23 Sep
+    with the `country` column dropped, "tüketici fiyat endeksi" went back to
+    answering with Germany's CPI and nothing anywhere said so. An index is
+    derived and gitignored, so after pulling a rule the only honest signal is
+    this one.
+    """
+    if meta is None or meta.empty:
+        return []
+    absent = [name for name in META_COLUMNS if name not in meta.columns]
+    if not absent:
+        return []
+    return [
+        "Havuz arama indeksi bu surumden eski ("
+        + ", ".join(absent)
+        + " sutunu yok); siralama kurallarinin bir kismi calismiyor. "
+        "`python -m lakehouse_agent.lake.pool_index` ile yeniden kur."
     ]
 
 
@@ -427,7 +499,9 @@ def rank(
         if "country" in meta.columns
         else set()
     )
-    named_countries = {name for name in known_countries if name in folded_query}
+    named_countries = {
+        name for name in known_countries if _country_named(name, folded_query)
+    }
     superseded = _superseded(meta) if has_groups and "table" in meta.columns else {}
 
     def _row(series_id: str) -> pd.Series | None:

@@ -435,8 +435,8 @@ metin ikinci kez embed edilmiyor. Arama yalnızca sorguyu embed eder: uçtan uca
 Arama metni: ad + (EVDS'te) veri grubu adı + konu + etiketler + birim + frekans +
 tür + kaynak. `ids.parquet` sıralama için seri başına şunları saklar: veri
 grubu, EVDS'in ilk listelediği seri mi (ana seri), hangi ili anlatıyor, **hangi
-ülkeyi anlatıyor** (23 Eyl: 1.236 seri, 202 ülke; Türkiye'nin kendi satırları
-yabancı sayılmaz), arşiv mi, hangi kırılım ailesinden. Sıralama kuralları ve ölçüm: `docs/decisions.md`,
+ülkeyi anlatıyor** (23 Eyl: 1.316 seri, 13 ülke kırılımı tablosu; Türkiye'nin
+kendi satırları yabancı sayılmaz, grubu olmayan seri hiç aday olmaz), arşiv mi, hangi kırılım ailesinden. Sıralama kuralları ve ölçüm: `docs/decisions.md`,
 "Havuz araması: sıralama kuralları". Ölçüm dosyası:
 `eval/results/search_eval_2026-09-22.json` (ilk 5 isabet 25/27, ayrık sorgularda
 6/6).
@@ -462,8 +462,8 @@ Beklenen değerler 23 Eylül'de gerçek gold verisinden ölçüldü: TÜFE 2021-
 KTF12'de tek kırılma 2023-07; KTF12 ile KFE arasında iki yönde de anlamlı
 öncüllük yok.
 
-Ölçüm dosyası: `eval/results/answer_eval_2026-09-23.json` (11/12, 84 sn,
-506 bin token, `deepseek-ai/DeepSeek-V4.1-Flash`). Düşen tek satır A6 ve
+Ölçüm dosyası: `eval/results/answer_eval_2026-09-23.json` (11/12, 65 sn,
+479 bin token, `deepseek-ai/DeepSeek-V4.1-Flash`). Düşen tek satır A6 ve
 **bilerek kırmızı**: agent artışı doğru buluyor (%706,1) ama seriyi
 `CLAUDE.md`'nin şart koştuğu `TP.TUKFIY2025.GENEL` yerine
 `TP.GENENDEKS.T1` (2003=100) üzerinden hesaplıyor. Nedeni `tables_asked`

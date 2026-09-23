@@ -395,6 +395,10 @@ class LakeAdapter:
                         f"({built_with}); skorlar karsilastirilabilir degil, "
                         "indeksi yeniden kurun."
                     )
+                # A ranking rule that adds a meta column leaves the digest
+                # and the model name untouched, so this is the only thing
+                # that can say the stored index predates it.
+                self._index_notes.extend(pool_index.meta_notes(self._index.meta))
         return self._index
 
     def _index_scores(

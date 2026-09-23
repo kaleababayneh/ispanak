@@ -323,10 +323,13 @@ def test_a_query_that_names_no_table_keeps_the_similarity_order():
         ("Güney Kore (KOR) GSYH, Nominal", ("guney kore", "KOR")),
         # Ours is not abroad, though it sits in the same table.
         ("Türkiye (TUR) Tüketici Fiyat Endeksi (2010=100)", None),
-        # Three capitals that are a currency, not a country. Without the
-        # limits on the name this swallowed every BDDK province row.
-        ("ADANA - Diğer Mevduat (TRY)", None),
+        # A digit or a dot in the name is still not a country.
         ("F.1.2.Özel Çekme Hakları (SDR)", None),
+        # Deliberately a match: the pattern is generous and the datagroup
+        # threshold is the guard. On its own this row would be read as a
+        # country; `_countries_of_tables` drops it because BDDK rows carry
+        # no datagroup. See the two tests below.
+        ("ADANA - Diğer Mevduat (TRY)", ("adana - diger mevduat", "TRY")),
     ],
 )
 def test_a_country_is_read_from_the_name_only_where_there_is_one(name, expected):
@@ -485,3 +488,107 @@ def test_an_index_built_before_these_rules_still_ranks():
     ids = [sid for sid, _ in ranked]
     assert len(ids) == 3
     assert ids.index("evds:tufe_2025") < ids.index("evds:tufe_2003")
+
+
+# --- what the 23 Sep review found ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        # Two letters, and the policy-rate table's other survivor. Missing it
+        # meant "politika faiz oranı" could answer with the euro area rate:
+        # the family collapses to one candidate, so whichever of Türkiye and
+        # the euro area is not demoted wins on cosine alone.
+        (
+            "Euro Bölgesi (XM) Merkez Bankası Politika Faiz Oranı",
+            ("euro bolgesi", "XM"),
+        ),
+        ("Gürcistan(Geo) Tüketici Fiyat Endeksi", ("gurcistan", "GEO")),
+        ("Bosna-Hersek (BIH) Cari İşlemler Dengesi Net", ("bosna-hersek", "BIH")),
+        (
+            "Güney Kıbrıs Rum Yönetimi (CYP) Tüketici Fiyat Endeksi",
+            ("guney kibris rum yonetimi", "CYP"),
+        ),
+        ("Türkiye (TUR) Tüketici Fiyat Endeksi", None),
+    ],
+)
+def test_the_pattern_reaches_the_countries_it_used_to_miss(name, expected):
+    assert pool_index.country_match(name) == expected
+
+
+def test_a_series_outside_any_datagroup_is_never_a_country():
+    """Group-less rows used to share the bucket "None". With `evds=None` --
+    the documented degraded build, and what a fresh clone gets, since bronze
+    is gitignored -- that bucket cleared the threshold and marked "Konut
+    Fiyat Endeksi (KFE)" as a country."""
+    codes = [
+        "ALB",
+        "ARM",
+        "AUT",
+        "AZE",
+        "BEL",
+        "BRA",
+        "CHE",
+        "CHL",
+        "COL",
+        "CZE",
+        "DNK",
+    ]
+    names = [f"Ulke{code.lower()} ({code}) Tuketici Fiyat Endeksi" for code in codes]
+    names.append("Konut Fiyat Endeksi (KFE)")
+    frame = pd.DataFrame(
+        {
+            "group": [None] * len(names),
+            "country": [pool_index.country_match(name) for name in names],
+        }
+    )
+    # Every row matches the pattern and there are more than MIN_COUNTRY_CODES
+    # distinct codes, so only the missing datagroup can keep them unmarked.
+    assert sum(1 for m in frame["country"] if m) == len(names)
+
+    assert set(pool_index._countries_of_tables(frame)) == {""}
+
+
+@pytest.mark.parametrize(
+    ("query", "country", "named"),
+    [
+        # The eval's own A3 turned the rule off for every Chinese series.
+        ("toplam konut satışları içindeki payı nedir", "cin", False),
+        ("ABD doları cinsinden GSYH", "cin", False),
+        ("karşılık ayrılan krediler", "sili", False),
+        ("Çin'in enflasyonu", "cin", True),
+        ("Almanya tüketici fiyat endeksi", "almanya", True),
+    ],
+)
+def test_a_country_is_named_as_a_word_not_as_a_fragment(query, country, named):
+    assert pool_index._country_named(country, pool_index._fold(query)) is named
+
+
+def test_running_the_country_pass_twice_does_not_raise():
+    frame = pd.DataFrame({"group": ["g"], "country": [("almanya", "DEU")]})
+
+    once = pool_index._countries_of_tables(frame)
+
+    assert pool_index._countries_of_tables(frame.assign(country=once)) == [""]
+
+
+def test_an_index_missing_a_ranking_column_says_so():
+    """The manifest digest hashes ids and search texts, so a rule that adds a
+    meta column changes neither. Without this note a stale index silently
+    ranks the way it used to."""
+    meta = pd.DataFrame(
+        {
+            "series_id": ["evds:X"],
+            "table": [None],
+            "places": [""],
+            "country": [""],
+            "archive": [False],
+            "family": [None],
+        }
+    )
+
+    assert pool_index.meta_notes(meta) == []
+    notes = pool_index.meta_notes(meta.drop(columns=["country"]))
+    assert len(notes) == 1
+    assert "country" in notes[0] and "yeniden kur" in notes[0]

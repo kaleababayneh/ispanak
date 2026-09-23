@@ -133,12 +133,17 @@
   category: kirilma
   expected_series: ["evds:TP.KTF12"]
   expected_tools: [get_series, detect_changes]
-  not: "Aylığa çevrilmiş seride tek kırılma: 2023-07. Sıçrama büyüklüğü
-        haftadan aya çevirme yöntemine göre oynuyor, tarih oynamıyor;
-        bu yüzden kontrol tarihe bakıyor."
+  not: "Aylığa çevrilmiş seride kırılma 2023-07. Sıçrama büyüklüğü haftadan
+        aya çevirme yöntemine göre oynuyor, tarih oynamıyor.
+        KIRILMA SAYISI da oynuyor: aynı yöntemle KFE iki kırılma veriyor.
+        Bu yüzden `deger` kullanılmıyor; dönem verilmeyen `deger` bütün
+        satırların eşleşmesini ister, yani 'tam olarak bir kırılma olsun'
+        demek olurdu ve ikinci bir gerçek kırılma bulan agent kırmızı
+        alırdı. Kontrol tarihin raporlandığına bakıyor; 23 Eylül koşumunda
+        agent hem '2023-07' hem 'Temmuz 2023' yazdı."
   checks:
     - tablo_var: "detect_changes"
-    - deger: {tablo: "detect_changes", sutun: "tarih", beklenen: "2023-07-01"}
+    - cevapta_gecmeli: "2023"
 
 - id: B2
   question: "Konut fiyat endeksinde aykırı aylar var mı?"

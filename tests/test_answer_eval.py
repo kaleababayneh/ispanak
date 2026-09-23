@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -25,6 +26,10 @@ from lakehouse_agent.agent.state import (
 from lakehouse_agent.contracts import Source
 
 FETCHED_AT = datetime(2026, 9, 23, tzinfo=UTC)
+#: `QUESTIONS_PATH` is relative to the working directory, as `search_eval`'s
+#: paths are. A test must not inherit that: anchored here, the suite passes
+#: from any directory, the way every other fixture path in tests/ does.
+SHIPPED_QUESTIONS = Path(__file__).parent.parent / answer_eval.QUESTIONS_PATH
 
 
 def _state(
@@ -466,7 +471,7 @@ def test_verifier_flags_are_reported_without_failing_the_row(tmp_path):
 def test_every_shipped_question_uses_a_known_check_type():
     """The runner answers an unknown check with a failure, so a typo in the
     file would look like an agent regression on the day of a demo."""
-    entries = yaml.safe_load((answer_eval.QUESTIONS_PATH).read_text(encoding="utf-8"))
+    entries = yaml.safe_load(SHIPPED_QUESTIONS.read_text(encoding="utf-8"))
     known = {
         "cevapta_gecmeli",
         "deger",
@@ -492,7 +497,7 @@ def test_the_shipped_questions_cover_every_registered_tool():
     """A tool with no question is a tool nothing measures."""
     from lakehouse_agent.tools.toolset import make_registry
 
-    entries = yaml.safe_load((answer_eval.QUESTIONS_PATH).read_text(encoding="utf-8"))
+    entries = yaml.safe_load(SHIPPED_QUESTIONS.read_text(encoding="utf-8"))
     asked = {tool for entry in entries for tool in entry.get("expected_tools") or []}
 
     assert set(make_registry().names()) <= asked
@@ -506,9 +511,7 @@ def test_the_column_names_in_the_file_are_the_ones_the_tools_produce(entry_id):
 
     entries = {
         entry["id"]: entry
-        for entry in yaml.safe_load(
-            (answer_eval.QUESTIONS_PATH).read_text(encoding="utf-8")
-        )
+        for entry in yaml.safe_load(SHIPPED_QUESTIONS.read_text(encoding="utf-8"))
     }
     expected = {
         "A2": f"{column_name('evds:TP.KFE.TR')}_endeks_202101",
@@ -519,3 +522,162 @@ def test_the_column_names_in_the_file_are_the_ones_the_tools_produce(entry_id):
     named = entries[entry_id]["checks"][0]["deger"]["sutun"]
 
     assert named == expected[entry_id]
+
+
+# --- what the 23 Sep review found ------------------------------------------
+
+
+def test_a_broken_check_fails_its_row_and_the_run_goes_on(tmp_path):
+    """Scoring used to sit outside the guard, so a half-written check killed
+    the whole run -- and since the report is written only at the end, every
+    question already paid for in MIA calls was lost with it."""
+    from lakehouse_agent.testing import FakeLLM
+
+    deps = _deps(
+        [FakeLLM.text("P."), FakeLLM.text("C."), FakeLLM.text("P."), FakeLLM.text("C.")]
+    )
+    path = _questions(
+        tmp_path,
+        [
+            {"id": "Q1", "question": "a?", "checks": [{"deger": {"beklenen": 1}}]},
+            {"id": "Q2", "question": "b?"},
+        ],
+    )
+
+    report = answer_eval.run(deps, path=path)
+
+    assert [row["id"] for row in report["sorular"]] == ["Q1", "Q2"]
+    assert not report["sorular"][0]["gecti"]
+    assert "puanlama" in report["sorular"][0]["hata"]
+    assert report["sorular"][1]["gecti"]
+
+
+def test_a_refetch_is_read_from_the_newer_table():
+    """A5: the agent pulls the weekly rate into t01, converts to a monthly
+    mean in t02. Reading the earliest table scored the right answer red."""
+    state = _state(
+        tables={
+            "t01_get_series": pd.DataFrame(
+                {"period": _months("2026-06", 1), "TP_KTF12": [40.1]}
+            ),
+            "t02_get_series": pd.DataFrame(
+                {"period": _months("2026-06", 1), "TP_KTF12": [40.335]}
+            ),
+        }
+    )
+
+    result = _check(
+        {
+            "deger": {
+                "sutun": "TP_KTF12",
+                "donem": "2026-06",
+                "beklenen": 40.335,
+                "tolerans_yuzde": 0.5,
+            }
+        },
+        state,
+    )
+
+    assert result["gecti"], result["detay"]
+
+
+def test_a_missing_cell_is_not_a_verdict():
+    """An empty verdict column satisfied `beklenen: false`, which is the
+    "the test never ran" case the check exists to catch."""
+    empty = _state(tables={"t01_causality": pd.DataFrame({"anlamli": [None, None]})})
+    spec = {"deger": {"tablo": "causality", "sutun": "anlamli", "beklenen": False}}
+
+    assert not _check(spec, empty)["gecti"]
+
+
+def test_pandas_na_does_not_take_the_run_down():
+    state = _state(
+        tables={
+            "t01_causality": pd.DataFrame(
+                {"anlamli": pd.array([None, True], dtype="boolean")}
+            )
+        }
+    )
+
+    result = _check(
+        {"deger": {"tablo": "causality", "sutun": "anlamli", "beklenen": True}}, state
+    )
+
+    assert not result["gecti"]
+
+
+def test_a_number_asked_of_a_text_column_fails_rather_than_raising():
+    state = _state(tables={"t01_causality": pd.DataFrame({"yon": ["a -> b"]})})
+
+    result = _check(
+        {"deger": {"tablo": "causality", "sutun": "yon", "beklenen": 1}}, state
+    )
+
+    assert not result["gecti"]
+
+
+def test_two_checks_in_one_entry_are_refused_instead_of_half_run():
+    """Reading the first key and dropping the rest failed open: the question
+    looked like it had passed more than it did."""
+    result = _check({"cevapta_gecmeli": "x", "tablo_var": "y"}, _state(), "x")
+
+    assert not result["gecti"]
+    assert "bir anahtar" in result["detay"]
+
+
+def test_a_crashed_question_reports_what_it_spent(tmp_path):
+    from lakehouse_agent.testing import FakeLLM
+
+    deps = _deps([FakeLLM.text("Plan.")])  # runs out before the answer
+    path = _questions(tmp_path, [{"id": "Q1", "question": "a?"}])
+
+    report = answer_eval.run(deps, path=path)
+    row = report["sorular"][0]
+
+    assert row["hata"]
+    assert row["token"] > 0, "gercek maliyet state.usage'da duruyor"
+    # `run_turn` stamps truncated_reason on its way out, so the row carries
+    # both; counting it twice would overstate how many turns ran out of road.
+    assert report["kesintili"] == 0
+
+
+def test_a_tool_name_the_registry_does_not_know_is_not_a_call(tmp_path):
+    from lakehouse_agent.testing import FakeLLM
+
+    deps = _deps(
+        [
+            FakeLLM.tool_call("yok_boyle_arac", {}),
+            FakeLLM.text("O."),
+            FakeLLM.text("C."),
+        ]
+    )
+    path = _questions(
+        tmp_path,
+        [{"id": "Q1", "question": "a?", "expected_tools": ["yok_boyle_arac"]}],
+    )
+
+    report = answer_eval.run(deps, path=path)
+
+    assert report["sorular"][0]["eksik_arac"] == ["yok_boyle_arac"]
+
+
+def test_a_question_without_a_text_fails_its_row_only(tmp_path):
+    from lakehouse_agent.testing import FakeLLM
+
+    deps = _deps([FakeLLM.text("P."), FakeLLM.text("C.")])
+    path = _questions(tmp_path, [{"id": "Q1"}, {"id": "Q2", "question": "b?"}])
+
+    report = answer_eval.run(deps, path=path)
+
+    assert not report["sorular"][0]["gecti"]
+    assert report["sorular"][1]["gecti"]
+
+
+def test_an_empty_question_file_is_an_empty_report(tmp_path):
+    path = tmp_path / "bos.yaml"
+    path.write_text("", encoding="utf-8")
+
+    report = answer_eval.run(_deps([]), path=path)
+
+    assert report["soru_sayisi"] == 0
+    assert report["gecen"] == "0/0"
