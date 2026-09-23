@@ -18,7 +18,7 @@ from typing import Any
 
 import pandas as pd
 
-from lakehouse_agent.agent.labels import column_units, table_labels
+from lakehouse_agent.agent.labels import column_label, column_units, table_labels
 from lakehouse_agent.agent.state import (
     ApprovalDecision,
     ApprovalRequest,
@@ -61,6 +61,19 @@ ERROR_MESSAGES = {
     "CancelledError": "Tur durduruldu.",
 }
 GENERIC_ERROR = "Bir hata oluştu. Lütfen tekrar deneyin."
+
+#: What each kind of table is, by the suffix `new_table_ref` gave it
+#: (`tools/*.py`). A reader met `t02_detect_changes` with no idea whose
+#: break it held (seen 23 Sep); the tool that built it and the column it
+#: analysed are both in the lineage, so the title is derived, not typed.
+TOOL_TITLES = {
+    "get_series": "Seri tablosu",
+    "detect_changes": "Kırılma analizi",
+    "detect_anomalies": "Aykırı dönem analizi",
+    "causality": "Granger öncüllük testi",
+    "lag_corr": "Gecikmeli korelasyon",
+    "read_url": "Adresten okunan tablo",
+}
 
 #: Most series a default chart draws. Beyond this the picture is a hairball
 #: and the model should have asked for the columns it meant.
@@ -200,7 +213,9 @@ def default_chart(
     as something the agent asked for.
     """
     x = next((name for name in AXIS_COLUMNS if name in frame.columns), None)
-    if x is None:
+    if x is None or len(frame) < 2:
+        # One row is a number, not a line. Seen 23 Sep: a single-month fetch
+        # drew an empty chart with a time axis of milliseconds around it.
         return None
     numeric = [
         str(name)
@@ -246,6 +261,8 @@ def chart_labels(charts: Iterable[Any], table_ref: str) -> dict[str, str]:
 
 
 def _attr(thing: Any, name: str) -> Any:
+    if thing is None:
+        return None
     return thing.get(name) if isinstance(thing, Mapping) else getattr(thing, name, None)
 
 
@@ -305,22 +322,115 @@ def display_frame(
     return shown
 
 
-def step_line(payload: dict[str, Any]) -> str:
+def step_line(payload: dict[str, Any], tool: str | None = None) -> str:
     """The one-line label of a finished step.
 
-    Keyed on `node`, not `tool`: `step_end` carries no tool name
-    (`docs/contracts.md` section 6).
+    `step_end` carries no tool name (`docs/contracts.md` section 6), so the
+    caller passes the one it saw at `step_start`; without it the node
+    ("act") is all there is, and a screen of "act · 1707 ms" lines told a
+    person nothing about which tool ran (seen 23 Sep).
     """
     ok = payload.get("ok") is not False
     mark = "✓" if ok else "✗"
-    summary = str(payload.get("summary") or "").splitlines()
-    head = summary[0] if summary else ""
-    return f"{mark} {payload.get('node') or ''} · {payload.get('duration_ms', 0)} ms · {head}"
+    who = tool or str(payload.get("node") or "")
+    return f"{mark} {who} · {payload.get('duration_ms', 0)} ms"
+
+
+def table_title(
+    ref: str,
+    columns: Iterable[Any],
+    lineage: Mapping[str, Any],
+    charts: Iterable[Any] = (),
+) -> str:
+    """What a table is, in words: the analysis and the series it was run on.
+
+    `t02_detect_changes` → "Kırılma analizi — Konut kredisi faiz oranı".
+    The subject is the analysed column named in the result columns' lineage
+    (`inputs`), labelled the way the rest of the screen labels it: the
+    model's chart label if it gave one anywhere in the session, else the
+    catalog name from whichever table fetched it. A series table is titled
+    by its own columns. Falls back to the suffix when the lineage is silent.
+    """
+    suffix = ref.split("_", 1)[1] if "_" in ref else ref
+    kind = TOOL_TITLES.get(suffix, suffix.replace("_", " "))
+    names = [
+        str(name) for name in columns if str(name) not in ("period", "tarih", "dönem")
+    ]
+    entries = [lineage.get(f"{ref}.{name}") for name in names]
+    entries = [entry for entry in entries if entry is not None]
+
+    if suffix == "get_series":
+        # The series that were fetched, not the columns derived from them
+        # since: a title listing nominal, real, rebased and percent change
+        # of one balance ran to three lines (seen 23 Sep). A fetched column
+        # is the one whose lineage carries the catalog's name.
+        fetched = [
+            name for name in names if _attr(lineage.get(f"{ref}.{name}"), "label_tr")
+        ] or names
+        subject = ", ".join(
+            _label_anywhere(name, lineage, charts) for name in fetched[:3]
+        )
+        if len(fetched) > 3:
+            subject += f" … (+{len(fetched) - 3})"
+    elif suffix == "read_url":
+        urls = {str(_attr(e, "source_url") or "") for e in entries} - {""}
+        subject = next(iter(urls), "")
+    else:
+        inputs: list[str] = []
+        for entry in entries:
+            for name in _attr(entry, "inputs") or []:
+                if str(name) not in inputs:
+                    inputs.append(str(name))
+        subject = " ve ".join(_label_anywhere(name, lineage, charts) for name in inputs)
+    return f"{kind} — {subject}" if subject else kind
+
+
+def _label_anywhere(
+    column: str, lineage: Mapping[str, Any], charts: Iterable[Any]
+) -> str:
+    """A column's label regardless of which table it sits in.
+
+    The analysed column lives in the *source* table, so its lineage key is
+    not under the result table's ref: search every entry by name. The
+    model's own word for it, from any chart in the session, wins.
+    """
+    for chart in charts:
+        for one in _attr(chart, "series") or []:
+            if (
+                str(_attr(one, "column")) == column
+                and str(_attr(one, "label") or "").strip()
+            ):
+                return str(_attr(one, "label")).strip()
+    for key in lineage:
+        table_ref, _, name = str(key).rpartition(".")
+        if name == column and table_ref:
+            # No unit: a title is a name; the unit is on the column itself.
+            return column_label(table_ref, column, lineage, with_unit=False)
+    return column
 
 
 def flag_lines(payload: dict[str, Any]) -> list[str]:
     """One bullet per statement the verifier could not confirm."""
     return [f"- {flag.get('text', '')}" for flag in (payload.get("flags") or [])]
+
+
+def merge_sources(payloads: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Every source the turn cited, once each, in the order first seen.
+
+    The loop publishes `sources` per tool step, before the answer streams
+    (`loop.py`, in the step merge), so a turn of three fetches used to put
+    three "Kaynaklar" blocks above the answer. They are gathered here and
+    drawn once, at the end. Keyed on `series_id`, else `url`.
+    """
+    seen: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        for source in (payload or {}).get("sources") or []:
+            if not isinstance(source, Mapping):
+                continue
+            key = str(source.get("series_id") or source.get("url") or "")
+            if key and key not in seen:
+                seen[key] = dict(source)
+    return list(seen.values())
 
 
 def source_lines(payload: dict[str, Any]) -> list[str]:

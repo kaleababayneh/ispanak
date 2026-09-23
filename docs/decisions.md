@@ -2306,3 +2306,140 @@ Karar:  **`fix/read-url-js` (3d85df1) cherry-pick, commit'siz.** Tek çakışma
         biçimi (sözleşme `period`'u tarih diyor, tam tarih yanlış değil),
         `_real_deps` kopyası (biz `real_deps(lake=, sink=)` açtık).
 
+## Tablolar ne olduğunu söyler; adımlar tek katlanır kartta; araç adı adımda kalır (23 Eyl, U1 görüntüsünden)
+Bağlam: U1 sorusunda `t02_detect_changes` ve `t03_detect_changes` art arda
+        geldi, hangisinin kimin kırılması olduğu belli değildi. Adım kartları
+        ise "act · 1707 ms · …" diye başlıyordu — araç adı yoktu — ve sekiz
+        kart soru ile cevabın arasını dolduruyordu.
+Neden:  Başlık: arayüz yalnız `ref`'i yazıyordu; oysa sonuç sütunlarının
+        soyağacında `inputs` (analiz edilen sütun) ve `tool` var, analiz
+        edilen sütunun okunur adı da başka bir tablonun soyağacında ya da
+        modelin grafik etiketinde. Adım adı: `step_end` araç adı taşımaz
+        (sözleşme §6); `step_line` bitişte adı `node` ile eziyordu — benim
+        hatam, terminal kuralını tarayıcıya olduğu gibi taşımıştım.
+Karar:  `webui.table_title`: son ekten analiz türü (`TOOL_TITLES`),
+        `inputs`'tan konu; konunun etiketi önce oturumdaki herhangi bir
+        grafikteki model etiketi, yoksa hangi tabloda çekildiyse oradaki
+        katalog adı (`_label_anywhere`). "Kırılma analizi — Konut kredisi
+        faiz oranı", "Granger öncüllük testi — X ve Y", seri tablosunda
+        sütunlar, `read_url`'de adres. Terminal aynı başlığı kullanır.
+        Yeni kurulan tabloda "yeni: …" listesi yazılmaz (bütün başlıkları
+        tekrarlıyordu), yalnız var olan tabloya sütun eklendiğinde.
+        Adımlar: turun bütün araç adımları "Ajan adımları (N)" adlı tek
+        `cl.Step` altında (`parent_id`), tur bitince sayı yazılır; kart
+        katlı gelir, tıklayınca adımlar açılır. Tamamen gizlemek
+        istenirse `.chainlit/config.toml` `[UI] cot = "hidden"`; şartname
+        izlenebilirliği saydığı için varsayılan bu değil. Adım bitişinde
+        `step_line(payload, tool)` başlangıçta görülen araç adını korur,
+        hatalı adım `is_error` ile işaretlenir. (Burak'ın dalındaki
+        üst-kart fikri; onun gerekçesi sıralamaydı, bizimki kalabalık.)
+Kanıt:  Dört sabotaj (adım adı kayboluyor, başlık konuyu söylemiyor, model
+        etiketi başlığa akmıyor, terminal başlığı ref'te), dördü yakalandı.
+
+## Kaynaklar en altta, katlı kartta (23 Eyl)
+Bağlam: "Kaynaklar" bloğu cevabın üstünde görünüyordu; birden çok adım
+        kaynak eklediyse birden çok kez.
+Neden:  Döngü `sources` olayını her araç adımında, cevap akmadan önce
+        yayınlıyor (`loop.py` 1262, adım birleştirmesinde); arayüz geldiği
+        anda çiziyordu.
+Karar:  `webui.merge_sources`: turun bütün `sources` olayları biriktirilir,
+        `series_id` (yoksa `url`) ile tekilleştirilir, ilk görülme sırası
+        korunur, bozuk/kimliksiz girdi atlanır. `ChainlitSink.flush_sources`
+        bunu turun **en sonunda** — cevap, tablolar ve yedek grafikten sonra,
+        `AgentError` yolunda da — "Kaynaklar (N)" adlı `cl.Step` olarak
+        çizer; "Ajan adımları" gibi katlı gelir. Olay sözleşmesi değişmedi;
+        sıralama sunumun işi.
+Kanıt:  İki sabotaj (aynı kaynak iki kez, bozuk girdi listeye giriyor),
+        ikisi yakalandı.
+
+## U2 tablosu doğru; başlık ve reel etiketi düzeltildi (23 Eyl, dördüncü ekran görüntüsünden)
+Ölçüm:  Model deflatörü `base_period="2021-01"` ile çağırdı (soru "2021-01 =
+        100" diyor). Aynı çağrı araçla tekrarlandı: görüntüdeki her hücre
+        birebir (276.785 → 99.417,6162; endeks 35,9187; değişim −64,0813).
+        `docs/manual_test.md` U2 reel düzeyi 2025 bazıyla yazıyordu; endeks
+        ve yüzde bazdan bağımsız olduğu için ikisi de eklendi.
+Kusur:  (1) Seri tablosu başlığı türetilmiş sütunları da sayıyordu; bir
+        bakiyenin nominal, reel, endeks ve yüzde hâli üç satır başlık oldu.
+        (2) Reel sütunun başlığında "2021-01 fiyatlarıyla" iki kez: biri
+        sütun adının son ekinden (`_202101`), biri aracın yazdığı birimden
+        ("milyon TL, 2021-01 fiyatlariyla").
+Karar:  Başlık yalnız **çekilen** serileri sayar (soyağacında `label_tr`
+        taşıyan sütunlar), birimsiz. `deflate` için baz sütun adından
+        okunmaz; birim zaten söylüyor. Testli; sabotaj bu girdinin altında.
+
+## U3: kâr payı serisi faiz diye seçildi, cevap niyet cümlesi kaldı (23 Eyl, beşinci ekran görüntüsünden)
+Ölçüm:  Oturum kaydı (`data/adhoc/sessions/…1857274e.jsonl`): model
+        `search_catalog` sonucundan `evds:TP.KBK.TRY.18`'i seçti; tablo o
+        seriyle birebir doğru (18,514 / 18,5325 …), pay min/max 2023-12
+        %4,4 ve 2022-06 %26,7 doğru. Ama `KBK.TRY.18` bronze veri grubunda
+        "Kredi **Kâr** Oranları (Akım)" — katılım bankaları kâr payı;
+        `KTF12` "Kredi Faiz Oranları (Akım)". Gold katalogda `name_tr`
+        virgül farkıyla aynı, `topic` aynı; ayıran alanlar `tags` ("kredi,
+        kâr oranı" / "kredi, faiz") ve aday kartındaki `tablo`. İki seri
+        yakın (287 haftada korelasyon 0,98, ortalama fark 0,47 puan, en çok
+        13,6 puan) ama aynı şey değil. Arama: KBK 0,713 (1.), KKP stok
+        0,679 (2.), KTF12 0,665 (3.). Onay kapısı susmuş: skor oranı 0,953
+        eşiği geçiyor ama ortak-kelime ölçüsü ilk dördü birlikte tartıyor
+        ("3.2.1.1. Konut Kredileri" araya girince 0,167 < 0,40).
+        Cevap: 19. adımda (observe) beş cümlelik gerçek cevap yazılmış;
+        cevap çağrısı sondaki asistan notlarını bilerek düşürdüğü için
+        (`_answer_messages`, 22 Eyl kararı) onu görmedi ve "…tablodan
+        çekiyorum." dedi. Yeniden deneme yalnız **boş** cevapta çalışıyordu.
+        Doğrulayıcı sayı bulamadığı için geçti.
+Karar:  Şema değişikliği gerekmedi; üç düzeltme:
+        1. `approvals._name_twins`: ilk adayla **noktalama dışında birebir
+           aynı adı** taşıyan, skoru oran içinde adaylar varsa kart, yalnız
+           o ikizlerle. Rakamlar korunur ("3 Aya" ≠ "6 Aya"). 27 kayıtlı
+           arama sorgusunda: eski kural 3, %40 ortak-kelime çift kuralı 25
+           (reddedildi), birebir-ad kuralı **4** (konut faizi, ihtiyaç
+           faizi, işsizlik, cari işlemler — hepsi gerçek ikiz). Kartın
+           `detail`'i zaten `tablo` ile başlıyordu; şimdi görülüyor.
+        2. `agent/narration.py`: `looks_like_narration` (kısa, rakamsız,
+           "-yorum" yapma fiili; 13 eval cevabında sıfır yanlış pozitif)
+           ve `draft_hint` (son uzun asistan notu). `_answer` niyet
+           cümlesinde bir kez daha dener: düşünme kapalı, sistem promptuna
+           "cevabı şimdi yaz" ve varsa taslak. İkinci deneme de niyetse
+           metin olduğu gibi kalır; "cevap üretmedi" demek daha kötü.
+        3. Planner kural 12: `tablo` "Kâr Oranları" ise kâr payıdır, faiz
+           sorusunda "Faiz Oranları" olanı seç.
+        Plan cümleleri ("… arıyorum") artık "Ajan adımları" kartının
+        içinde; sohbet balonu olarak cevap sanılıyordu.
+        Kartın varsayılanı en yüksek skor değil: ikizler yalnız tablosuyla
+        ayrıldığı için varsayılan, tablosunda sorunun bir kelimesi geçen
+        ikizdir (`_preferred_twin`, sorgu `_query_hint` ile son
+        `search_catalog` çağrısından okunur). Otomatik yolda (eval, kapalı
+        kart) uygulanan varsayılan olduğu için bu, eval'in doğru seriyi
+        çekmesi demek; kelime eşleşmezse eski davranış (en yüksek skor).
+        A1 eval kontrolü: 16 Eylül'ün "ağırlıklı ortalama" altdizgesi 23
+        Eylül'ün son üç koşumunda üç kez düştü (cevap "aylık ortalama"
+        diyor, seri ve değerler doğru). Sözcük seçimi doğruluk ölçmüyor;
+        kontrol 2026-06 = 40,335 değer kontrolü + "ortalama" oldu.
+Kanıt:  Altı sabotaj (ikiz kuralı rakamları atıyor, ikizler kart açmıyor,
+        niyet cümlesi cevap sayılıyor, taslak verilmiyor, varsayılan yine en
+        yüksek skor, sorgu tarihten okunmuyor), altısı yakalandı.
+        `answer_eval` iki kez koşuldu: kapı + planner değişikliğinden sonra
+        12/13 (A1 sözcük kontrolü, yukarıda), A1 kontrolü değişip ikiz
+        varsayılanı eklendikten sonra **13/13**, 0 kesinti, 3 bayrak.
+
+## U3 ikinci koşum: adım sınırı — `top` satırın kalanını vermiyordu (23 Eyl)
+Ölçüm:  Kart bu kez doğru çalıştı (varsayılan `KTF12`, kişi onu seçti). Tur
+        yine de `step_limit` ile bitti: 3 arama + get_series + ratio + 2 top
+        + get_series(into=active) + top(KTF12) + mark(period, hata) + mark +
+        **tek aylık get_series** = 12. Modelin kendi notu: "Tablonun tamamını
+        göremiyorum; faiz serisini o aylara göre getireyim." `top` yalnız
+        sıralanan sütunu listeliyordu; aynı satırdaki faizi okumanın aracı
+        yoktu. Yedek grafik de tek satırlık `t02` tablosunu çizdi: milisaniye
+        eksenli boş bir grafik.
+Karar:  `top` seçilen dönemlerin **bütün sayısal sütunlarını** özete ve
+        önizlemeye koyar ("2022-06: pay=26.6872 (TP_KTF12=18.1775)"); işaret
+        (bool) ve metin sütunları dışarıda, en çok `MAX_TOP_COMPANIONS`=6.
+        Planner kural 13: "o ayda X neydi" aynı satırdan okunur, seri ay ay
+        çekilmez. `default_chart` tek satırlık tabloya grafik çizmez.
+        Kart değişikliği geri alınmadı: bu koşumda işini yaptı; sorun ondan
+        önce de vardı (ilk koşumda model taslağı observe'da yazıp cevapta
+        niyet cümlesi bırakmıştı), yalnız adım sayısı farklıydı.
+Kanıt:  İki sabotaj (satırın kalanı düşürülüyor, tek satıra grafik), ikisi
+        yakalandı. `answer_eval` 13/13. U3 gerçek modelle: **9 adım, kesinti
+        yok** (öncesi 12, `step_limit`); araçlar search×3, get_series,
+        ratio, top, top, mark?, make_chart; cevap 2022-06 (%26,7, faiz
+        %18,2) ve 2023-12 (%4,4) ile o aylardaki faizi aynı turda verdi.

@@ -495,3 +495,37 @@ def test_a_follow_up_that_only_reads_the_table_does_not_draw_it_again():
 
     assert "40.3" in first and "kuruldu" in first
     assert "40.3" not in second and "tablo" not in second
+
+
+def test_the_terminal_table_carries_the_same_derived_title():
+    import pandas as pd
+
+    from lakehouse_agent.contracts import ColumnInfo
+
+    frame = pd.DataFrame({"tarih": ["2023-07-01"], "sicrama_yuzde": [51.4]})
+    lineage = {
+        "t01_get_series.TP_KTF12": ColumnInfo(name="TP_KTF12", label_tr="Faiz"),
+        "t02_detect_changes.sicrama_yuzde": ColumnInfo(
+            name="sicrama_yuzde", inputs=["TP_KTF12"]
+        ),
+    }
+    screen = StringIO()
+    terminal = Terminal(
+        console=Console(file=screen, width=110, no_color=True),
+        tables={"t02_detect_changes": frame}.get,
+        lineage=lineage,
+    )
+    asyncio.run(
+        terminal.emit(
+            _event(
+                "table_update",
+                table_ref="t02_detect_changes",
+                columns=[],
+                rows=[],
+                new_columns=["sicrama_yuzde"],
+            )
+        )
+    )
+    asyncio.run(terminal.emit(_event("done")))
+
+    assert "Kırılma analizi — Faiz" in screen.getvalue()

@@ -12,6 +12,7 @@ reading one file.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -123,6 +124,93 @@ def _words(name: str) -> set[str]:
     return set(re.findall(r"[a-z]+", folded))
 
 
+def _same_name(a: str, b: str) -> bool:
+    """The same name but for punctuation, spacing and case -- digits kept.
+
+    "Konut Kredisi, (TL, Akım, %)" and "Konut Kredisi (TL, Akım, %)" are one
+    name; "3 Aya Kadar Vadeli" and "6 Aya Kadar Vadeli" are not, which is
+    why this does not reuse `_words` (it drops digits).
+    """
+    fold = lambda t: re.sub(  # noqa: E731 - one expression, used twice
+        r"[^a-z0-9]+",
+        "",
+        str(t).replace("İ", "i").replace("I", "ı").lower().translate(_TR_FOLD),
+    )
+    return bool(fold(a)) and fold(a) == fold(b)
+
+
+def _name_twins(
+    candidates: list[dict[str, Any]], ratio: float, top_k: int
+) -> list[dict[str, Any]]:
+    """The top candidate and every close-scoring one that carries its name.
+
+    Measured 23 Sep: for "konut kredisi faiz oranı" the pool returned
+    `TP.KBK.TRY.18` (participation banks' profit share) first and
+    `TP.KTF12` (the loan rate) third, named identically but for a comma,
+    with the stock-rate series between them. The top-two/top-four rule saw
+    four different names and stayed quiet; the model picked the profit
+    share for a question about interest. Names the catalog cannot tell
+    apart are exactly what a person settles in one click -- the card shows
+    each one's table. Over the 27 stored search queries this fires on four,
+    all genuine twins; the 40%-shared-words version fired on 25.
+    """
+    top = candidates[0]
+    top_score = float(top.get("score") or 0)
+    if top_score <= 0:
+        return []
+    name = str(top.get("name_tr") or "")
+    twins = [
+        c
+        for c in candidates[1:top_k]
+        if float(c.get("score") or 0) >= top_score * ratio
+        and _same_name(name, str(c.get("name_tr") or ""))
+    ]
+    return [top, *twins] if twins else []
+
+
+def _query_hint(state: SessionState) -> str:
+    """The `search_catalog` query behind the card, read off the history.
+
+    `state.pending_calls` is popped before the tool runs, so by the time the
+    gate looks the call is only in `state.messages`, as the last assistant
+    message's `tool_calls` (OpenAI shape, `function.arguments` a JSON
+    string). Empty when there is none or it does not parse.
+    """
+    for message in reversed(state.messages):
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or {}
+            if function.get("name") != "search_catalog":
+                continue
+            try:
+                return str(
+                    json.loads(function.get("arguments") or "{}").get("query") or ""
+                )
+            except (ValueError, TypeError, AttributeError):
+                return ""
+        return ""
+    return ""
+
+
+def _preferred_twin(twins: list[dict[str, Any]], query: str) -> dict[str, Any]:
+    """Which twin the card marks as default.
+
+    The top score is the wrong default for a twin card: for "konut kredisi
+    faiz oranı" it is the profit-share series, and in the auto path (eval,
+    a closed card) the default is what gets applied. Twins differ by table
+    only, so the twin whose table carries a word of the question ("Faiz" in
+    "Kredi Faiz Oranları") is the one the person meant. No such word: the
+    top score, as before.
+    """
+    words = {w for w in _words(query) if len(w) >= 4}
+    for candidate in twins:
+        table_words = _words(str(candidate.get("tablo") or ""))
+        if words & table_words:
+            return candidate
+    return twins[0]
+
+
 def _same_quantity(labels: list[str]) -> float:
     """How much wording all the candidates share, 0 to 1.
 
@@ -171,23 +259,26 @@ def needs_series_choice(
     top, second = candidates[0], candidates[1]
     if top.get("eslesme") == "kod" and second.get("eslesme") == "kod":
         return None
-    top_score = float(top.get("score") or 0)
-    second_score = float(second.get("score") or 0)
-    if not (top_score > 0 and second_score >= top_score * ratio):
-        return None
 
-    shown = candidates[:top_k]
-    # Close scores alone are not a choice. Over 29 real queries the gate
-    # fired on all 29, because in a 45k pool everything scores close to
-    # everything. What makes a card worth a person's time is that the
-    # candidates are one quantity defined several ways; when they are
-    # different quantities, the model reading their names and coverage
-    # decides better than a person reading four lines.
-    # The same text the card would label them with, so the gate and the card
-    # never disagree about what a candidate is called.
-    labels = [str(c.get("name_tr") or c.get("series_id") or "") for c in shown]
-    if _same_quantity(labels) < MIN_SHARED_WORDS:
-        return None
+    shown = _name_twins(candidates, ratio, top_k)
+    default = _preferred_twin(shown, _query_hint(state)) if shown else top
+    if not shown:
+        top_score = float(top.get("score") or 0)
+        second_score = float(second.get("score") or 0)
+        if not (top_score > 0 and second_score >= top_score * ratio):
+            return None
+        shown = candidates[:top_k]
+        # Close scores alone are not a choice. Over 29 real queries the gate
+        # fired on all 29, because in a 45k pool everything scores close to
+        # everything. What makes a card worth a person's time is that the
+        # candidates are one quantity defined several ways; when they are
+        # different quantities, the model reading their names and coverage
+        # decides better than a person reading four lines.
+        # The same text the card would label them with, so the gate and the
+        # card never disagree about what a candidate is called.
+        labels = [str(c.get("name_tr") or c.get("series_id") or "") for c in shown]
+        if _same_quantity(labels) < MIN_SHARED_WORDS:
+            return None
 
     options = [
         ApprovalOption(
@@ -211,8 +302,8 @@ def needs_series_choice(
         kind="series_choice",
         question="Birden fazla seri sorguya uyuyor. Hangisiyle devam edelim?",
         options=options,
-        default=options[0].id,
-        context=_card_context({"candidates": candidates[:top_k]}),
+        default=str(default.get("series_id")),
+        context=_card_context({"candidates": shown}),
         step_no=step_no,
         created_at=datetime.now(UTC),
     )

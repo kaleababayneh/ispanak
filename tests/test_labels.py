@@ -250,3 +250,22 @@ def test_column_units_come_from_lineage_and_are_empty_when_unknown():
     units = column_units(REF, ["period", "TP_KTF12", "yok"], _lineage(FAIZ))
 
     assert units == {"period": "", "TP_KTF12": "%", "yok": ""}
+
+
+def test_a_deflated_column_names_its_price_base_once_through_the_unit():
+    """The tool's unit already says "2021-01 fiyatlariyla"; the header read
+    "— reel (2021-01 fiyatlarıyla) (milyon TL, 2021-01 fiyatlariyla)"."""
+    bakiye = ColumnInfo(
+        name="bakiye", label_tr="Konut Kredisi Bakiyesi", unit="milyon TL"
+    )
+    reel = ColumnInfo(
+        name="reel_bakiye_202101",
+        op="deflate",
+        inputs=["bakiye"],
+        unit="milyon TL, 2021-01 fiyatlariyla",
+    )
+
+    label = column_label(REF, reel.name, _lineage(bakiye, reel))
+
+    assert label == "Konut Kredisi Bakiyesi — reel (milyon TL, 2021-01 fiyatlariyla)"
+    assert label.count("2021-01") == 1

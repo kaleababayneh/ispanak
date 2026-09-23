@@ -114,6 +114,9 @@ def test_the_default_chart_caps_how_many_series_it_draws():
 
 
 def test_nothing_to_draw_means_no_chart():
+    one_row = pd.DataFrame({"period": [1], "v": [18.1775]})
+    assert webui.default_chart(one_row, "t02_a", []) is None  # a number, not a line
+
     no_axis = pd.DataFrame({"v": [1.0]})
     no_numbers = pd.DataFrame({"period": [1], "ad": ["x"]})
     all_missing = pd.DataFrame({"period": [1], "v": [np.nan]})
@@ -351,13 +354,84 @@ def test_two_columns_with_the_same_label_keep_their_own_names():
 # --- text helpers -------------------------------------------------------------
 
 
-def test_the_step_line_is_keyed_on_node_and_shows_the_first_summary_line():
-    """`step_end` carries no tool name (docs/contracts.md section 6)."""
-    line = webui.step_line(
-        {"node": "act", "ok": True, "duration_ms": 120, "summary": "ilk\nikinci"}
+def test_the_step_line_names_the_tool_the_caller_saw_at_step_start():
+    """`step_end` carries no tool name (docs/contracts.md section 6); a
+    screen of "act · 1707 ms" lines told nobody which tool ran."""
+    payload = {"node": "act", "ok": True, "duration_ms": 120, "summary": "ilk\nikinci"}
+
+    assert webui.step_line(payload, "get_series") == "✓ get_series · 120 ms"
+    assert webui.step_line(payload) == "✓ act · 120 ms"  # no tool known: the node
+    assert webui.step_line({"node": "act", "ok": False}, "read_url").startswith(
+        "✗ read_url"
     )
-    assert line == "✓ act · 120 ms · ilk"
-    assert webui.step_line({"node": "act", "ok": False}).startswith("✗ act")
+
+
+def test_an_analysis_table_is_titled_by_its_analysis_and_the_series_analysed():
+    """`t02_detect_changes` meant nothing on screen (seen 23 Sep)."""
+    from lakehouse_agent.agent.state import ChartSeries
+    from lakehouse_agent.contracts import ColumnInfo
+
+    lineage = {
+        "t01_get_series.TP_KTF12": ColumnInfo(
+            name="TP_KTF12", label_tr="Konut Kredisi (TL, Akım, %)"
+        ),
+        "t01_get_series.TP_KFE_TR": ColumnInfo(
+            name="TP_KFE_TR", label_tr="Konut Fiyat Endeksi (KFE)"
+        ),
+        "t02_detect_changes.tarih": ColumnInfo(
+            name="tarih", inputs=["TP_KTF12"], tool="detect_changes"
+        ),
+        "t02_detect_changes.sicrama_yuzde": ColumnInfo(
+            name="sicrama_yuzde", inputs=["TP_KTF12"]
+        ),
+        "t03_causality.yon": ColumnInfo(name="yon", inputs=["TP_KTF12", "TP_KFE_TR"]),
+    }
+
+    # catalog name when the model never labelled the column
+    assert (
+        webui.table_title("t02_detect_changes", ["tarih", "sicrama_yuzde"], lineage)
+        == "Kırılma analizi — Konut Kredisi (TL, Akım, %)"
+    )
+    # the model's own word wins, from any chart in the session
+    charts = [
+        ChartSpec(
+            chart_ref="c01",
+            table_ref="t01_get_series",
+            series=[ChartSeries(column="TP_KTF12", label="Konut kredisi faiz oranı")],
+        )
+    ]
+    assert (
+        webui.table_title(
+            "t02_detect_changes", ["tarih", "sicrama_yuzde"], lineage, charts
+        )
+        == "Kırılma analizi — Konut kredisi faiz oranı"
+    )
+    assert (
+        webui.table_title("t03_causality", ["yon"], lineage, charts)
+        == "Granger öncüllük testi — Konut kredisi faiz oranı ve Konut Fiyat Endeksi (KFE)"
+    )
+
+
+def test_a_series_table_is_titled_by_its_columns_and_unknown_tables_by_their_suffix():
+    from lakehouse_agent.contracts import ColumnInfo
+
+    lineage = {
+        "t01_get_series.TP_KTF12": ColumnInfo(
+            name="TP_KTF12", label_tr="Faiz", unit="%"
+        ),
+        "t04_read_url.a": ColumnInfo(name="a", source_url="https://x.y/z.pdf"),
+    }
+
+    assert (
+        webui.table_title("t01_get_series", ["period", "TP_KTF12"], lineage)
+        == "Seri tablosu — Faiz"
+    )
+    assert (
+        webui.table_title("t04_read_url", ["a", "b"], lineage)
+        == "Adresten okunan tablo — https://x.y/z.pdf"
+    )
+    assert webui.table_title("t05_lag_corr", ["gecikme"], {}) == "Gecikmeli korelasyon"
+    assert webui.table_title("t06_yeni_arac", ["x"], {}) == "yeni arac"
 
 
 def test_flags_and_sources_become_bullets_with_the_overflow_counted():
@@ -421,3 +495,67 @@ def test_a_removed_table_is_announced_not_ignored():
     )
     assert webui.removed_note({"table_ref": "t02_a", "new_columns": ["x"]}) is None
     assert webui.removed_note(None) is None
+
+
+def test_sources_from_every_step_are_merged_once_each_in_order_of_first_sight():
+    """Three fetches put three source blocks above the answer (seen 23 Sep)."""
+    a = {"sources": [{"series_id": "evds:TP.KTF12", "name": "Faiz"}]}
+    b = {
+        "sources": [
+            {"series_id": "evds:TP.KTF12", "name": "Faiz yine"},
+            {"url": "https://x/y"},
+        ]
+    }
+    c = {"sources": [{"url": "https://x/y"}, "bozuk", {"name": "kimliksiz"}]}
+
+    merged = webui.merge_sources([a, b, None, c])
+
+    assert merged == [
+        {"series_id": "evds:TP.KTF12", "name": "Faiz"},
+        {"url": "https://x/y"},
+    ]
+    assert webui.merge_sources([]) == []
+    assert len(webui.source_lines({"sources": merged})) == 2
+
+
+def test_a_series_table_title_lists_the_fetched_series_not_their_derivatives():
+    """U2's title ran to three lines: nominal, real, rebased and percent
+    change of one balance. The table holds one fetched series."""
+    from lakehouse_agent.contracts import ColumnInfo
+
+    lineage = {
+        "t03_get_series.bak": ColumnInfo(
+            name="bak", label_tr="Tüketici Kredileri - Konut (Toplam)", unit="milyon TL"
+        ),
+        "t03_get_series.reel_bak": ColumnInfo(
+            name="reel_bak",
+            op="deflate",
+            inputs=["bak"],
+            unit="milyon TL, 2021-01 fiyatlariyla",
+        ),
+        "t03_get_series.reel_bak_endeks_202101": ColumnInfo(
+            name="reel_bak_endeks_202101",
+            op="rebase",
+            inputs=["reel_bak"],
+            unit="endeks",
+        ),
+        "t03_get_series.reel_bak_degisim_202101": ColumnInfo(
+            name="reel_bak_degisim_202101",
+            op="change_since",
+            inputs=["reel_bak"],
+            unit="%",
+        ),
+    }
+    columns = [
+        "period",
+        "bak",
+        "reel_bak",
+        "reel_bak_endeks_202101",
+        "reel_bak_degisim_202101",
+    ]
+
+    assert webui.table_title("t03_get_series", columns, lineage) == (
+        "Seri tablosu — Tüketici Kredileri - Konut (Toplam)"
+    )
+    # nothing fetched-looking at all (a fixture): every column, as before
+    assert webui.table_title("t09_get_series", ["a", "b"], {}) == "Seri tablosu — a, b"

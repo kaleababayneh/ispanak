@@ -29,7 +29,7 @@ from rich.table import Table
 
 from lakehouse_agent.agent.formatting import json_safe, preview_rows
 from lakehouse_agent.agent.labels import table_labels
-from lakehouse_agent.agent.webui import chart_labels, note_table
+from lakehouse_agent.agent.webui import chart_labels, note_table, table_title
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime, types only
     from lakehouse_agent.agent.events import Event
@@ -223,7 +223,10 @@ class Terminal:
             )
         if not columns:
             return
-        table = Table(title=ref, title_style="bold")
+        table = Table(
+            title=f"{table_title(ref, columns, self._lineage, self._charts)}\n[dim]{ref}[/dim]",
+            title_style="bold",
+        )
         labels = table_labels(
             ref, columns, self._lineage, chart_labels(self._charts, ref)
         )

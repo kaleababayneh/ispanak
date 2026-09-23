@@ -56,6 +56,13 @@ class ChainlitSink:
         self._log = log
         self._answer: cl.Message | None = None
         self._steps: dict[int, cl.Step] = {}
+        self._tools: dict[int, str] = {}
+        #: One collapsed card per turn holding every step; a turn of eight
+        #: tool calls was eight cards between the question and its answer,
+        #: and the answer was what the person came for (seen 23 Sep).
+        self._parent: cl.Step | None = None
+        self._count = 0
+        self._sources: list[dict[str, Any]] = []
         # Tables are drawn once, at `done`, for the reason the terminal does
         # it: a turn that adds four columns fires five updates, and five
         # copies of a sixty-row table bury the answer.
@@ -83,25 +90,45 @@ class ChainlitSink:
     # -- the turn ----------------------------------------------------------
 
     async def _draw_plan(self, payload: dict[str, Any]) -> None:
+        """The model's narration ("… arıyorum") goes inside the steps card.
+
+        As a chat bubble it read like an answer -- U3's screen showed two
+        such sentences and no answer, and nobody could tell which was
+        which. It is a step, so it sits with the steps.
+        """
         text = str(payload.get("text") or "").strip()
-        if text:
-            await cl.Message(content=text, author="plan").send()
+        if not text:
+            return
+        if self._parent is None:
+            self._parent = cl.Step(name="Ajan adımları", type="run")
+            await self._parent.send()
+        step = cl.Step(name="plan", type="run", parent_id=self._parent.id)
+        step.output = text
+        await step.send()
 
     async def _draw_step_start(self, payload: dict[str, Any]) -> None:
         tool = payload.get("tool")
         if not tool:
             return
-        step = cl.Step(name=str(tool), type="tool")
+        if self._parent is None:
+            self._parent = cl.Step(name="Ajan adımları", type="run")
+            await self._parent.send()
+        step = cl.Step(name=str(tool), type="tool", parent_id=self._parent.id)
         step.input = payload.get("args") or {}
         await step.send()
-        self._steps[int(payload.get("step_no") or 0)] = step
+        no = int(payload.get("step_no") or 0)
+        self._steps[no] = step
+        self._tools[no] = str(tool)
+        self._count += 1
 
     async def _draw_step_end(self, payload: dict[str, Any]) -> None:
-        step = self._steps.pop(int(payload.get("step_no") or 0), None)
+        no = int(payload.get("step_no") or 0)
+        step = self._steps.pop(no, None)
         if step is None:
             return
-        step.name = webui.step_line(payload)
+        step.name = webui.step_line(payload, self._tools.pop(no, None))
         step.output = str(payload.get("summary") or payload.get("error") or "")
+        step.is_error = payload.get("ok") is False
         await step.update()
 
     async def _draw_table_update(self, payload: dict[str, Any]) -> None:
@@ -130,6 +157,11 @@ class ChainlitSink:
         gets the frame itself. `cl.Dataframe` paginates, so there is no reason
         to cut rows the way the terminal has to.
         """
+        if self._parent is not None:
+            self._parent.name = f"Ajan adımları ({self._count})"
+            await self._parent.update()
+        self._parent, self._count = None, 0
+
         touched, self._touched = self._touched, {}
         self.last_touched = set(touched)
         self.last_new, self._new = self._new, set()
@@ -144,10 +176,18 @@ class ChainlitSink:
                 webui.chart_labels(self._state.charts, ref),
             )
             labels = dict(zip(frame.columns, shown.columns, strict=True))
+            # "yeni:" only when columns were added to a table already on
+            # screen; on a brand-new table it just repeated every header.
             added = ", ".join(labels.get(name, name) for name in sorted(fresh))
-            note = f" — yeni: {added}" if fresh else ""
+            note = f" — yeni: {added}" if fresh and ref not in self.last_new else ""
+            title = webui.table_title(
+                ref, frame.columns, self._state.lineage, self._state.charts
+            )
             await cl.Message(
-                content=f"**{ref}** · {len(frame)} satır × {len(frame.columns)} sütun{note}",
+                content=(
+                    f"**{title}**  \n{ref} · {len(frame)} satır × "
+                    f"{len(frame.columns)} sütun{note}"
+                ),
                 elements=[cl.Dataframe(data=shown, display="inline", name=ref)],
             ).send()
 
@@ -171,11 +211,23 @@ class ChainlitSink:
             ).send()
 
     async def _draw_sources(self, payload: dict[str, Any]) -> None:
-        lines = webui.source_lines(payload)
-        if lines:
-            await cl.Message(
-                content="**Kaynaklar**\n" + "\n".join(lines), author="kaynaklar"
-            ).send()
+        # Published per step, before the answer; gathered here and drawn
+        # once by `flush_sources`, at the very end of the turn.
+        self._sources.append(payload)
+
+    async def flush_sources(self) -> None:
+        """The turn's sources, once, as a collapsed card under everything.
+
+        A `cl.Step` rather than a message so it folds like "Ajan adımları":
+        the person came for the answer, the citations are one click away.
+        """
+        merged, self._sources = webui.merge_sources(self._sources), []
+        lines = webui.source_lines({"sources": merged})
+        if not lines:
+            return
+        step = cl.Step(name=f"Kaynaklar ({len(merged)})", type="tool")
+        step.output = "\n".join(lines)
+        await step.send()
 
     async def _draw_error(self, payload: dict[str, Any]) -> None:
         user, log = webui.error_message(payload)
@@ -273,6 +325,7 @@ async def message(msg: cl.Message) -> None:
     except AgentError as exc:
         await sink.finish()
         await cl.Message(content=f"**Tur tamamlanamadı:** {exc}").send()
+        await sink.flush_sources()
         return
     finally:
         cl.user_session.set("turn_running", False)
@@ -287,6 +340,8 @@ async def message(msg: cl.Message) -> None:
     )
     if ref is not None:
         await _chart_fallback(state, ref)
+    # Last on purpose: after the answer, the tables and any chart.
+    await sink.flush_sources()
 
 
 async def _chart_fallback(state: SessionState, ref: str) -> None:

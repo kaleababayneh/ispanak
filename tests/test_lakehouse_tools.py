@@ -930,6 +930,42 @@ def test_top_names_the_rows_where_a_column_is_highest():
     assert [row["satir"] for row in result.preview] == ["2026-03", "2026-01"]
 
 
+def test_top_lists_the_whole_row_so_a_value_beside_it_needs_no_second_fetch():
+    """Measured 23 Sep: "the rate in the month the share peaked" cost the
+    model six steps and a one-month `get_series`, because `top` returned the
+    share alone. The row carries the rate; now the summary does too."""
+    frame = pd.DataFrame(
+        {
+            "period": pd.to_datetime(["2022-05-01", "2022-06-01", "2023-12-01"]),
+            "pay": [20.0, 26.6872, 4.433],
+            "TP_KTF12": [18.5, 18.1775, 42.088],
+            "isaret": [False, True, False],  # a mark column: not a value
+            "ad": ["a", "b", "c"],
+        }
+    )
+    spec = make_transform_table()
+
+    result = spec.fn(
+        TransformArgs(op="top", column="pay", n=1, table_ref="t01_read_url"),
+        _top_context(frame),
+    )
+
+    assert result.ok
+    assert "2022-06: 26.6872 (TP_KTF12=18.1775)" in result.summary
+    assert "isaret" not in result.summary and "ad=" not in result.summary
+    assert result.preview == [
+        {"satir": "2022-06", "pay": "26.6872", "TP_KTF12": "18.1775"}
+    ]
+
+    lowest = spec.fn(
+        TransformArgs(
+            op="top", column="pay", n=1, ascending=True, table_ref="t01_read_url"
+        ),
+        _top_context(frame),
+    )
+    assert "2023-12: 4.433 (TP_KTF12=42.088)" in lowest.summary
+
+
 def test_top_works_on_a_table_that_has_no_period_column():
     """A document read from a URL is often a printed table whose rows are
     named, not dated; every other operation needs a period and this one

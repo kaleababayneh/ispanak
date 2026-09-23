@@ -1905,6 +1905,44 @@ def test_an_empty_answer_is_asked_for_once_more_without_thinking():
     assert retry["thinking"] is False
 
 
+def test_a_sentence_of_intent_is_not_accepted_as_the_answer():
+    """Measured 23 Sep in the browser: "En düşük ve en yüksek aylardaki faiz
+    düzeylerini tablodan çekiyorum." came back as the answer, with the real
+    one sitting in the observe note the answer call never sees."""
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.text("Plan."),
+            FakeLLM.text("Simdi faiz duzeylerini tablodan çekiyorum."),
+            FakeLLM.text("Faiz en dusuk 2023-12, en yuksek 2022-06."),
+        ]
+    )
+
+    result = turn(state, deps)
+
+    assert result.answer == "Faiz en dusuk 2023-12, en yuksek 2022-06."
+    retry = deps.llm.calls[-1]
+    assert retry["thinking"] is False
+    assert "niyet" not in retry["messages"][0]["content"]  # the note is Turkish prose
+    assert "cevabi simdi yaz" in retry["messages"][0]["content"]
+
+
+def test_a_narration_retry_that_also_narrates_keeps_the_text_rather_than_nothing():
+    state = initial_state("s1")
+    deps = build(
+        [
+            FakeLLM.text("Plan."),
+            FakeLLM.text("Tablodan çekiyorum."),
+            FakeLLM.text("Yine çekiyorum."),
+        ]
+    )
+
+    result = turn(state, deps)
+
+    assert result.answer == "Yine çekiyorum."  # honest about what came back
+    assert result.truncated_reason is None
+
+
 def test_the_delta_stream_joins_back_into_the_answer():
     """Rebuilding each chunk with `strip()` ate one space per boundary, so a
     consumer concatenating the deltas got two words glued together."""

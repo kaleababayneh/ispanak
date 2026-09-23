@@ -20,8 +20,14 @@ modelin çalıştığı adlardır, değişmez; başlık ve lejant okunur etikett
 
 ## Her soruda bakılacaklar
 
-- **Adımlar:** her araç çağrısı bir kutu; açınca girdi ve özet görünür.
+- **Adımlar:** turun bütün araç çağrıları "Ajan adımları (N)" adlı tek
+  katlı kartta; açınca her adım araç adı ve süresiyle (`✓ get_series ·
+  164 ms`), içinde girdi ve özet. Soru ile cevap arasında adım kartı
+  yığını görünüyorsa hata.
 - **Tablo:** tur bitince bir kez gelir, tam satır sayısıyla, sayfalanmış.
+  Başlığı ne olduğunu söyler: "Seri tablosu — …", "Kırılma analizi — Konut
+  kredisi faiz oranı", "Granger öncüllük testi — X ve Y"; altında `t02_…`
+  kimliği. Yalnız `t02_detect_changes` yazan bir tablo hata.
   Başlıklar okunur etiket, tarih `2021-01-01` (saat yok), sayılar en çok
   dört ondalık. Yalnızca tablo **ilk kurulduğunda** ve **sütun eklendiğinde**
   gelir; tabloyu yalnız okuyan bir takip sorusundan (`top`, "en yüksek üç
@@ -34,7 +40,9 @@ modelin çalıştığı adlardır, değişmez; başlık ve lejant okunur etikett
   (adres okuma, reddetme, yalnız web) grafik **olmamalı** — önceki sorunun
   tablosu çizilirse hata. Arayüzün çizdiği grafikte farklı birimler ayrı
   eksene gider; üçüncü bir birim çizilmez.
-- **Kaynaklar:** seri kimlikleri (ve varsa adresler) listelenir.
+- **Kaynaklar:** turun **en altında**, "Kaynaklar (N)" adlı katlı kartta;
+  açınca seri kimlikleri ve varsa adresler, her biri bir kez. Cevabın
+  üstünde ya da birden çok kaynak bloğu görünürse hata.
 - **Doğrulanamayan ifadeler:** çıkarsa cevaptaki o sayı araç çıktısında yok
   demektir. Bir-iki bayrak normal (yuvarlama, "%4,3" gibi web'den gelen
   sayı); her sayının bayraklanması değil.
@@ -239,6 +247,126 @@ Araçlar: `get_series`, `detect_changes`, `web_search`. Kaynaklarda en az
 bir adres olmalı. Cevaptaki sayılar (kırılma tarihi, %115) havuzdan; web
 yalnızca olayı verir (TCMB faiz artırımı). Web'den alınmış bir sayı
 doğrulayıcıda bayraklanır; bu beklenen bir bayraktır.
+
+## 15. JavaScript ile kurulan sayfa (tarayıcı katmanı)
+
+> https://quotes.toscrape.com/js/ adresini oku ve sayfadaki ilk üç alıntıyı yazarlarıyla listele.
+
+Finans sayfası değil, bilerek: `read_url`'ün üçüncü katmanını kanıtlamak için
+kullanılan sayfa (Burak'ın canlı testiyle aynı). Ölçüldü (23 Eyl): statik
+HTML'de tablo yok, metin 96 karakter → `needs_browser_render = True`; alıntılar
+sayfanın kendi JavaScript'inde. Havuzda karşılığı olmadığı için `fetch` onay
+kartı çıkabilir; onayla.
+
+İki aşamada test edilir:
+
+1. **Tarayıcı katmanı kurulu değilken** (varsayılan kurulum): `read_url` adım
+   özetinde *"Sayfa JavaScript gerektiriyor, tarayici katmani kurulu degil
+   (uv sync --extra browser && uv run playwright install chromium)"* notu
+   olmalı; cevap sayfayı okuyamadığını söylemeli, alıntı **uydurmamalı**.
+2. **Kurduktan sonra** (`uv sync --extra browser && uv run playwright install
+   chromium`): adım özetinde *"Sayfa JavaScript ile render edildi (headless
+   tarayici)"* notu; cevapta ilk üç alıntı sırayla:
+
+| # | Yazar | Alıntının başı |
+|---|---|---|
+| 1 | Albert Einstein | "The world as we have created it is a process of our thinking…" |
+| 2 | J.K. Rowling | "It is our choices, Harry, that show what we truly are…" |
+| 3 | Albert Einstein | "There are only two ways to live your life…" |
+
+Render 30 saniyeyi (sert sınır) aşarsa araç *"saniyede bitmedi, surec
+sonlandirildi"* der ve statik sonuca düşer; bu çökme değil, sınırın çalışması.
+Karşı kontrol: 13. soru (TCMB duyurusu) statik metin taşıdığı için tarayıcıyı
+**çağırmamalı** — adımlarda render notu görünürse hata.
+
+---
+
+## Uzun sorular (2-3 cümle, birden çok araç)
+
+Demo günü sorular kısa olmayabilir. Aşağıdakiler birkaç aracı sırayla
+zorlar; beklenen değerler gerçek araçlarla ölçüldü.
+
+### U1. Kırılma ve sonrası
+
+> 2021'den bu yana konut kredisi faiz oranı ile konut fiyat endeksini aynı
+> tabloya getir. Faizde yapısal kırılmanın olduğu tarihi bul ve o tarihten sonra
+> konut fiyat endeksinin nasıl seyrettiğini anlat. Sonucu grafikle göster.
+
+Araçlar: `get_series` (iki seri, tek tablo), `detect_changes`,
+`transform_table` (opsiyonel), `make_chart`; kural 19 gereği `web_search` de
+gelebilir.
+
+- Kırılma **2023-07**
+- KFE 2023-07: **101,87** → 2026-06: **231,34** (**%127,1** artış)
+- Kırılma öncesi KFE ortalaması 44,72; sonrası 165,38
+- Grafikte faiz ve endeks **ayrı eksende** olmalı (biri %, biri endeks)
+
+### U2. Reel bakiye, endeksli
+
+> Konut kredisi bakiyesini 2021 başından itibaren getir, TÜFE ile reel hale
+> getir ve reel seriyi 2021-01 = 100 olacak şekilde endeksle. Reel bakiye 2026
+> ortasında 2021 başına göre yüzde kaç değişmiş?
+
+Araçlar: `get_series`, `transform_table (deflate)`, `transform_table
+(rebase)`, `transform_table (change_since)`; yüzdeyi **araç** vermeli.
+
+- Reel düzey **baza bağlı**, ikisi de doğru: model `base_period` vermezse
+  2025 ortalama fiyatlarıyla 2021-01 **1.716.482** → 2026-06 **616.538**;
+  "2021-01 = 100" dendiği için 2021-01 fiyatlarını seçerse (23 Eylül'de
+  seçti) 2021-01 **276.785** (nominale eşit) → 2026-06 **99.417,6**
+- Endeks ve yüzde bazdan bağımsız: endeks 2026-06 **35,9**; değişim
+  **−%64,1** (ölçülen: 35,9187 / −64,0813)
+- Reel serinin dibi **2024-09**
+- Cevapta "reel" ve hangi baz olduğu geçmeli; nominal artarken reelin
+  düştüğü söylenmeli
+
+### U3. Pay ve o aylardaki faiz
+
+> İpotekli konut satışlarının toplam satışlar içindeki payını 2021'den bu yana
+> hesapla. Payın en düşük ve en yüksek olduğu ayları ver ve o aylarda konut
+> kredisi faizinin ne düzeyde olduğunu söyle.
+
+Araçlar: `get_series` (üç seri tek tabloda), `transform_table (ratio)`,
+`transform_table (top, ascending=true ve false)` — ayları model saymamalı.
+
+**İkiz seri tuzağı (23 Eylül'de ölçüldü):** "konut kredisi faiz oranı"
+araması ilk sıraya `evds:TP.KBK.TRY.18`'i getiriyor — adı `TP.KTF12` ile
+virgül farkıyla aynı ("Konut Kredisi, (TL, Akım, %)") ama veri grubu **Kredi
+Kâr Oranları**, yani katılım bankalarının kâr payı, faiz değil. Artık bu
+soruda **onay kartı çıkmalı**: iki seçenek, altlarında "Kredi Kâr Oranları
+(Akım)" ve "Kredi Faiz Oranları (Akım)"; **varsayılan işareti faiz olanda**
+(soruda "faiz" geçtiği için), onu seç. Kart çıkmazsa, varsayılan kâr
+payındaysa ya da model kâr payıyla devam ederse hata. Aynı kart 1. soruda
+(son 12 ay faiz) da çıkar.
+
+| | Ay | Pay | Faiz (KTF12) o ay | Kâr payı (KBK) seçilirse |
+|---|---|---|---|---|
+| En düşük | **2023-12** | **%4,4** | **42,088** | 42,204 |
+| En yüksek | **2022-06** | **%26,7** | **18,178** | 21,938 |
+
+Beklenen yorum: pay, faiz düşükken yüksek, faiz yüksekken düşük. Cevap
+**metin** olmalı; yalnız "…tablodan çekiyorum." gibi bir niyet cümlesi
+gelirse hata (23 Eylül'de geldi, kapatıldı). `top` seçilen ayın **bütün
+satırını** listelediği için o aydaki faiz aynı adımdan okunur; model faizi
+ay ay yeniden `get_series` ile çekiyor ya da "adım sınırı" diyorsa hata
+(23 Eylül'de ikisi de oldu, kapatıldı). Beklenen adım sayısı 6-8.
+
+### U4. Kırılma, karar ve sonraki 12 ay
+
+> Konut kredisi faizindeki kırılmanın tarihini bul, o ay TCMB'nin ne karar
+> aldığını web'den araştır ve kırılmadan sonraki 12 ayda faizin ortalamasını
+> kırılmadan önceki 12 ayla karşılaştır.
+
+Araçlar: `get_series`, `detect_changes`, `web_search`, ortalama için
+`get_series` (pencereli) ya da `transform_table`.
+
+- Kırılma **2023-07**; web: TCMB 20 Temmuz 2023 politika faizi artırımı
+  (kaynak adresi listelenmeli; sayı web'den değil)
+- Sonraki 12 ay (2023-08 – 2024-07) ortalaması **42,09**; en düşük 2023-08
+  (36,22), en yüksek 2024-04 (44,72)
+- Önceki 12 ay (2022-07 – 2023-06) ortalaması **19,92**
+- Yani ortalama yaklaşık iki katına çıktı; cevap "2,1 kat" ya da "%111" gibi
+  bir oran veriyorsa bunu **araç** hesaplamış olmalı, model değil
 
 ---
 

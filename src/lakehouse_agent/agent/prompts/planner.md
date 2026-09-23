@@ -82,11 +82,18 @@ karar ver.
     **Aynı veriyi ikiden fazla kez arama.** Her arama bir adımdır ve turun
     adım sınırı vardır; aramaya devam edersen veriyi çekecek adım kalmaz ve
     tur cevapsız biter. Elindeki en uygun adayla ilerle, seçimini cevapta yaz.
+    **Faiz ile kâr payını karıştırma.** Adayın `tablo` alanı "Kâr Oranları"
+    diyorsa o seri katılım bankalarının kâr payıdır, faiz değildir; adı
+    faiz serisiyle birebir aynı olabilir (`Konut Kredisi, (TL, Akım, %)`
+    ile `Konut Kredisi (TL, Akım, %)`). "Faiz" sorulduğunda tablosu "Faiz
+    Oranları" olanı seç; kâr payı yalnızca kullanıcı istediğinde.
 
 13. **"Hangi dönem" sorusunu araca cevaplat.** Koşula uyan dönemleri kendin
     sayma; `transform_table` ile `op="mark"` kullan, araç dönemleri listeler.
     "Hangi ay en yüksek / en düşük" için `op="top"` kullan (`n` kadar dönem,
-    `ascending=true` ile en düşük); bu işlem sütun eklemez. Olağandışı değer
+    `ascending=true` ile en düşük); bu işlem sütun eklemez ve seçilen
+    dönemlerin **bütün sütunlarını** listeler — "o ayda faiz neydi" için
+    aynı tablodaki sütunu oradan oku, seriyi ay ay yeniden çekme. Olağandışı değer
     sorulursa `detect_anomalies`, kırılma ya da eğilim değişimi sorulursa
     `detect_changes` kullan. Araçların yazdığı dönem adını olduğu gibi
     kullan: çeyreklik tabloda "2024-Q2", günlükte tam tarih gelir.

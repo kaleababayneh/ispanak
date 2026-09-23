@@ -127,14 +127,13 @@ def _derived(
         )
         return f"{first} / {second} {phrase}"
     base = _BASE_IN_NAME.search(column)
-    if base and op in {"rebase", "change_since", "deflate"}:
+    # `deflate` is left out on purpose: the tool writes the price base into
+    # the column's unit ("milyon TL, 2021-01 fiyatlariyla"), and naming it
+    # here too printed "(2021-01 fiyatlarıyla)" twice in one header.
+    if base and op in {"rebase", "change_since"}:
         when = f"{base.group(1)}-{base.group(2)}"
         phrase = (
-            f"{phrase} ({when} = 100)"
-            if op == "rebase"
-            else f"{phrase} ({when} bazlı)"
-            if op == "change_since"
-            else f"{phrase} ({when} fiyatlarıyla)"
+            f"{phrase} ({when} = 100)" if op == "rebase" else f"{phrase} ({when} bazlı)"
         )
     return f"{first} — {phrase}"
 

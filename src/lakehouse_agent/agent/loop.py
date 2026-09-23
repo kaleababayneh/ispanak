@@ -45,6 +45,7 @@ from lakehouse_agent.agent.formatting import (
     preview_rows,
 )
 from lakehouse_agent.agent.history import model_messages
+from lakehouse_agent.agent.narration import draft_hint, looks_like_narration
 from lakehouse_agent.agent.prompts import load_prompt, render
 from lakehouse_agent.agent.state import (
     ApprovalDecision,
@@ -786,7 +787,8 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
         raise
 
     answer = result.content or ""
-    if not answer.strip() and spent.thinking:
+    narration = looks_like_narration(answer)
+    if (not answer.strip() and spent.thinking) or narration:
         # Empty content with thinking on means the model spent the call on
         # reasoning and never wrote the answer: measured 23 Sep, 374
         # completion tokens and not one character of content, on a turn whose
@@ -796,12 +798,29 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
         # done and only the writing is missing. Once: a model that answers
         # nothing twice is not going to answer the third time, and the turn
         # still owes the person a reply.
-        logger.warning("cevap bos dondu; dusunme kapali bir kez daha deneniyor")
+        #
+        # A sentence of intent ("... tablodan çekiyorum.") is the same
+        # failure wearing words: measured 23 Sep in the browser, with the
+        # real answer sitting in the observe note this call never sees. The
+        # retry is told so, and handed that note as a draft when there is one.
+        retry_system = system
+        if narration:
+            logger.warning("cevap niyet cumlesi dondu; bir kez daha deneniyor")
+            draft = draft_hint(state.messages)
+            retry_system += (
+                "\n\n## Dikkat\n\nBir onceki denemede cevap yerine ne yapacagini "
+                "yazdin. Bu adimda arac cagiramazsin; elindeki sonuclarla "
+                "cevabi simdi yaz."
+            )
+            if draft:
+                retry_system += f"\n\n## Son adimda yazdigin taslak\n\n{draft}"
+        else:
+            logger.warning("cevap bos dondu; dusunme kapali bir kez daha deneniyor")
         with contextlib.suppress(LlmError):
             retry = await _chat(
                 state,
                 deps,
-                [{"role": "system", "content": system}, *_answer_messages(state)],
+                [{"role": "system", "content": retry_system}, *_answer_messages(state)],
                 tools=None,
                 thinking=False,
                 tag=f"answer-retry@{prompt.tag}",
@@ -809,7 +828,7 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
                 last_chance=True,
             )
             state.usage = state.usage + retry.usage
-            answer = retry.content or ""
+            answer = retry.content or answer
     if not answer.strip():
         # The failure `AgentConfig` names in its own docstring: an open-weights
         # model that plans forever and never answers, or returns only a

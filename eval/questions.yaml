@@ -51,8 +51,17 @@
   category: seri_bulma
   expected_series: ["evds:TP.KTF12"]
   expected_tools: [search_catalog, get_series]
+  not: "Kontrol 16 Eylül'de 'ağırlıklı ortalama' altdizgesiydi. 23 Eylül'ün
+        son üç koşumunda cevap üç kez 'aylık ortalama' dedi, 'ağırlıklı'
+        demedi; seri, değerler ve yorum doğruydu. Bir sözcük seçimi cevabın
+        doğruluğunu ölçmüyor. Şimdi ölçülen: doğru seri (expected_series),
+        son ayın değeri (haftalıktan aya ortalamayla, 40,335; toplam 161,34
+        olurdu) ve ortalamadan söz edildiği (kural 8: dönüşüm uyarısı cevaba
+        taşınır). Aynı ikiz tuzağı burada da var: arama ilk sıraya
+        TP.KBK.TRY.18'i (kâr payı) getirir; expected_series onu reddeder."
   checks:
-    - cevapta_gecmeli: "ağırlıklı ortalama"
+    - deger: {sutun: "TP_KTF12", donem: "2026-06", beklenen: 40.335, tolerans_yuzde: 0.5}
+    - cevapta_gecmeli: "ortalama"
 
 - id: A2
   question: "Konut fiyat endeksini 2021-01 = 100 olacak şekilde endeksle."
