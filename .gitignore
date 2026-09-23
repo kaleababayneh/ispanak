@@ -22,3 +22,8 @@ CLAUDE.local.md
 .coverage.*
 htmlcov/
 .pytest_cache/
+
+# Chainlit calisma zamani: yuklenen dosyalar ve otomatik kopyalanan
+# ceviri dosyalari (config.toml elle yazildi, o kaliyor).
+.files/
+.chainlit/translations/

@@ -118,11 +118,14 @@ def test_agent_and_tools_do_not_import_chainlit():
 
     If the loop imported chainlit we could not run it headless, could not test
     it, and could not swap the interface later without touching the engine.
+    `ui/` is the interface itself -- the same exception `rich` gets for
+    `agent/console.py` below.
     """
     offenders = [
         path.relative_to(SRC).as_posix()
         for path in _python_files()
         if "chainlit" in _imported_modules(path)
+        and path.relative_to(SRC).parts[0] != "ui"
     ]
     assert offenders == [], (
         f"Bu dosyalar chainlit import ediyor: {offenders}. "

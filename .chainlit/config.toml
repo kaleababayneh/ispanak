@@ -1,0 +1,32 @@
+[project]
+allow_origins = ["*"]
+session_timeout = 3600
+user_session_timeout = 1296000
+cache = false
+persist_user_env = false
+mask_user_env = false
+user_env = []
+# No `enable_telemetry` key here: verified against the installed chainlit
+# 2.12.0 package (`docs/decisions.md`) -- it ships with no server-side
+# telemetry/analytics code at all (no posthog, no tracking calls), and
+# `ProjectSettings` (chainlit/config.py) has no such field to set. There is
+# nothing to disable.
+
+[features]
+# Model and web content are untrusted; HTML left on would be XSS.
+unsafe_allow_html = false
+latex = false
+
+[features.spontaneous_file_upload]
+# The agent takes a typed question, not an uploaded file.
+enabled = false
+
+[features.mcp]
+enabled = false
+
+[UI]
+name = "Lakehouse Agent"
+cot = "full"
+
+[meta]
+generated_by = "2.12.0"

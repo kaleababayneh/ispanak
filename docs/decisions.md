@@ -1896,3 +1896,62 @@ Sonuç:  Aynı soru tekrar koşuldu. Cevap: "Faizin düştüğü ama kredinin
         "tablo t01_get_series: X eklendi" satırı çıkıyor, tablo `done` ile bir
         kez çiziliyor. Tablo deposu bağlanmamış bir çağıran için eski davranış
         (olayın kendi önizlemesi) korundu, yoksa hiç tablo görmezdi.
+
+## Chainlit web arayüzü: ikinci, bağımsız tüketici (23 Eyl)
+Bağlam: `--chat` (yukarıdaki karar) motorun olay/onay sözleşmesinin ilk
+        tüketicisiydi ama tek tüketiciydi; sözleşmenin gerçekten arayüzden
+        bağımsız olduğu, ikinci bir arayüz onu hiç değiştirmeden aynı
+        sözleşmeyle çalışana kadar kanıtlanmış sayılmaz. Görev tarifi de
+        motor dosyalarına (`loop.py`, `state.py`, `approvals.py`,
+        `events.py`) dokunmayı yasakladı.
+Karar:  `src/lakehouse_agent/ui/` iki katman: `render.py` saf fonksiyonlar
+        (olay payload'u -> gösterilecek içerik; `chainlit` import etmez,
+        ağsız test edilir, `tests/test_render.py`, 28 test), `app.py` ince
+        Chainlit adaptörü. `ChainlitSink`, `agent/console.py`'deki
+        `Terminal`'ın aynı üç dikişini dolduruyor: `emit` (`EventSink`),
+        `approve` (`ApproveFn`, `cl.AskActionMessage` ile), oturum başına
+        bir `cl.Message`/`cl.Step` akışı. `table_update` yalnızca not
+        alıyor (ref + yeni sütunlar); tablo `done`'da, oturumun kendi
+        `state.tables`'ından okunarak **bir kez** çiziliyor — `Terminal`'ın
+        23 Eyl'deki "ekran tabloyu beş kez çiziyordu" düzeltmesiyle aynı
+        kural, burada da tekrar keşfetmeye gerek kalmadan uygulandı.
+        `agent/loop._real_deps`'i import etmek yerine aynı bağlantı kodu
+        yerel olarak tekrarlandı (settings, `MiaLLM`, `make_registry`,
+        `LakeAdapter`): `_real_deps` alt çizgili, CLI'a özel bir ayrıntı;
+        iki yer birbirini kırmadan ayrı ayrı değişebilsin diye.
+        **Oturum izolasyonu.** `SessionState` ve `AgentDeps` her sohbet için
+        `on_chat_start`'ta kurulup `cl.user_session`'da tutuluyor; modül
+        seviyesinde global durum yok. Bir tur sürerken gelen yeni mesaj
+        `cl.user_session`'daki `turn_running` bayrağıyla reddediliyor,
+        kuyruğa alınmıyor.
+        **Testler.** `test_import_discipline.py`'deki
+        `test_agent_and_tools_do_not_import_chainlit`'e `ui/` için `rich`/
+        `agent/console.py` ile birebir aynı istisna eklendi.
+        `test_no_module_reads_settings_at_import_time` zaten
+        `src/lakehouse_agent/` altındaki her dosyayı taradığından `ui/app.py`
+        otomatik kapsanıyor, ayrı bir test gerekmedi.
+        **`enable_telemetry` yok.** Kurallar dosyasındaki dört bayraktan
+        üçü (`features.mcp.enabled`, `features.spontaneous_file_upload.enabled`,
+        `unsafe_allow_html`, hepsi false) `.chainlit/config.toml`'da; dördüncüsü
+        yazılmadı çünkü kurulu chainlit 2.12.0 paketinde ne posthog/analytics
+        kodu ne de `ProjectSettings`'te böyle bir alan var (kaynak koduna
+        bakıldı) — kapatılacak bir telemetri hiç yok.
+Sonuç:  Uçtan uca ölçüldü: gerçek `.env`'deki `MIA_API_KEY` ile sunucu
+        ayağa kaldırıldı, `/login` + WebSocket üzerinden (gerçek tarayıcı
+        bu sandbox'ta yok — headless Chromium `libnspr4.so` eksikliğiyle
+        çöktü, kök erişimi de yok; bunun yerine `python-socketio` istemcisiyle
+        chainlit'in kendi protokolü birebir sürüldü) "Konut kredisi faizi
+        nasil seyretti?" soruldu. Adım kartları (`Planlama`, `search_catalog`,
+        `get_series`, `Degerlendirme`) doğru araç adı/argüman/özetle geldi,
+        cevap `stream_token` ile aktı, tur sonunda tam tablo (`dataframe`
+        elementi) ve kaynak bloğu bir kez çizildi, sunucu logunda hata yok.
+        Ayrı bir soruda `web_search` aracının onay kartı da gözlendi:
+        `cl.AskActionMessage` süresi dolunca (istemci soruyu yanıtlamayınca)
+        `agent/console.py._choose`'un boş girdide yaptığı gibi varsayılana
+        düştü ve `Onay [fetch]: approve (secildi)` satırı çizildi; ikinci
+        koşuda istemci ilk seçeneği hemen seçince aynı kart 120 saniye yerine
+        aninda kapandı. Grafik (`cl.Plotly`) canlı koşuda tetiklenmedi (bu
+        soru grafik üreten bir araç çağırmadı); `render_chart` birim testle
+        kapsandı, canlı ölçüm değil.
+        `ruff check`, `ruff format`, `uv run pytest -q` (tümü, `test_render.py`
+        dahil) yeşil.
