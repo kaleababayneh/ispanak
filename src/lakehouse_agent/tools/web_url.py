@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field
 
 from lakehouse_agent.agent.context import ToolContext
 from lakehouse_agent.agent.formatting import preview_rows
-from lakehouse_agent.contracts import Source, ToolResult
+from lakehouse_agent.contracts import ColumnInfo, Source, ToolResult
 from lakehouse_agent.tools.registry import ToolSpec
 from lakehouse_agent.web import browser
 from lakehouse_agent.web import extract as extractor
@@ -252,6 +252,19 @@ def make_read_url() -> ToolSpec:
             # it -- and an answer's numbers have to appear in a tool's output
             # (agent/verifier.py), so what is not previewed cannot be quoted.
             preview=preview_rows(active.frame, rows=10),
+            # Provenance for the interface: the address the columns came
+            # from. Without it the table was titled "Adresten okunan tablo"
+            # and nothing more (seen 23 Sep), and the lineage panel had no
+            # row for a document's columns at all.
+            columns=[
+                ColumnInfo(
+                    name=str(column),
+                    source_url=document.final_url,
+                    tool="read_url",
+                    step_no=ctx.step_no,
+                )
+                for column in active.frame.columns
+            ],
             sources=[source],
             warnings=warnings,
             quality=active.quality.model_copy(update={"table_ref": active.ref}),

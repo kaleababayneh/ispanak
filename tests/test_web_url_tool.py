@@ -106,6 +106,22 @@ def test_every_data_table_becomes_a_session_table(spec, context, monkeypatch):
     assert all(ref in result.summary for ref in context.written)
 
 
+def test_the_active_tables_columns_carry_the_address_they_came_from(
+    spec, context, monkeypatch
+):
+    """Seen 23 Sep: a document's table was titled "Adresten okunan tablo"
+    and nothing more, because its columns had no lineage at all."""
+    _serve(monkeypatch, _document(PAGE.encode(), content_type="text/html"))
+
+    result = spec.fn(ReadUrlArgs(url="https://x/veri"), context)
+
+    assert result.ok
+    frame = context.written[result.table_ref]
+    assert [c.name for c in result.columns] == [str(c) for c in frame.columns]
+    assert {c.source_url for c in result.columns} == {"https://x/veri"}
+    assert {c.tool for c in result.columns} == {"read_url"}
+
+
 def test_the_largest_table_is_the_one_a_follow_up_works_on(spec, context, monkeypatch):
     _serve(monkeypatch, _document(PAGE.encode(), content_type="text/html"))
 

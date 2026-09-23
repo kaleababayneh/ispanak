@@ -350,3 +350,35 @@ def test_the_schema_tells_the_model_the_allowed_axes_and_kinds():
     assert one["kind"]["enum"] == ["line", "bar"]
     with pytest.raises(ValueError):
         MakeChartArgs(series=[{"column": "x", "axis": "middle"}])
+
+
+def test_a_total_row_is_not_drawn_as_a_bar_and_the_tool_says_so(agent_settings):
+    """Seen 23 Sep: Borsa Istanbul's gold table ends on "TOPLAM / TOTAL",
+    and the chart drew it as a bar eight times the height of any month."""
+    from lakehouse_agent.tools.charts import without_totals
+
+    frame = pd.DataFrame(
+        {
+            "AY/MONTH": ["Ocak / January", "Şubat / February", "TOPLAM / TOTAL"],
+            "hacim": [93.0, 90.0, 183.0],
+        }
+    )
+    kept, dropped = without_totals(frame, "AY/MONTH")
+    assert kept["AY/MONTH"].tolist() == ["Ocak / January", "Şubat / February"]
+    assert dropped == ["TOPLAM / TOTAL"]
+
+    ctx = make_ctx(agent_settings, {"t01_read_url": frame}, active="t01_read_url")
+    result = _tool().fn(MakeChartArgs(x="AY/MONTH", series=[{"column": "hacim"}]), ctx)
+
+    assert result.ok
+    (trace,) = ctx.written_charts[0].plotly_json["data"]
+    assert trace["x"] == ["Ocak / January", "Şubat / February"]
+    assert any("Toplam satiri grafige alinmadi" in w for w in result.warnings)
+
+
+def test_a_missing_axis_leaves_the_frame_alone():
+    from lakehouse_agent.tools.charts import without_totals
+
+    dated = pd.DataFrame({"period": pd.to_datetime(["2021-01-01"]), "v": [1.0]})
+    kept, dropped = without_totals(dated, "yok")
+    assert kept is dated and dropped == []

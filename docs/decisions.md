@@ -2443,3 +2443,21 @@ Kanıt:  İki sabotaj (satırın kalanı düşürülüyor, tek satıra grafik), 
         yok** (öncesi 12, `step_limit`); araçlar search×3, get_series,
         ratio, top, top, mark?, make_chart; cevap 2022-06 (%26,7, faiz
         %18,2) ve 2023-12 (%4,4) ile o aylardaki faizi aynı turda verdi.
+
+## Toplam satırı çubuk oldu; adres tablosunun başlığı adressizdi (23 Eyl, altın PDF'inden)
+Ölçüm:  Şartnanın A1 sorusunda cevap doğru (Mart 151.349.741.325 TL;
+        258.809 kg). Grafikte "TOPLAM / TOTAL" satırı 614 milyarlık çubuk
+        olarak ayların yanına çizildi, aylar tabana yapıştı. Tablo başlığı
+        "Adresten okunan tablo" — `read_url` sonuç sütunlarına hiç
+        `ColumnInfo` vermiyordu; soyağacında satır yoktu.
+Karar:  `charts.without_totals`: x sütunu metinse ve hücresi
+        toplam/total/genel toplam/grand total kelimesini taşıyorsa satır
+        grafiğe alınmaz; `make_chart` bunu uyarıda söyler ("Toplami cevapta
+        tablodan ver"), yedek grafik de aynı süzgeçten geçer. Tarih ve sayı
+        eksenleri süzülmez. `read_url` aktif tablonun her sütunu için
+        `ColumnInfo(source_url, tool="read_url")` döner; başlık dosya adıyla
+        ("Adresten okunan tablo — kmp_au.pdf"). PDF başlığındaki
+        "TL Miktar/Amount İşlem (KG) Number of" bölünmesi PDF'in iki satırlı
+        başlığının kelime kelime onarımından; değerler doğru sütunda,
+        dokunulmadı.
+

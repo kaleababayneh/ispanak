@@ -428,7 +428,7 @@ def test_a_series_table_is_titled_by_its_columns_and_unknown_tables_by_their_suf
     )
     assert (
         webui.table_title("t04_read_url", ["a", "b"], lineage)
-        == "Adresten okunan tablo — https://x.y/z.pdf"
+        == "Adresten okunan tablo — z.pdf"
     )
     assert webui.table_title("t05_lag_corr", ["gecikme"], {}) == "Gecikmeli korelasyon"
     assert webui.table_title("t06_yeni_arac", ["x"], {}) == "yeni arac"

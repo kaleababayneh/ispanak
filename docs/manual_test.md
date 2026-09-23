@@ -281,6 +281,98 @@ Karşı kontrol: 13. soru (TCMB duyurusu) statik metin taşıdığı için taray
 
 ---
 
+## Şartnamenin adres soruları (Borsa İstanbul)
+
+Şartname demo günü prompt'ta adres verileceğini söylüyor: kıymetli madenler
+piyasası sayfasındaki **Altın İşlemleri PDF'i** ve **`endeks/xtumy`**
+sayfası (BIST 100 günlük/aylık değişim). Aşağıdaki değerler 23 Eylül'de
+`read_url` ve havuz araçlarıyla ölçüldü. **PDF her ay güncellenir**: 2026
+tablosunda Ocak–Ağustos dolu, Eylül ve sonrası boş; Ekim'de Eylül satırı
+dolar ve "en yüksek ay" değişebilir. Değerler tutmuyorsa önce PDF'i açıp
+bakın. Her adres okuma bir **`fetch` onay kartı** çıkarır ("… üzerinden
+veri çekilsin mi?"); onaylayın.
+
+### A1. Sayfadan PDF'e (iki adımlı okuma)
+
+> https://www.borsaistanbul.com/veriler/kiymetli-madenler-ve-kiymetli-taslar-piyasasi/piyasa-verileri
+> adresindeki Altın İşlemleri PDF'ini oku. 2026'da TL cinsinden altın işlem
+> hacminin en yüksek olduğu ayı ve yılbaşından bu yana toplam işlem
+> miktarını (kg) söyle.
+
+Beklenen akış: ilk `read_url` sayfada tablo bulamaz, **15 veri dosyası**
+listeler ("Altın İşlemleri: …/kmp_au.pdf"); ikinci `read_url` PDF'i açar
+(planner kural 17). Tablo `t01_read_url`: 13 satır (12 ay + TOPLAM) × 11
+sütun; başlıklar kelime kelime onarılmış ("Hacim/Volume (TL)").
+
+- TL hacmi en yüksek ay **Mart 2026: 151.349.741.325 TL** (≈151,3 milyar)
+- Yılbaşından bu yana toplam miktar **258.809 kg** (TOPLAM satırı; TL
+  91.977 + USD 165.807 + EUR 1.025)
+- Kaynak: PDF adresi ve "KIYMETLİ MADENLER PİYASASI ALTIN İŞLEM VERİLERİ
+  (2026)" başlığı listelenmeli
+
+Yanlış olan: TOPLAM satırını bir ay sanmak; boş Eylül–Aralık satırlarını
+sıfır saymak. Grafik çizilirse **TOPLAM çubuğu olmamalı** (araç toplam
+satırını grafiğe almaz ve uyarıda söyler; 23 Eylül'de çizildi, kapatıldı).
+Tablo başlığı "Adresten okunan tablo — kmp_au.pdf" olmalı.
+
+### A2. Doğrudan PDF, karşılaştırma
+
+> https://www.borsaistanbul.com/dosyalar/kmtp/veriler/kmp_au.pdf adresini
+> oku. 2026'nın ilk üç ayında TL cinsinden işlem hacmi nasıl değişti ve
+> altın kilogram bazında TL ile mi USD ile mi daha çok işlem gördü?
+
+| Ay | Hacim (TL) | TL miktar (kg) | USD miktar (kg) |
+|---|---|---|---|
+| Ocak | 93.824.682.381 | 13.837 | 19.747 |
+| Şubat | 90.534.914.196 | 12.649 | 20.070 |
+| Mart | 151.349.741.325 | 22.265 | 32.742 |
+
+Beklenen: Şubat'ta hafif düşüş, Mart'ta yaklaşık %67 sıçrama (yüzdeyi
+model hesaplamamalı; `transform_table` ya da "yaklaşık 1,7 kat" gibi
+tablodan okunur bir ifade). Kilogram bazında **her ay USD** işlemleri
+önde (2026'nın sekiz dolu ayının hepsinde). Toplam işlem sayısı Ocak 1.017,
+Mart 2.922.
+
+### A3. XTUMY sayfası + havuz (tuzak)
+
+> https://www.borsaistanbul.com/endeks/xtumy adresini oku ve BIST 100
+> endeksinin 2026'daki aylık değişimini ver.
+
+Sayfa **XTUMY = BIST TÜM-100** endeksinin künyesidir (Endeks Kodu, ISIN
+`TRAIMKB01380`, Endeks Tipi…); fiyat tablosu JavaScript ile dolduğu için
+`read_url` yalnız 17 satırlık künye tablosunu getirir, fiyat gelmez.
+Doğru davranış: bunu söylemek ve BIST 100'ü **havuzdan** çekmek —
+`evds:TP.MK.F.BILESIK` (XU100 kapanış, günlük; aylığa ayın son değeriyle
+çevrilir, araç bunu uyarıda yazar).
+
+| Ay | Kapanış | Aylık değişim |
+|---|---|---|
+| 2026-01 | 13.838,29 | — |
+| 2026-02 | 13.717,81 | −0,87 % |
+| 2026-03 | 12.790,98 | −6,76 % |
+| 2026-04 | 14.442,56 | **+12,91 %** |
+| 2026-05 | 13.662,75 | −5,40 % |
+| 2026-06 | 14.121,83 | +3,36 % |
+
+Yanlış olan: XTUMY künyesini BIST 100 sanmak; sayfadan fiyat "okumak"
+(orada yok); değişimi zihinden hesaplamak.
+
+### A4. Günlük değişim (frekans)
+
+> BIST 100 endeksi Haziran 2026'da günlük bazda en çok hangi gün yükseldi,
+> hangi gün düştü?
+
+`get_series` **`freq="D"`** ile çekilmeli (varsayılan aylık bunu
+cevaplayamaz), sonra `transform_table (pct_change)` ve `top`.
+
+- En büyük yükseliş **2026-06-02: +3,62 %** (14.200,20)
+- En büyük düşüş **2026-06-03: −1,65 %** (13.965,65)
+- Ay sonu 2026-06-30: 14.121,83 (−0,43 %)
+
+Hafta sonları boş satırdır; "eksik veri" diye bayraklanmamalı.
+
+---
+
 ## Uzun sorular (2-3 cümle, birden çok araç)
 
 Demo günü sorular kısa olmayabilir. Aşağıdakiler birkaç aracı sırayla

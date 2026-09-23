@@ -15,6 +15,7 @@ chart twice, and `contracts.Artifact` has no field to carry the figure in.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from typing import Any, Literal
 
@@ -71,6 +72,25 @@ def _cell(value: Any) -> Any:
         return value
     item = getattr(value, "item", None)
     return item() if callable(item) else str(value)
+
+
+#: A row that sums the others, by the label in its x cell. A printed table
+#: ends on one ("TOPLAM / TOTAL"); drawn as a bar beside the months it is
+#: eight times their height and the months become a floor (seen 23 Sep on
+#: Borsa Istanbul's gold table). Matched on the label only: a month named
+#: "Total" does not exist, a column named that is not an x axis.
+_TOTAL_LABEL = re.compile(r"\b(?:toplam|total|genel toplam|grand total)\b", re.I)
+
+
+def without_totals(frame: pd.DataFrame, x: str) -> tuple[pd.DataFrame, list[str]]:
+    """The frame without its total rows, and the labels of the rows dropped."""
+    if x not in frame.columns:
+        return frame, []
+    labels = frame[x].astype(str)
+    mask = labels.str.contains(_TOTAL_LABEL)
+    if not mask.any():
+        return frame, []
+    return frame[~mask], labels[mask].tolist()
 
 
 def _axis_title(
@@ -231,6 +251,7 @@ def make_make_chart() -> ToolSpec:
         }
         labels = table_labels(ref, frame.columns, ctx.lineage, named)
         units = column_units(ref, frame.columns, ctx.lineage)
+        frame, totals = without_totals(frame, args.x)
         try:
             figure = figure_json(frame, args.x, series, args.title, labels, units)
         except KeyError as exc:
@@ -265,6 +286,11 @@ def make_make_chart() -> ToolSpec:
         warnings = (
             [f"Bu sutunlarda cizilecek deger yok: {', '.join(empty)}."] if empty else []
         )
+        if totals:
+            warnings.append(
+                f"Toplam satiri grafige alinmadi: {', '.join(totals)}. "
+                "Toplami cevapta tablodan ver."
+            )
         return ToolResult(
             ok=True,
             summary=(

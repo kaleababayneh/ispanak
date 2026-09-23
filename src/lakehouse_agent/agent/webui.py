@@ -26,7 +26,7 @@ from lakehouse_agent.agent.state import (
     ChartSpec,
     new_chart_ref,
 )
-from lakehouse_agent.tools.charts import figure_json
+from lakehouse_agent.tools.charts import figure_json, without_totals
 
 #: How many sources are listed before the rest are counted. Same as the
 #: terminal's, so the two interfaces do not disagree about what is shown.
@@ -227,6 +227,7 @@ def default_chart(
         return None
 
     label = title or f"{table_ref} (arayuz cizdi)"
+    frame, _ = without_totals(frame, x)
     series = _by_unit(numeric[:DEFAULT_SERIES_MAX], table_ref, lineage or {})
     labels = table_labels(table_ref, frame.columns, lineage or {}, overrides)
     units = column_units(table_ref, frame.columns, lineage or {})
@@ -374,7 +375,7 @@ def table_title(
             subject += f" … (+{len(fetched) - 3})"
     elif suffix == "read_url":
         urls = {str(_attr(e, "source_url") or "") for e in entries} - {""}
-        subject = next(iter(urls), "")
+        subject = _short_url(next(iter(urls), ""))
     else:
         inputs: list[str] = []
         for entry in entries:
@@ -383,6 +384,22 @@ def table_title(
                     inputs.append(str(name))
         subject = " ve ".join(_label_anywhere(name, lineage, charts) for name in inputs)
     return f"{kind} — {subject}" if subject else kind
+
+
+def _short_url(url: str) -> str:
+    """An address as a title: the file's name when it has one, else the host
+    and path. `kmp_au.pdf` says more in a heading than sixty characters of
+    path do."""
+    from urllib.parse import urlparse
+
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    last = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+    if "." in last:
+        return last
+    text = f"{parsed.netloc}{parsed.path}".rstrip("/")
+    return text if len(text) <= 60 else text[:57] + "…"
 
 
 def _label_anywhere(
