@@ -1774,3 +1774,26 @@ Sonuç:  `--fake --chat` ağsız çalışıyor ve testleniyor. Bunun için `Fake
         CLI'a bağlandı ve `pyproject` açıklaması taslak metinden çıkarıldı.
         Grafik kapsam dışı: hiçbir araç grafik üretmiyor, gösterilecek bir şey
         yok.
+
+## Yapıştırılan soru tek sorudur (23 Eyl, ilk sohbet koşumundan)
+Bağlam: `--chat`'in ilk gerçek koşusunda şartnamenin üç satırlık senaryosu
+        yapıştırıldı ve **üç ayrı tur** koştu. İkinci tur kimsenin sormadığı
+        bir parçaya gitti: "gösteriniz. Buna ek olarak konut kredisi faiz
+        oranlarını da". Adım kaydındaki `search_catalog` sorguları bunu
+        birebir gösterdi.
+Neden:  Okuyucuyu satır bazlı yazmıştım. Bir soru satır değil paragraf, ve
+        jüri demoda yapıştıracak; şartnamedeki soruların kendisi çok satırlı
+        basılmış.
+Karar:  İlk satır okunduktan sonra terminalde bekleyen başka satır var mı diye
+        bakılıyor (`select`, sıfır beklemeyle). Varsa o metin kişi yazarken
+        değil yapıştırılırken geldi demektir, aynı soruya aittir; boş satır ya
+        da girdinin bitmesi paragrafı kapatır. Tek satırlık soru tek Enter'la
+        gitmeye devam ediyor, çünkü kişi yazarken tamponda bir şey beklemiyor.
+        Alternatif olan "boş satır gönderir" tahmin edilebilirdi ama tek
+        satırlık soruda bile iki Enter isterdi; kullanıcı otomatik algılamayı
+        seçti.
+Sonuç:  Kontrol enjekte edilebilir (`Terminal(pending=...)`), çünkü gerçek
+        cevap dosya tanıtıcısı istiyor ve testlerin `StringIO`'sunda yok.
+        Tanıtıcısı olmayan akış "bekleyen yok" diyor, yani mevcut testler
+        satır satır çalışmaya devam ediyor. Üç yeni test; birleştirme
+        kaldırılınca ikisi kırmızıya düşüyor.

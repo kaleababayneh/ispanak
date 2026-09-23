@@ -171,3 +171,52 @@ def test_a_bad_answer_is_asked_again_rather_than_guessed():
 
     assert decision.choice == "evds:TP.KTF12"
     assert screen.getvalue().count("Gecerli bir numara yaz.") == 2
+
+
+# --- a pasted question is one question -------------------------------------
+
+
+def _pasting(typed: str) -> Terminal:
+    """A terminal whose input is already sitting in the buffer, as a paste."""
+    screen = StringIO()
+    stream = StringIO(typed)
+    return Terminal(
+        console=Console(file=screen, width=100, no_color=True),
+        stream=stream,
+        # Everything arrived at once, which is what a paste looks like.
+        pending=lambda: bool(stream.getvalue()[stream.tell() :]),
+    )
+
+
+def test_a_pasted_paragraph_is_one_question_not_three():
+    """Measured 23 Sep on the first chat run: the brief's own scenario is
+    three lines, and pasting it ran three turns -- the second one on the
+    fragment "gosteriniz. Buna ek olarak ...", which is not a question
+    anybody asked."""
+    terminal = _pasting(
+        "2021-2025 arasindaki 60 aylik veriden konut kredilerini\n"
+        "aylik goster. Faiz oranlarini da ekle.\n"
+        "Faizin dustugu donemlerde kredi nasil degismis?\n"
+    )
+
+    question = asyncio.run(terminal.ask())
+
+    assert question is not None
+    assert question.startswith("2021-2025")
+    assert question.endswith("degismis?")
+    assert "\n" not in question
+
+
+def test_a_blank_line_closes_a_pasted_question():
+    """The paragraph ends where the person left a gap, not at the end of
+    everything they pasted."""
+    terminal = _pasting("ilk soru satiri\nikinci satiri\n\nbambaska bir soru\n")
+
+    assert asyncio.run(terminal.ask()) == "ilk soru satiri ikinci satiri"
+
+
+def test_a_typed_line_still_goes_on_one_enter():
+    """Nothing is waiting when a person types, so the drain never starts."""
+    terminal, _ = _terminal("tek satirlik soru\n")
+
+    assert asyncio.run(terminal.ask()) == "tek satirlik soru"

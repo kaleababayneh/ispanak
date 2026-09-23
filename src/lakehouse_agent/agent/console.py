@@ -20,6 +20,9 @@ bracket, or worse, be coloured by text we did not write.
 from __future__ import annotations
 
 import asyncio
+import select
+import sys
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
@@ -42,12 +45,20 @@ class Terminal:
     """One screen and one keyboard, wired to the loop's three seams."""
 
     def __init__(
-        self, console: Console | None = None, stream: Any = None, *, quiet: bool = False
+        self,
+        console: Console | None = None,
+        stream: Any = None,
+        *,
+        pending: Callable[[], bool] | None = None,
+        quiet: bool = False,
     ) -> None:
         self.console = console or Console(stderr=True)
         #: Where a question or an approval is read from. `None` means the
         #: real stdin; the tests pass a `StringIO`.
         self.stream = stream
+        #: Is there more input waiting right now? Injectable because the
+        #: real answer needs a file descriptor and a `StringIO` has none.
+        self._pending = pending or self._input_waiting
         #: True while an answer is streaming, so the next event starts on a
         #: fresh line instead of running into it.
         self._streaming = False
@@ -197,6 +208,41 @@ class Terminal:
             self.console.print()
         return line if line else None
 
+    def _input_waiting(self) -> bool:
+        """Is another line already sitting in the terminal's buffer?
+
+        True only for text that arrived without the person typing it, which
+        in practice means a paste. `select` with a zero timeout asks exactly
+        that and never blocks. A stream with no file descriptor -- the tests'
+        `StringIO` -- answers no, so they stay line by line.
+        """
+        stream = self.stream if self.stream is not None else sys.stdin
+        try:
+            return bool(select.select([stream.fileno()], [], [], 0)[0])
+        except Exception:  # noqa: BLE001 - no descriptor is simply "nothing waiting"
+            return False
+
+    def _read_question(self) -> str | None:
+        """One question, however many lines it was pasted as.
+
+        A question is a paragraph, not a line. Measured 23 Sep on the first
+        chat run: the brief's own scenario is three lines long, and pasting
+        it ran three turns -- the second on the fragment "gösteriniz. Buna ek
+        olarak ...". Whatever the terminal already holds when the first line
+        lands was pasted with it and belongs to the same question; a blank
+        line or the end of input closes it.
+        """
+        first = self._read("\n[bold]soru>[/bold] ")
+        if first is None:
+            return None
+        parts = [first.strip()]
+        while self._pending():
+            more = self._read("")
+            if more is None or not more.strip():
+                break
+            parts.append(more.strip())
+        return " ".join(part for part in parts if part).strip() or None
+
     async def ask(self) -> str | None:
         """The next question, or `None` to end the session.
 
@@ -204,11 +250,7 @@ class Terminal:
         `asyncio.to_thread` is already used for elsewhere in the loop.
         """
         self._end_stream()
-        line = await asyncio.to_thread(self._read, "\n[bold]soru>[/bold] ")
-        if line is None:
-            return None
-        question = line.strip()
-        return question or None
+        return await asyncio.to_thread(self._read_question)
 
     async def approve(self, request: ApprovalRequest) -> ApprovalDecision:
         """Draw the card, read the choice.
