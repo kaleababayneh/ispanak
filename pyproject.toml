@@ -1,7 +1,7 @@
 [project]
 name = "lakehouse-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "KKB Hackathon 2026: EVDS ve BDDK verisi uzerinde calisan lakehouse agent"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -23,6 +23,7 @@ dependencies = [
     "requests>=2.34.2",
     "ruptures>=1.1.10",
     "statsmodels>=0.15.0",
+    "rich>=15.0.0",
 ]
 
 [project.scripts]

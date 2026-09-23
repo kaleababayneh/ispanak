@@ -431,8 +431,20 @@ def test_a_card_carrying_numpy_or_a_missing_date_still_serialises(state, ctx):
         ok=True,
         summary="",
         preview=[
-            {"series_id": "evds:A", "score": np.float64(0.91), "unit": "%"},
-            {"series_id": "evds:B", "score": np.float64(0.90), "unit": "TL"},
+            # Named as variants of one quantity, which is what the gate
+            # now asks about; the test itself is about serialisation.
+            {
+                "series_id": "evds:A",
+                "name_tr": "Konut Kredisi (TL, Akım, %)",
+                "score": np.float64(0.91),
+                "unit": "%",
+            },
+            {
+                "series_id": "evds:B",
+                "name_tr": "Konut Kredisi (TL, Stok, %)",
+                "score": np.float64(0.90),
+                "unit": "TL",
+            },
         ],
     )
     request = approvals.needs_series_choice(result, state, 1)
@@ -520,3 +532,84 @@ def test_the_series_card_shows_the_table_before_anything_else():
     assert request is not None
     assert request.options[0].detail.startswith("Kredi Kâr Oranları (Akım), ")
     assert request.options[1].detail.startswith("Kredi Faiz Oranları (Akım), ")
+
+
+# --- a card is for a choice, not for the search being unsure ---------------
+
+
+def _hits(*names: str) -> ToolResult:
+    """Candidates whose scores are close enough to open the gate, so what is
+    left under test is whether they are a choice at all."""
+    return ToolResult(
+        ok=True,
+        summary="",
+        preview=[
+            {"series_id": f"evds:S{n}", "name_tr": name, "score": 0.70 - n * 0.01}
+            for n, name in enumerate(names)
+        ],
+    )
+
+
+def test_one_quantity_written_several_ways_is_a_choice(state):
+    """The run that made this matter: interest rate or profit share, flow or
+    stock. Four rows reading "Konut Kredisi (...)", and only a person knows
+    which the question meant."""
+    result = _hits(
+        "Konut Kredisi, (TL, Akım, %)",
+        "Konut Kredisi (TL, Stok, %)",
+        "Konut Kredisi (TL, Akım, %)",
+        "Konut Kredisi (TL, Stok, %)",
+    )
+
+    assert approvals.needs_series_choice(result, state, 1) is not None
+
+
+def test_different_quantities_are_not_a_choice(state):
+    """The card a person actually got: non-performing housing loans, consumer
+    housing loans, total loans and short-term total loans. Four different
+    quantities, none of them obviously the answer, and the default was the
+    wrong one. The model reading their names decides better than a person
+    reading four lines."""
+    result = _hits(
+        "Takipteki Konut Kredileri (Toplam)",
+        "Tüketici Kredileri - Konut (Toplam)",
+        "Toplam Krediler (Toplam)",
+        "Toplam Krediler (Kısa Toplam)",
+    )
+
+    assert approvals.needs_series_choice(result, state, 1) is None
+
+
+def test_the_top_two_alone_would_have_kept_the_wrong_card(state):
+    """Why the measure looks at every candidate shown: the top two of that bad
+    card share three words out of five, as high as the good card's four
+    together. It is the whole set that tells them apart."""
+    top_two_only = approvals._same_quantity(
+        ["Takipteki Konut Kredileri (Toplam)", "Tüketici Kredileri - Konut (Toplam)"]
+    )
+    all_four = approvals._same_quantity(
+        [
+            "Takipteki Konut Kredileri (Toplam)",
+            "Tüketici Kredileri - Konut (Toplam)",
+            "Toplam Krediler (Toplam)",
+            "Toplam Krediler (Kısa Toplam)",
+        ]
+    )
+
+    assert top_two_only >= approvals.MIN_SHARED_WORDS
+    assert all_four < approvals.MIN_SHARED_WORDS
+
+
+def test_a_candidate_without_a_name_is_read_by_its_id(state):
+    """The card labels an unnamed candidate with its id, so the gate has to
+    weigh the same text or the two would disagree."""
+    result = ToolResult(
+        ok=True,
+        summary="",
+        preview=[
+            {"series_id": "evds:TP.KTF12", "score": 0.70},
+            {"series_id": "evds:TP.KTF12", "score": 0.69},
+        ],
+    )
+
+    assert approvals.needs_series_choice(result, state, 1) is not None

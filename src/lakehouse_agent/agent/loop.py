@@ -23,10 +23,11 @@ import json
 import logging
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from functools import partial
+from pathlib import Path
 from typing import Any, Protocol
 
 import pandas as pd
@@ -737,6 +738,12 @@ async def _answer(state: SessionState, deps: AgentDeps, question: str) -> str:
     prompt = load_prompt("answer")
     system = render(
         prompt,
+        # The question itself, restated. It is the first user message and by
+        # now fifteen steps of tool output sit between it and the model:
+        # measured 23 Sep, a three-part question came back answered with
+        # "Simdi ek bir isaretleme yapiyorum" while the tool that answered it
+        # had already printed "3 ay: 2021-05, 2023-11, 2024-01".
+        question=question,
         tables_summary=build_tables_summary(state.tables, state.active_table),
         charts=", ".join(chart_ref_of(chart) for chart in state.charts) or "yok",
         sources=format_sources(state.sources),
@@ -1783,8 +1790,26 @@ def _cli(argv: list[str] | None = None) -> int:
         action="append",
         help="Sorulacak soru; birden cok verilirse ayni oturumda sirayla sorulur",
     )
+    parser.add_argument(
+        "--chat",
+        action="store_true",
+        help="Etkilesimli oturum: soru ve onay klavyeden alinir, ekran okunur",
+    )
+    parser.add_argument(
+        "--events",
+        metavar="DOSYA",
+        help="JSONL olay akisini bu dosyaya yazar (sohbet modunda varsayilan)",
+    )
     args = parser.parse_args(argv)
-    questions = args.question or [DEFAULT_QUESTION]
+    questions = args.question or ([] if args.chat else [DEFAULT_QUESTION])
+
+    if args.chat and not sys.stdin.isatty():
+        print(
+            "--chat bir terminal gerektiriyor; stdin baska yere bagli.",
+            file=sys.stderr,
+        )
+        print("Basli olmayan kosum icin --question kullanin.", file=sys.stderr)
+        return 2
 
     state = initial_state("cli")
     try:
@@ -1799,28 +1824,88 @@ def _cli(argv: list[str] | None = None) -> int:
         print("MIA_API_KEY .env dosyasinda tanimli mi?", file=sys.stderr)
         return 2
 
-    async def run_all() -> int:
-        # One event loop for every question. `asyncio.run` per question waited
-        # at each exit for any tool thread a step timeout had abandoned, which
-        # held the next question back for as long as that tool kept running.
-        code = 0
-        for question in questions:
-            try:
-                result = await run_turn(state, deps, question)
-            except AgentError as exc:
-                print(
-                    json.dumps(
-                        {"type": "error", "message": str(exc)}, ensure_ascii=False
-                    )
-                )
-                _summarise(state, None)
-                return 1
-            _summarise(state, result)
-            if not result.answer:
-                code = 1
-        return code
+    terminal = None
+    stack = contextlib.ExitStack()
+    with stack:
+        if args.events or args.chat:
+            path = Path(args.events) if args.events else _session_log(deps)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = stack.enter_context(path.open("w", encoding="utf-8"))
+            deps.sink = JsonlSink(handle)
+            if args.chat:
+                print(f"olaylar: {path}", file=sys.stderr)
+        if args.chat:
+            # Imported here and nowhere else: a headless run must not load
+            # the interface, and the engine must not depend on it.
+            from lakehouse_agent.agent.console import Terminal
 
-    return asyncio.run(run_all())
+            terminal = Terminal(tables=state.tables.get)
+            deps.sink = _Both(deps.sink, terminal)
+            deps.approve = terminal.approve
+        return asyncio.run(_run_cli(state, deps, questions, terminal, args.fake))
+
+
+def _session_log(deps: AgentDeps) -> Path:
+    """Where a chat session's JSONL goes when nobody named a file."""
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    return deps.settings.adhoc_dir / "sessions" / f"{stamp}.jsonl"
+
+
+class _Both:
+    """Two sinks as one: the file keeps the record, the screen shows it."""
+
+    def __init__(self, *sinks: Any) -> None:
+        self._sinks = [sink for sink in sinks if sink is not None]
+
+    async def emit(self, event: Any) -> None:
+        for sink in self._sinks:
+            await sink.emit(event)
+
+
+async def _questions(given: list[str], terminal: Any) -> AsyncIterator[str]:
+    """The questions given on the command line, then whatever is typed."""
+    for question in given:
+        yield question
+    while terminal is not None:
+        question = await terminal.ask()
+        if question is None:
+            return
+        yield question
+
+
+async def _run_cli(
+    state: SessionState,
+    deps: AgentDeps,
+    given: list[str],
+    terminal: Any,
+    fake: bool,
+) -> int:
+    """One event loop for every question.
+
+    `asyncio.run` per question waited at each exit for any tool thread a step
+    timeout had abandoned, which held the next question back for as long as
+    that tool kept running.
+    """
+    code = 0
+    async for question in _questions(given, terminal):
+        if fake:
+            # The scripted model cannot know how many questions will come, so
+            # a turn's worth of replies is pushed as each one arrives.
+            deps.llm.extend(_fake_script(question))
+        try:
+            result = await run_turn(state, deps, question)
+        except AgentError as exc:
+            print(
+                json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False),
+                file=sys.stderr,
+            )
+            _summarise(state, None)
+            return 1
+        if terminal is None:
+            _summarise(state, result)
+        if not result.answer:
+            code = 1
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover

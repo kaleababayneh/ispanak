@@ -2205,3 +2205,119 @@ def test_the_empty_answer_retry_still_has_time_late_in_a_turn():
 
     retry = llm.calls[-1]["timeout_s"]
     assert retry >= MIN_ATTEMPT_S, f"yeniden deneme {retry} sn aldi"
+
+
+# --- the interactive CLI ---------------------------------------------------
+
+
+def _typing(monkeypatch, typed: str):
+    """A terminal that reads `typed` and draws nowhere anyone has to look."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from lakehouse_agent.agent import console as console_module
+
+    made = []
+    # Captured before the patch: the factory replaces this name, so calling
+    # it by name inside itself would recurse forever.
+    real = console_module.Terminal
+
+    def factory(*_args, **_kwargs):
+        terminal = real(
+            console=Console(file=StringIO(), width=100, no_color=True),
+            stream=StringIO(typed),
+        )
+        made.append(terminal)
+        return terminal
+
+    monkeypatch.setattr(console_module, "Terminal", factory)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    return made
+
+
+def test_chat_mode_runs_a_turn_for_every_question_typed(monkeypatch, tmp_path, capsys):
+    """The whole point of `--chat`: a follow-up is asked after seeing the
+    answer, not written on the command line before the first one."""
+    from lakehouse_agent.agent.loop import _cli
+
+    # A blank line sends each question; the last one ends the session.
+    _typing(monkeypatch, "konut kredisi faizi\n\nya endeks\n\n")
+    events = tmp_path / "oturum.jsonl"
+
+    assert _cli(["--fake", "--chat", "--events", str(events)]) == 0
+
+    lines = [
+        json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["type"] for event in lines].count("done") == 2
+    assert {event["session_id"] for event in lines} == {"cli"}
+    # The stream went to the file, so the screen was free for the answer.
+    assert capsys.readouterr().out == ""
+
+
+def test_chat_mode_needs_a_terminal_and_says_so(monkeypatch, capsys):
+    """Piped stdin would read the pipe as if it were a person typing."""
+    from lakehouse_agent.agent.loop import _cli
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    assert _cli(["--fake", "--chat"]) == 2
+    assert "--chat bir terminal gerektiriyor" in capsys.readouterr().err
+
+
+def test_the_event_file_keeps_the_record_while_the_screen_stays_clean(tmp_path, capsys):
+    """`--events` without `--chat`: the JSONL contract still holds, it just
+    moves off stdout so a demo can be watched."""
+    from lakehouse_agent.agent.loop import _cli
+
+    events = tmp_path / "olaylar.jsonl"
+
+    assert _cli(["--fake", "--question", "faiz", "--events", str(events)]) == 0
+
+    written = [
+        json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()
+    ]
+    assert written[-1]["type"] == "done"
+    assert capsys.readouterr().out == ""
+
+
+def test_an_approval_card_reaches_the_person_in_chat_mode(monkeypatch, tmp_path):
+    """`deps.approve` was never set anywhere in `src/`, so every card fell to
+    `auto_default` and the decision read "otomatik onay (etkilesimsiz mod)" --
+    the one thing KKB called a differentiator, shown as nobody having been
+    asked.
+
+    The ambiguous fake search is what makes a card fire at all; the typed
+    stream then carries the question, the choice, and the blank line that
+    ends the session.
+    """
+    from lakehouse_agent.agent import loop as loop_module
+    from lakehouse_agent.agent.loop import AgentDeps, _cli, _fake_script
+    from lakehouse_agent.config import AgentSettings
+    from lakehouse_agent.testing import FakeLLM
+    from lakehouse_agent.testing.fake_tools import make_fake_registry
+
+    monkeypatch.setattr(
+        loop_module,
+        "_fake_deps",
+        lambda questions: AgentDeps(
+            llm=FakeLLM([item for q in questions for item in _fake_script(q)]),
+            registry=make_fake_registry(ambiguous_search=True),
+            settings=AgentSettings(MIA_API_KEY="fake-key-unused-offline"),
+        ),
+    )
+    # Question, blank line to send it, then the card's answer.
+    _typing(monkeypatch, "konut kredisi\n\n2\n")
+    events = tmp_path / "oturum.jsonl"
+
+    _cli(["--fake", "--chat", "--events", str(events)])
+
+    decisions = [
+        json.loads(line)["payload"]
+        for line in events.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["type"] == "approval_decision"
+    ]
+    assert decisions, "hic onay karti cikmadi"
+    assert not decisions[0]["automatic"], "karar hala otomatik varsayilan"
+    assert decisions[0]["kind"] == "series_choice"

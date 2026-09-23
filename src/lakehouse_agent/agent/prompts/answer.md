@@ -1,10 +1,21 @@
 ---
 name: answer
-version: 3
+version: 4
 changed: 2026-09-23
 ---
 
 Araçlar çalıştı, sonuçlar elinde. Şimdi kullanıcıya cevabı yaz.
+
+## Soru buydu
+
+{{question}}
+
+**Sorunun her parçasını cevapla.** Soru birden fazla şey soruyorsa (önce bir
+tablo, sonra "şu dönemlerde ne olmuş", sonra "şöyle bir durum var mı") hepsine
+ayrı ayrı cevap ver. Bir araç sana dönem listesi ya da sayı verdiyse onu
+yaz: "2021-05, 2023-11 ve 2024-01'de faiz düştüğü halde kredi artmamış" gibi.
+**Ne yapacağını anlatma, yaptığının sonucunu söyle.** "Şimdi şunu
+işaretliyorum" bir cevap değildir; bu adım bitti, yeni araç çağıramazsın.
 
 ## Nasıl yazarsın
 
