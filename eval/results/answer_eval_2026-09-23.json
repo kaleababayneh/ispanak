@@ -1,12 +1,12 @@
 {
- "zaman": "2026-09-23T08:53:12.026245+00:00",
+ "zaman": "2026-09-23T09:18:33.382395+00:00",
  "model": "deepseek-ai/DeepSeek-V4.1-Flash",
  "soru_sayisi": 12,
  "gecen": "11/12",
- "bayrakli": 1,
+ "bayrakli": 0,
  "kesintili": 0,
- "sure_ms": 64342,
- "token": 521137,
+ "sure_ms": 83973,
+ "token": 505859,
  "sorular": [
   {
    "id": "A1",
@@ -22,15 +22,13 @@
      "detay": "gecti"
     }
    ],
-   "bayrak": 1,
-   "bayrak_metinleri": [
-    "'2,2' tablolarda ve arac ciktilarinda bulunamadi; arac ciktisindan gelmemis olabilir."
-   ],
+   "bayrak": 0,
+   "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 5226,
-   "token": 27327,
-   "cevap": "Son 12 ayda konut kredisi faizi genel olarak geriledi, ama yılın son çeyreğinde yeniden yükselişe geçti: tabloda 2025-07'de %42,56 olan oran 2026-06'da %40,34'e indi, yani yıl başına göre yaklaşık 2,2 puan düşük (evds:TP.KTF12).\n\nDüşüş tek düze değil. Oran 2025-07'den 2025-11'e kadar kesintisiz azalarak %37,76'ya geldi; 2026-03'te %34,66 ile dönemin en düşük seviyesi görüldü (evds:TP.KTF12).\n\nSonrasında yön tersine döndü: 2026-04'te %36,62, Mayıs'ta %38,43 ve Haziran'da %40,34 ile üst üste üç ay arttı; Haziran değeri Şubat'taki %35,16'nın belirgin üzerinde (evds:TP.KTF12).\n\nVarsayım: seri haftalık yayımlandığı için aylık değerler, ayın haftalık gözlemlerinin ortalaması alınarak üretildi; kullanılan büyüklük konut kredisi faiz oranı (TL, akım, ağırlıklı ortalama, %) düzeyidir. Tabloda 2025-12 ve 2026-01 aylarının değerleri bu örnek satırlarda görünmüyor; istersen tam tabloyu ya da aylık yüzde değişimleri yeni bir turda çıkarabiliriz.\n\n**Dogrulanamayan ifadeler**\n- '2,2' tablolarda ve arac ciktilarinda bulunamadi; arac ciktisindan gelmemis olabilir.",
+   "sure_ms": 5511,
+   "token": 27419,
+   "cevap": "Son 12 ayda konut kredisi faizi önce belirgin biçimde geriledi, sonra yeniden yükseldi. Tabloya göre 2025-07'de %42,56 olan aylık ortalama, 2026-03'te %34,66 ile en düşük düzeyine indi; ardından dört ayda toparlanarak 2026-06'da %40,34'e çıktı. Yani düşüş eğilimi 2026 baharında tersine döndü ve faiz yeniden %40 bandına yaklaştı.\n\nSeriyi ben \"konut kredisi faiz oranı\" olarak okudum; kaynak, akım bazlı ağırlıklı ortalama faizi veren evds:TP.KTF12. Veri aslında haftalık yayımlanıyor, aylık değerler ayın haftalık gözlemlerinin ortalaması alınarak kuruldu (uyarı notu), bu yüzden tablodaki rakamlar ay içi ortalama niteliğinde.\n\nGrafik yok; seyir yalnızca tablodaki 12 aylık düzeyden okunuyor, yüzde değişim ayrıca hesaplanmadı. İsterseniz bir sonraki turda aylık yüzde değişimleri de çıkarabilirim.",
    "hata": null
   },
   {
@@ -51,9 +49,9 @@
    "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 3868,
-   "token": 45273,
-   "cevap": "Endeksleme yapıldı: tabloya `TP_KFE_TR_endeks_202101` sütunu eklendi ve 2021-01 dönemi 100 olarak alındı. Yani her ayın değeri, o ayın KFE düzeyinin 2021-01 düzeyine (16,49) oranının 100 ile çarpımı.\n\nSonuçları okurken: endeks 2026-06'da 1.402,9'a çıkmış; bu, 2021-01'e göre yaklaşık 14 katına denk geliyor. 2021-02'de 103,0, 2021-05'te 110,8 seviyesinde — artış başlangıçta ılımlı, sonrasında hızlanmış görünüyor (tabloda ara aylar da var).\n\nİki not: birim endeks olduğu için düzeyler arası farklar yüzde puan olarak okunabilir; ben baz dönemi 2021-01'in ilk ayı olarak yorumladım. Ayrıca ilk denememde `name` argümanı reddedildi, sütun adı otomatik verildi; ek bir kesinti yok. Kaynak: evds:TP.KFE.TR.",
+   "sure_ms": 4445,
+   "token": 36282,
+   "cevap": "Yeni sütun (`TP_KFE_TR_endeks_202101`) tabloya eklendi; taban ayını sorudaki gibi 2021-01 aldım, yani o ay 100'e eşitlendi ve diğer aylar bu aya göre yeniden ölçeklendi (kaynak: evds:TP.KFE.TR, aylık, 2021-01 – 2026-06).\n\nTabloda 2021-01 satırı 100,0; izleyen aylarda endeks kademeli olarak yükseliyor ve 2026-06'da 1.402,9'a ulaşıyor. Yani bu dönem boyunca konut fiyatları yaklaşık 14 kat artmış görünüyor.\n\nBu bir düzey (endeks) serisi; artış konut fiyatlarının nominal seviyesindeki birikimli değişimi gösterir, alım gücüne göre bir karşılaştırma değildir.",
    "hata": null
   },
   {
@@ -74,9 +72,9 @@
    "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 8218,
-   "token": 83711,
-   "cevap": "Pay, tabloda yeni `TP_AKONUTSAT2_KTRTOPLAM_pay` sütununda duruyor: ipotekli satışların toplam konut satışlarına oranı aylık olarak yüzde cinsinden. Aralığın uçları belirgin biçimde ayrışıyor — 2021-01'de %15,3 iken 2026-06'da %20,0; en yüksek değer 2022-06'da %26,7, en düşük değer 2023-12'de %4,4 (kaynaklar: evds:TP.AKONUTSAT2.KTRTOPLAM, evds:TP.AKONUTSAT1.KTRTOPLAM).\n\nBunun anlamı şu: 2023 sonunda ipotekli satışlar neredeyse durma noktasına gelmiş, payı %4-6 bandına inmiş; 2024'ten itibaren toparlanıp son aylarda %20 civarına yerleşmiş. Yani pay aynı seviyede dalgalanmıyor, düşüş ve toparlanma şeklinde bir kırılma var; kırılma 2023-10 ile 2023-12 arasındaki dip.\n\nBu turda yalnızca seri havuzunda arama yaptım, dış kaynak okumadım; kırılmanın nedeni bu cevapta ele alınmadı. Tablodaki pay sütunu iki serinin oranı olarak türetildi (x100), başka bir dönüşüm ya da dönem ortalaması hesaplanmadı; istersen yeni bir turda ortalama veya yıllık karşılaştırma da çıkarılabilir.",
+   "sure_ms": 8167,
+   "token": 84994,
+   "cevap": "Pay, tabloda `TP_AKONUTSAT2_KTRTOPLAM_pay` sütununda: ipotekli satışların toplam konut satışlarına oranı (ratio işlemi, birim %). Ortalama bir tek sayı yerine, oran dönem içinde sert dalgalanıyor.\n\nSon ay olan 2026-06'da pay %20,0. Dönemin zirvesi 2022-06'da %26,7; en düşüğü ise 2023-12'de %4,4. Dikkat çeken şey, 2023 sonbaharında payın %5 civarına inmesi ve 2023-12'de dip yapması — tablo 2021-01'den 2023'e kadar genelde %15-25 bandında seyrederken bu tarihten sonra kademeli olarak toparlanıyor ve 2026'da yine %20 civarına dönüyor.\n\nBunun nedeni (örneğin faiz/erişim koşulları) bu araç çıktılarından görünmüyor; yalnızca oranın bu dönemde birlikte hareket ettiğini söyleyebiliyorum.\n\nKaynaklar: evds:TP.AKONUTSAT2.KTRTOPLAM (ipotekli) ve evds:TP.AKONUTSAT1.KTRTOPLAM (toplam).",
    "hata": null
   },
   {
@@ -102,9 +100,9 @@
    "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 6115,
-   "token": 38918,
-   "cevap": "Konut kredisi bakiyesini BDDK aylık tüketici kredileri (konut, toplam, sektör) serisinden aldım ve TÜFE (2025=100, EVDS TP.TUKFIY2025.GENEL) ile deflate ettim; eklenen reel sütun 2025 yılı ortalama fiyatlarıyla ifade ediliyor, yani tablodaki nominal ve reel sütunlar aynı şeyin iki farklı fiyat düzlemindeki hâli.\n\nTabloda iki seri zıt yönde: nominal bakiye 2021-01'de 276.785 milyon TL iken 2026-06'da 801.438 milyon TL'ye çıkıyor, ama reel bakiye aynı dönemde 1.716.481,8 milyon TL'den 616.538,2 milyon TL'ye iniyor. Yani kredi stoku cari fiyatlarla büyürken satın alma gücü cinsinden küçülmüş; artış tamamen fiyat düzeyindeki yükselişten kaynaklanıyor.\n\nBu bir stok (bakiye) serisi; \"yeni kullandırım arttı\" anlamına gelmiyor, konut kredisinin o tarihteki toplam stokunu gösteriyor. Reel seriyi 2025 baz yılına çevirdiğimi ve birim çevirisi yapmadığımı belirteyim — rakamlar doğrudan araç çıktısından.\n\nSon aylara bakınca (tabloda 2026-03'ten itibaren) reel bakiye 606.000–617.000 milyon TL bandında yatay seyrediyor; yüzde değişim hesaplanmadı, tablo yalnızca düzey veriyor, istersen bir sonraki turda dönemsel değişim de üretilebilir.\n\nKaynaklar: bddk:aylik:tuketici:tuketici_kredileri_konut:toplam:sektor ve evds:TP.TUKFIY2025.GENEL.",
+   "sure_ms": 8290,
+   "token": 38570,
+   "cevap": "Tablo artık iki sütunlu: nominal BDDK konut kredisi bakiyesi ve onu TÜFE ile deflate ettiğim reel karşılığı. Reel seriyi 2025 yılı ortalama fiyatlarıyla (TÜFE 2025=100) ifade ettim; yani tabloda okuduğun reel tutarlar \"2025 TL\" cinsinden.\n\nÖrnek uçlara bakınca tabloda 2021-01'de reel bakiye yaklaşık 1,72 milyon milyon TL, 2026-06'da ise yaklaşık 617 bin milyon TL düzeyinde. Yani nominal bakiye 276 binden 801 bin milyon TL'ye çıkmış görünürken, aynı dönemde fiyatlar kat kat arttığı için reel bakiye belirgin biçimde geriliyor. Nominal büyümenin tamamı fiyat artışından kaynaklanmış; satın alma gücü cinsinden konut kredisi stoku küçülmüş.\n\nBu bir bakiye (stok) serisidir; \"yeni kullandırım\" değil, ay sonu toplam stoktur. Reel karşılaştırmada baz dönemi 2025 ortalaması seçtim; başka bir baz yılı seçilirse düzeyler kayar ama eğilim değişmez.\n\nKaynaklar: bddk:aylik:tuketici:tuketici_kredileri_konut:toplam:sektor (nominal, milyon TL) ve evds:TP.TUKFIY2025.GENEL (deflatör).",
    "hata": null
   },
   {
@@ -125,9 +123,9 @@
    "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 5003,
-   "token": 27791,
-   "cevap": "Aylık ortalama seri hazır: tablo 2021-01'den 2026-06'ya kadar 66 ayı kapsıyor. Haftalık yayımlanan seriyi aya çevirirken o ay içindeki haftaların ortalamasını aldım; haftalar gözlendiği güne (örneğin Cuma) göre aya yazıldı.\n\nTablonun başı ile sonu arasındaki fark belirgin: 2021 başında aylık ortalama %18,4 iken ilk aylarda %18 civarına, 2021-05'te %17,8'e gerilemiş; 2026 tarafında ise 2026-02'de %35,2, 2026-06'da %40,3 düzeyine çıkmış. Yani 2021'de yatay seyreden ortalama, sonrasında kademeli olarak yükselmiş ve 2026 ortasında %40 bandına yerleşmiş görünüyor.\n\nKaynak: evds:TP.KTF12 (Konut Kredisi, TL, akım, ağırlıklı ortalama; haftalık → aylık ortalama). Not: bu bir faiz oranı serisi, stok büyüklüğü değil.\n\nAramada konut kredisinin haftalık faiz serisine ilişkin havuzda iki benzer EVDS serisi çıktı (evds:TP.KTF12 ve evds:TP.KBK.TRY.18); istenen aylık ortalamayı aktif seriden ürettim.",
+   "sure_ms": 6243,
+   "token": 27596,
+   "cevap": "Haftalık seriyi aylık ortalamaya çevirdim: tablo artık 2021-01 – 2026-06 arasında 66 ay ve tek sütunda (TP_KTF12) konut kredisi faizinin o ay içindeki haftalık değerlerinin ortalamasını taşıyor. Çevrim kuralı olarak her hafta, gözlendiği günün (örneğin Cuma) dönemine sayıldı ve o ayın haftalarının basit ortalaması alındı.\n\nSerinin başında (2021 başı) aylık ortalama %18 civarında; 2026'nın son aylarında %34–%40 bandına çıkmış görünüyor — tabloda 2026-02 ile 2026-06 arasındaki satırlarda bu yükseliş net izleniyor. Dolayısıyla faiz, kapsam boyunca kabaca iki katına yakın bir seviyeye gelmiş; ancak bu bir düzey karşılaştırması, oranların yüzde değişimini ayrıca hesaplamadım (istenirse bir sonraki turda pct_change ile üretilebilir).\n\nİki varsayımım var: (1) Havuzda benzer adlı iki aday vardı (evds:TP.KBK.TRY.18 ve evds:TP.KTF12); halihazırda aktif olan ve kapsamı soruyla örtüşen evds:TP.KTF12'yi kullandım. (2) Bu seri bir faiz oranı (ağırlıklı ortalama, %) — konut kredisi bakiyesi veya kullandırım hacmi (BDDK haftalık stok serileri) değil; sorudaki \"konut kredisi faizi\" ifadesini bu şekilde yorumladım.\n\nBu turda `web_search` çalıştırmadım, dolayısıyla dış kaynaklı bir bilgi eklemiyorum.",
    "hata": null
   },
   {
@@ -150,9 +148,9 @@
    "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 7742,
-   "token": 80494,
-   "cevap": "Havuzdaki en uygun seri **evds:TP.GENENDEKS.T1** (Genel Endeks, 2003=100, aylık) idi; sorudaki \"tüketici fiyat endeksi\" olarak bu genel TÜFE endeksini aldım ve baz ayı olarak 2021-01'i seçtim (serinin ilk ayı). Değişimi `transform_table` ile hesapladım.\n\nSonuca göre endeks 2021 Ocak'tan verinin son ayı olan 2026 Haziran'a kadar **%706,1** artmış durumda: tablodaki `degisim_202101` sütunu 2021-01'de %0 iken 2026-06'da %706,14'e çıkıyor. Endeks düzeyi de aynı dönemde 513,3'ten 4.137,93'e yükseliyor.\n\nYani 2021 başından bu yana fiyat düzeyi yaklaşık sekiz katına çıkmış; bu, tek tek aylık artışların birikimli (bileşik) etkisidir, basit toplam değildir.\n\nİki not: Sorudaki \"bugüne\" ifadesini verinin son gözlemi olan 2026-06 olarak yorumladım; elimizdeki tablo bu tarihte bitiyor. Ayrıca bu genel endeks düzeyidir, yıllık enflasyon oranı değil — istersen aynı seriden yıllık yüzde değişimi de ayrı bir turda hesaplayabiliriz.",
+   "sure_ms": 11576,
+   "token": 70405,
+   "cevap": "Tablo, her ayı 2021-01 seviyesine göre yüzde değişim olarak veriyor. Baz aldığım nokta Ocak 2021 (endeks 513,3); serinin son ayı ise Haziran 2026 (4.137,93). Buna göre genel TÜFE endeksi 2021 başından bu yana **%706,1** artmış durumda.\n\nDikkat çeken nokta, artışın düz bir çizgi izlememesi: 2021'de aylık değişimler tek haneli kalırken, 2023-2024 aralığında aylık sıçramaların belirgin şekilde büyüdüğü ve yıllık artışın yükseldiği tabloda net görülüyor; 2025 sonrasında ise aylık artışların hızı bir miktar yavaşlamış görünüyor.\n\nBaz dönemi 2021-01 olarak sabitledim; \"bugüne\" ifadesini serinin kapsadığı son ay (2026-06) olarak yorumladım. Hesaplama `transform_table` ile baz döneme göre yüzde değişim olarak üretildi; kaynak seri: evds:TP.GENENDEKS.T1 (Genel Endeks, 2003=100).",
    "hata": null
   },
   {
@@ -173,9 +171,9 @@
    "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 3338,
-   "token": 18288,
-   "cevap": "Evet, 2021 verisi havuzda var. Konut kredisi bakiyesini karşılayan birden fazla aylık stok serisi çıktı ve hepsinin kapsamı 2021-01'de başlıyor; yani 2021'in tamamı (Ocak–Aralık) mevcut.\n\nÖne çıkanlar: BDDK-Aylık kaynaklı \"Tüketici Kredileri - Konut (Toplam)\" (bddk:aylik:tuketici:tuketici_kredileri_konut:toplam:sektor) ve \"Tüketici Kredileri - Konut (TP)\" (bddk:aylik:tuketici:konut:TL:sektor) milyon TL cinsinden; EVDS kaynaklı \"Konut Kredileri\" serileri (evds:TP.KM.B11, evds:TP.KM.A11) ise bin TL cinsinden. Hepsi aylık ve stok niteliğinde.\n\nBir not: bunlar bakiye (stok) serileri; \"yeni kullandırılan konut kredisi\" gibi bir akım serisi aramada çıkmadı. İstersen 2021'in aylık değerlerini getirip yıl içi değişimi de hesaplayabilirim — hangi seriyi istediğini söyle.",
+   "sure_ms": 5821,
+   "token": 18361,
+   "cevap": "Evet, var. Havuzda konut kredisi bakiyesini (stok) aylık frekansta veren birkaç seri bulundu ve hepsinin kapsamı **2021-01 – 2026-06** aralığı; yani 2021'in tamamı kapsanıyor.\n\nEn doğrudan eşleşenler: `bddk:aylik:tuketici:tuketici_kredileri_konut:toplam:sektor` (\"Tüketici Kredileri – Konut (Toplam)\", milyon TL) ve `evds:TP.KM.B11` (\"3.2.1.1. Konut Kredileri\", bin TL). Ayrı ayrı TL/TP ayrımı isterseniz `bddk:aylik:tuketici:konut:TL:sektor` de var; takipteki krediler ise ayrı bir seri (`bddk:aylik:tuketici:takipteki_konut_kredileri:toplam:sektor`) ve toplam bakiyeyle karıştırılmamalı.\n\nNot: bunlar bakiye (stok) serileri; \"yeni kullandırılan kredi\" gibi bir akım verisi istiyorsanız bu listede görünmüyor. Hangi seriyi seçeceğinizi söylerseniz sonraki turda 2021 dönemini tabloya alabilirim.",
    "hata": null
   },
   {
@@ -201,9 +199,9 @@
    "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 5924,
-   "token": 48181,
-   "cevap": "Evet, konut kredisi faizinde yapısal bir kırılma var ve tarihi tabloda **2023-07** olarak işaretleniyor.\n\nTabloya göre bu dönemde öncesi/sonrası ortalama seviye %115,0 gibi çok büyük bir sıçrama yapıyor; tek dönemlik ani yükseliş ise %51,4. Yani faiz, bir ayda yapısal olarak farklı bir düzeye geçmiş görünüyor. Aylık endeksin kendisi de 2021 başında 18,4 civarındayken 2026-06'da 40,3'e çıkmış (tabloda uç dönemler).\n\nEğim tarafında dikkat çekici bir ayrıntı var: kırılma öncesi eğim pozitif (+0,097), sonrası ise negatif (–0,102). Diğer bir deyişle kırılma yalnızca seviyeyi yukarı taşımakla kalmıyor, sonrasındaki eğilimi de aşağı çeviriyor; yani düzey kalıcı olarak yükselmiş ama artış hızı tersine dönmüş.\n\nAynı aya denk gelen politika olayı: TCMB 20 Temmuz 2023 tarihli duyurusunda politika faizini yükselttiğini açıkladı (duyuru no 2023-25, tcmb.gov.tr/wps/wcm/connect/tr/tcmb+tr/main+menu/duyurular/basin/2023/duy2023-25; özet ayrıca akbankinvestorrelations.com/…/2023_07_20_Temmuz_PPK_Karari.pdf adresinde). Bu, havuz verisi değil web'den okunan bir kaynak. Arama sonucu oranı da içeriyor ama farklı kaynaklarda tarih–oran eşleşmesi karışabildiği için oranı buradan aktarmıyorum; gerekirse kaynağın kendisinden doğrulanabilir.\n\nİki şeyin aynı aya denk gelmesi nedensellik kanıtı değil; konut kredisi faizini makro koşullar, fonlama maliyeti ve kredi arzı koşulları birlikte belirler, üçüncü etkenler dışlanmadı (kaynak: evds:TP.KTF12). Not: seri haftalık yayımlanıyor, aylık değerler ay içi haftalık gözlemlerin ortalaması alınarak türetildi.",
+   "sure_ms": 8775,
+   "token": 48357,
+   "cevap": "Evet, yapısal bir kırılma var ve zamanlaması net: **2023-07**. `detect_changes` sonucuna göre seride tek kırılma bu tarihte; kırılma öncesi ortalama 18,72 iken sonrası 40,25'e çıkıyor, yani seviyede %115,0'lık bir sıçrama. Kırılmanın olduğu ayın kendi içindeki tek dönemlik artış ise %51,4 — yani değişim birkaç aya yayılan bir trend değil, tek ayda gerçekleşen keskin bir kopma (evds:TP.KTF12).\n\nEğim de aynı noktada işaret değiştiriyor: kırılma öncesi hafif pozitif (0,097), sonrası hafif negatif (−0,102). Bunu, kırılma sonrası yüksek seviyede dalgalanan ama düşme eğiliminde bir patika olarak okuyorum; tablonun son aylarındaki toparlanmayı da not ediyorum.\n\nAynı aya denk gelen politika olayı şu: TCMB Para Politikası Kurulu 20 Temmuz 2023 tarihli duyuruyla (sayı 2023-25) politika faizini yükseltme kararı aldı — https://www.tcmb.gov.tr/wps/wcm/connect/tr/tcmb+tr/main+menu/duyurular/basin/2023/duy2023-25. Kural olarak arama özetlerinden oran yazmıyorum; olay ve tarih örtüşmesini söylüyorum. Bu eşzamanlılık nedensellik kanıtı değil; kredi faizinin politika faizi dışında fonlama maliyeti, risk primi ve makro ihtiyati düzenlemeler gibi başka belirleyicileri de var.\n\nNot: TP_KTF12 haftalık yayımlanıyor, aylık değere haftaların ortalaması alınarak çevrildi (hafta, gözlendiği günün dönemine sayılır); bu yüzden ay ortası bir kararın ayın tamamına yayılmış etkisi biraz yumuşamış görünür.",
    "hata": null
   },
   {
@@ -224,9 +222,9 @@
    "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 4417,
-   "token": 36091,
-   "cevap": "Evet, seride iki aykırı ay var: ikisi de 2023 sonbaharında, Eylül ve Ekim aylarında ve ikisi de beklenenin üstünde. En büyük sapma Eylül'de (z≈3,71), Ekim ise neredeyse aynı büyüklükte (z≈3,68) — yani tek bir sıçrama değil, art arda iki aylık bir yukarı sapma söz konusu. Tabloya bakıldığında bu iki ayın gözlenen endeks değerleri, serinin genel eğiliminden hesaplanan beklentinin belirgin biçimde üzerinde.\n\nBunu şöyle okumak gerekir: \"beklenen\" değerler modelin trendden türettiği bir referans, gözlemlenmiş bir gerçek değil; dolayısıyla burada anlatılan şey bu iki ayın trende göre yukarı yönlü saptığı, yoksa endeksin neden o dönemde hızlandığı değil. Aykırılığın nedeni bu analizden çıkmaz; fiyat artışını hızlandıran bir gelişme olup olmadığı ayrıca bakılması gereken bir soru.\n\nSerinin tamamı 2021-01 – 2026-06 arasını kapsıyor ve tek bir seri üzerinden çalışıldı (evds:TP.KFE.TR). Başka bir ayla karşılaştırma ya da kırılma testi yapılmadı.",
+   "sure_ms": 5471,
+   "token": 36283,
+   "cevap": "Evet, var: endeks serisinde iki ay aykırı çıkıyor; ikisi de 2023'ün sonbaharına denk geliyor ve her ikisi de beklenen değerin **üstünde** (tabloda t02 satırları). En büyük sapma 2023-09'da (z ≈ 3,71), onu çok yakın bir değerle 2023-10 izliyor (z ≈ 3,68). Yani tek tek aylar değil, art arda iki ay aynı yönde sapmış bir dönem söz konusu.\n\nBüyüklüğe bakınca bu bir düzey sıçraması gibi durmuyor: gözlenen değerler beklenenden kabaca 5 puan yukarıda, endeksin genel eğiliminden kopan bir kırılma değil. Dolayısıyla \"aykırı\" burada düzeyin kendisinden çok, o iki aydaki aylık artış temposunun serinin geri kalanına göre yüksek kalması anlamına geliyor.\n\nBunun nedenini bu veri seti söylemiyor; nedensellik iddia etmiyorum. 2023 sonbaharı para politikasında sıkılaşma dönemine denk geliyor ama bu bağlantıyı doğrulamak için bu turda bir arama çalıştırmadım, dolayısıyla kaynak gösterebileceğim bir açıklama yok.\n\nNot: Anomali tespiti serinin tümü (2021-01 - 2026-06) üzerinden yapıldı, mevsimsellik ayrıca arındırılmadı — endeksin kendi eğilimi baz alındı. Kaynak: evds:TP.KFE.TR.",
    "hata": null
   },
   {
@@ -252,9 +250,9 @@
    "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 5685,
-   "token": 48185,
-   "cevap": "Kesinti yok; test tamamlandı. Kullandığım seriler: evds:TP.KTF12 (konut kredisi faizi, haftalık yayımlanıyor, aylık ortalamaya çevrildi) ve evds:TP.KFE.TR (konut fiyat endeksi, aylık); ikisi de 2021-01 – 2026-06 döneminde 66 ay.\n\nKısa cevap: Granger anlamında öncüllük bulunamadı. Faizden endekse yönde en iyi gecikme 3 ay ve p=0,0495; endeksten faize yönde en iyi gecikme 4 ay ve p=0,1679. Ancak iki yön ve 6 gecikme birlikte denendiği için eşik Bonferroni ile 0,0042'ye çekilmişti, dolayısıyla her iki yön de anlamsız (tablo t02_causality).\n\nGecikmeli korelasyonlarda en güçlü ilişki endeksin faizden 6 dönem önce olduğu yönde ve zayıf: r=0,25, 59 gözlem (t03_lag_corr).\n\nYorumlarken şunu aklında tut: seriler durağanlaştırılmak için farkları alındı, yani burada ölçülen şey seviyelerin değil değişimlerin ortak hareketi. Ayrıca bu bir nedensellik kanıtı değil — üçüncü etkenler (gelir, düzenlemeler, faiz dışı kredi koşulları) dışlanmadı ve test yalnızca doğrusal ilişkiyi ölçüyor. Bu turda web araması çalıştırılmadı, o yüzden dışarıdan bir kaynak aktarmıyorum.",
+   "sure_ms": 7416,
+   "token": 48250,
+   "cevap": "Kısa cevap: anlamlı bir öncüllük bulunmadı. Konut kredisi faizinden (TP_KTF12) fiyat endeksine (TP_KFE_TR) doğru en iyi gecikme 3 ay, p=0,0495; ters yönde en iyi gecikme 4 ay, p=0,1679. İki yön ve 6 gecikme denendiği için Bonferroni eşiği 0,0042'ye iniyor ve bu eşiğin altına hiçbir sonuç düşmüyor — tabloda \"anlamlı\" sütunu bu yüzden iki satırda da yanlış.\n\nTablodaki en güçlü gecikmeli ilişki de zayıf ve ters yönde: KFE, faizden 6 dönem önce, r=0,25 (59 gözlem). Yani fiyatların faizi öncülediğine dair bir işaret var, faizin fiyatı öncülediğine dair değil; ama bu korelasyon da güçlü sayılmaz.\n\nBunun nedensellik kanıtı olmadığını belirtmem gerek: üçüncü etkenler (para politikası, gelir, arz kısıtları, düzenleme) dışlanmadı ve test yalnızca doğrusal ilişkiyi ölçüyor. Seriler durağanlaştırmak için farkları alındı (t02_causality, t03_lag_corr).\n\nBir teknik not: kredi faizi serisi aslında haftalık yayımlanıyor; aylık değere ay içi haftaların ortalaması alınarak çevrildi (evds:TP.KTF12). Bu dönüşüm ay içi oynaklığı düzleştirdiği için kısa gecikmelerdeki ilişkiyi bir miktar zayıflatmış olabilir. Kaynaklar: evds:TP.KTF12, evds:TP.KFE.TR.",
    "hata": null
   },
   {
@@ -275,9 +273,9 @@
    "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 5524,
-   "token": 47956,
-   "cevap": "Kırılma 2023-07'de: tabloda o aydan sonra konut kredisi faizinin ortalama düzeyi 18,72'den 40,25'e çıkıyor; kırılma anındaki tek dönemlik sıçrama %51,4, öncesi-sonrası seviye değişimi %115,0 (t01_get_series, t02_detect_changes).\n\nWeb aramasında o tarihe denk gelen olay TCMB'nin 20 Temmuz 2023 PPK kararı: politika faizini yükseltme kararı almış (tcmb.gov.tr …/2023/duy2023-25; aynı karar için akbankinvestorrelations.com …/2023_07_20_Temmuz_PPK_Karari.pdf). Özetler aynı günü işaret ediyor; oranı arama özetinden yazmıyorum.\n\nYani konut kredisi faizindeki kırılma ile politika faizindeki o temmuz hamlesi aynı aya düşüyor, ama bu birlikte hareket kurmanın faiz kararının sonucu olduğunu göstermez; başka etkenler dışlanmadı.\n\nNot: TP.KTF12 haftalık yayımlanıyor, aylık değerler ay içi haftaların ortalaması alınarak türetildi (araç uyarısı).",
+   "sure_ms": 7207,
+   "token": 48104,
+   "cevap": "Kırılma 2023-07 döneminde: tabloda o aya kadar ortalama %18,7 iken sonrasında %40,3'e çıkıyor; seviye değişimi %115,0 ve kırılma ayındaki tek dönemlik sıçrama %51,4 (t02_detect_changes; seri evds:TP.KTF12). Yani konut kredisi faizi yaz boyunca iki katından fazlasına çıkmış; kırılma öncesi hafif artış eğilimi (0,10) sonrasında yerini hafif düşüşe (-0,10) bırakmış.\n\nWeb aramasında tam bu tarihe denk gelen bir gelişme çıktı: TCMB Para Politikası Kurulu 20 Temmuz 2023 toplantısında politika faizini artırdığını duyurdu (tcmb.gov.tr 2023-25 numaralı basın duyurusu; aynı karar akbankinvestorrelations.com'daki PPK karar PDF'inde de yer alıyor). Aramada ayrıca konut kredisi faizinin politika faizinin çok altında seyrettiğini tartışan bir blog yazısı çıktı (kredio.co).\n\nToplantı tarihi ile tablodaki aylık kırılma aynı döneme denk geliyor, ama bu ikisinin birlikte hareket ettiğini söylemekten öteye gitmiyorum; elimde nedensellik testi yok ve faiz kararı dışında (makro ihtiyati düzenlemeler, mevduat/konut kredisi üst sınırları gibi) etkenler dışlanmış değil. Politika faizinin o günkü düzeyini arama özetinden almadım; gerekiyorsa kaynağı doğrudan açıp bakmak gerekir.",
    "hata": null
   },
   {
@@ -298,9 +296,9 @@
    "bayrak_metinleri": [],
    "dogrulandi": true,
    "kesinti": null,
-   "sure_ms": 3282,
-   "token": 18922,
-   "cevap": "20 Temmuz 2023 tarihli duyuru (Sayı: 2023-25), Para Politikası Kurulu'nun politika faizini — bir hafta vadeli repo ihale faiz oranını — yüzde 15'ten yüzde 17,5'e yükselttiğini gösteriyor.\n\nGerekçede, dezenflasyonun en kısa sürede tesisi, enflasyon beklentilerinin çıpalanması ve fiyatlama davranışlarındaki bozulmanın kontrol altına alınması için parasal sıkılaştırma sürecinin sürdürülmesi vurgulanıyor. Küresel enflasyonun gerilediği ama hâlâ uzun dönem ortalamalarının ve merkez bankası hedeflerinin üzerinde olduğu, bu yüzden birçok ülkede sıkılaştırmanın devam ettiği belirtiliyor. Duyuruda ayrıca toplantı özetinin beş iş günü içinde yayımlanacağı ifade ediliyor.\n\nKaynak: TCMB Faiz Oranlarına İlişkin Basın Duyurusu 2023-25 — tcmb.gov.tr/wps/wcm/connect/tr/tcmb+tr/main+menu/duyurular/basin/2023/duy2023-25 (bu bir havuz serisi değil, doğrudan siteden okunan resmi duyuru metnidir).\n\nNot: Sayfa yalnızca duyuru metnini içeriyordu; bir veri tablosu gelmedi, bu nedenle faiz serisinin geçmişine dair karşılaştırma yapamadım. İstersen sonraki bir turda komşu duyurular da okunarak faiz patikası çıkarılabilir.",
+   "sure_ms": 5051,
+   "token": 21238,
+   "cevap": "22 Temmuz 2023 tarihli duyurunun (duy2023-25) özeti:\n\nKurul, bir hafta vadeli repo ihale faiz oranını yüzde 15'ten yüzde 17,5'e yükseltti. Karar, dezenflasyonun en kısa sürede tesisi, enflasyon beklentilerinin çıpalanması ve fiyatlama davranışlarındaki bozulmanın kontrol altına alınması için parasal sıkılaştırma sürecinin sürdürülmesi gerekçesiyle alındı.\n\nTalep: https://www.tcmb.gov.tr/wps/wcm/connect/tr/tcmb+tr/main+menu/duyurular/basin/2023/duy2023-25 (TCMB - Faiz Oranlarına İlişkin Basın Duyurusu (2023-25), PDF: DUY2023-25.pdf)\n\nBelirtmem gereken bir koşul: Bu okuma dışarıdan bir kaynak, havuz verisi değil; ayrıca sayfa metni bir özet sayfası olduğu için duyurudaki tam ifadeleri küçük farklarla aktarıyor olabilirim. Uygulamada ayrıca bir değerlendirme yapılmadı; ben yalnızca duyurudaki kararı özetledim.",
    "hata": null
   }
  ]

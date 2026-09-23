@@ -311,3 +311,177 @@ def test_a_query_that_names_no_table_keeps_the_similarity_order():
     ordered, _standing = pool_index.rank("mevduat faizi", scored, _grouped_meta())
 
     assert [sid for sid, _ in ordered] == [s for s, _ in scored]
+
+
+# --- rank: another country's copy, and an older base year -----------------
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Almanya (DEU) Tüketici Fiyat Endeksi (2010=100)", ("almanya", "DEU")),
+        ("Güney Kore (KOR) GSYH, Nominal", ("guney kore", "KOR")),
+        # Ours is not abroad, though it sits in the same table.
+        ("Türkiye (TUR) Tüketici Fiyat Endeksi (2010=100)", None),
+        # Three capitals that are a currency, not a country. Without the
+        # limits on the name this swallowed every BDDK province row.
+        ("ADANA - Diğer Mevduat (TRY)", None),
+        ("F.1.2.Özel Çekme Hakları (SDR)", None),
+    ],
+)
+def test_a_country_is_read_from_the_name_only_where_there_is_one(name, expected):
+    assert pool_index.country_match(name) == expected
+
+
+def test_a_table_with_one_code_is_not_a_country_breakdown():
+    """The pattern alone would mark the house price index as a country:
+    "Konut Fiyat Endeksi (KFE)" is three words and three capitals too. What
+    separates them is that a real country table carries dozens of codes."""
+    rows = [
+        {
+            "series_id": "evds:kfe",
+            "name": "Konut Fiyat Endeksi (KFE)",
+            "group": "bie_kfe",
+        },
+        *(
+            {
+                "series_id": f"evds:imf_{code}",
+                "name": f"{label} ({code}) Tuketici Fiyat Endeksi",
+                "group": "bie_imfcpind",
+            }
+            for label, code in [
+                ("Arnavutluk", "ALB"),
+                ("Ermenistan", "ARM"),
+                ("Avusturya", "AUT"),
+                ("Azerbaycan", "AZE"),
+                ("Belcika", "BEL"),
+                ("Brezilya", "BRA"),
+                ("Isvicre", "CHE"),
+                ("Sili", "CHL"),
+                ("Kolombiya", "COL"),
+                ("Cekya", "CZE"),
+            ]
+        ),
+    ]
+    frame = pd.DataFrame(
+        [
+            {
+                "series_id": r["series_id"],
+                "group": r["group"],
+                "country": pool_index.country_match(r["name"]),
+            }
+            for r in rows
+        ]
+    )
+
+    marked = pool_index._countries_of_tables(frame)
+
+    assert marked[0] == ""  # the house price index is not a country
+    assert marked[1] == "arnavutluk"
+    assert sum(1 for m in marked if m) == 10
+
+
+def test_the_older_edition_of_a_rebased_table_is_the_one_marked():
+    """Both TÜFE editions are live and neither is marked "(Arşiv)", so the
+    base year in the name is all there is to go on. The names do not agree
+    on the rest, which is why every parenthetical is dropped before they are
+    compared."""
+    meta = pd.DataFrame(
+        [
+            {"group": "bie_tukfiy2025", "table": "Tüketici Fiyat Endeksi (2025=100)"},
+            {
+                "group": "bie_tukfiy2003",
+                "table": "Tüketici Fiyat Endeksi (Genel) (2003=100)",
+            },
+            {"group": "bie_kfe", "table": "Konut Fiyat Endeksi"},
+            {
+                "group": "bie_gecinme",
+                "table": "Geçinme Endeksi (Ücretliler) (1968=100)",
+            },
+        ]
+    )
+
+    superseded = pool_index._superseded(meta)
+
+    assert superseded == {"bie_tukfiy2003": "2003"}
+
+
+_CPI_META = pd.DataFrame(
+    [
+        {
+            "series_id": "evds:imf_deu",
+            "table": "IMF - Tüketici Fiyat Endeksi (2010=100)",
+            "places": "",
+            "country": "almanya",
+            "archive": False,
+            "family": None,
+            "group": "bie_imfcpind",
+            "head": True,
+        },
+        {
+            "series_id": "evds:tufe_2003",
+            "table": "Tüketici Fiyat Endeksi (Genel) (2003=100)",
+            "places": "",
+            "country": "",
+            "archive": False,
+            "family": None,
+            "group": "bie_tukfiy2003",
+            "head": True,
+        },
+        {
+            "series_id": "evds:tufe_2025",
+            "table": "Tüketici Fiyat Endeksi (2025=100)",
+            "places": "",
+            "country": "",
+            "archive": False,
+            "family": None,
+            "group": "bie_tukfiy2025",
+            "head": True,
+        },
+    ]
+)
+#: The order cosine alone produced, measured 23 Sep on the real pool.
+_CPI_SCORED = [
+    ("evds:imf_deu", 0.6680),
+    ("evds:tufe_2003", 0.6665),
+    ("evds:tufe_2025", 0.6484),
+]
+
+
+def test_the_contract_index_wins_a_query_that_names_no_country_or_base():
+    """The eval's A6 in one assertion: on cosine alone "tüketici fiyat
+    endeksi" answered with Germany's CPI, and the series the contract fixes
+    came third."""
+    ranked, _ = pool_index.rank("tüketici fiyat endeksi", _CPI_SCORED, _CPI_META)
+
+    assert [sid for sid, _ in ranked][0] == "evds:tufe_2025"
+    assert dict(ranked)["evds:tufe_2025"] == 0.6484  # scores are not touched
+
+
+def test_naming_the_country_asks_for_that_country():
+    ranked, _ = pool_index.rank(
+        "Almanya tüketici fiyat endeksi", _CPI_SCORED, _CPI_META
+    )
+
+    assert [sid for sid, _ in ranked][0] == "evds:imf_deu"
+
+
+def test_naming_the_base_year_asks_for_that_edition():
+    ranked, _ = pool_index.rank("2003=100 tüfe endeksi", _CPI_SCORED, _CPI_META)
+
+    assert [sid for sid, _ in ranked][0] == "evds:tufe_2003"
+
+
+def test_an_index_built_before_these_rules_still_ranks():
+    """`data/pool_index` is derived and gitignored, so a stale copy without
+    the `country` column has to rank worse, not raise."""
+    stale = _CPI_META.drop(columns=["country"])
+
+    ranked, _ = pool_index.rank("tüketici fiyat endeksi", _CPI_SCORED, stale)
+
+    # The country rule cannot fire without its column, so Germany keeps the
+    # cosine lead it had; what must not happen is a crash, and the base-year
+    # rule still separates the two Turkish editions.
+    ids = [sid for sid, _ in ranked]
+    assert len(ids) == 3
+    assert ids.index("evds:tufe_2025") < ids.index("evds:tufe_2003")

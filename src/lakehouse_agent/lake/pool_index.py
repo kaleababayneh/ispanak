@@ -195,6 +195,80 @@ def places(text: str) -> frozenset[str]:
     return frozenset(_PLACE.findall(_fold(cleaned)))
 
 
+#: A series about another country opens with its name and ISO code:
+#: "Almanya (DEU) Tüketici Fiyat Endeksi (2010=100)". Measured 23 Sep: 1259
+#: series across eight IMF datagroups, 209 country names, of which Türkiye's
+#: own 12 rows are not foreign.
+#:
+#: The name is held to at most three words with no digit, dot or dash, which
+#: is what separates a country from everything else ending in three capitals.
+#: Without those limits the pattern also swallowed BDDK's province rows,
+#: where the three capitals are a currency: "ADANA - Diğer Mevduat (TRY)".
+_COUNTRY = re.compile(r"^([^\W\d_][^\d.()\-]{1,28})\(([A-Z]{3})\)")
+_HOME = "TUR"
+#: Distinct codes a datagroup needs before its rows are read as countries.
+#: The pattern alone is not enough: "Konut Fiyat Endeksi (KFE)" is three
+#: words and three capitals too, and demoting the house price index would be
+#: the opposite of the point. Measured 23 Sep, the separation is total --
+#: twelve genuine cross-country tables carry 39 to 185 codes, every false
+#: positive carries exactly one, and nothing sits in between.
+MIN_COUNTRY_CODES = 10
+
+
+def country_match(name: str) -> tuple[str, str] | None:
+    """(folded country name, ISO code) for a series about one country.
+
+    Ours is not abroad: Turkey's own rows sit in the same cross-country
+    tables and must not be demoted, so the home code reads as no match.
+
+    The name is held to at most three words with no digit, dot or dash. That
+    is what separates a country from everything else ending in three
+    capitals; without it the pattern also swallowed BDDK's province rows,
+    where the capitals are a currency ("ADANA - Diğer Mevduat (TRY)").
+    """
+    match = _COUNTRY.match(str(name or ""))
+    if match is None or match.group(2) == _HOME:
+        return None
+    label = match.group(1).strip()
+    return (_fold(label), match.group(2)) if len(label.split()) <= 3 else None
+
+
+#: "Tüketici Fiyat Endeksi (2025=100)" -> stem and base year. Price indices
+#: are the only tables the pool holds in two vintages at once (measured 23
+#: Sep: exactly two families, TÜFE and Özel Kapsamlı TÜFE, each 2003 and
+#: 2025), and both vintages are live -- EVDS marks neither "(Arşiv)".
+_BASE_YEAR = re.compile(r"\((\d{4})=100\)")
+_PARENTHETICAL = re.compile(r"\([^)]*\)")
+
+
+def _superseded(meta: pd.DataFrame) -> dict[str, str]:
+    """Datagroups a newer base year has replaced, with their own base year.
+
+    Read off the table names, not from a list of series: "this table has a
+    newer edition" is something the source says about itself, so the rule
+    stays on the same footing as the archive and province ones.
+
+    Every parenthetical goes before the names are compared, not just the
+    base year, because the editions do not agree on the rest of the name:
+    "Tüketici Fiyat Endeksi (Genel) (2003=100)" and "Tüketici Fiyat Endeksi
+    (2025=100)" are the same table twice. Measured 23 Sep over the 25
+    datagroups carrying a base year: exactly two families have rivals, TÜFE
+    (three editions) and Özel Kapsamlı TÜFE (two); the other 20 are
+    untouched.
+    """
+    tables = meta[["group", "table"]].dropna().drop_duplicates("group")
+    rows = []
+    for group, table in zip(tables["group"], tables["table"], strict=True):
+        found = _BASE_YEAR.search(str(table))
+        if found:
+            stem = _fold(_PARENTHETICAL.sub(" ", str(table)))
+            rows.append((group, stem, found.group(1)))
+    newest: dict[str, str] = {}
+    for _group, stem, base in rows:
+        newest[stem] = max(base, newest.get(stem, ""))
+    return {group: base for group, stem, base in rows if base != newest[stem]}
+
+
 def query_places(query: str) -> frozenset[str] | None:
     """The provinces a query asks about; None when it asks for the breakdown
     itself ("illere göre konut kredisi"), so that no place is put back."""
@@ -270,16 +344,42 @@ def series_meta(
                 "series_id": series_id,
                 "table": table,
                 "places": "|".join(sorted(found)),
+                "country": country_match(name),
                 "archive": archive,
                 "family": family,
                 "group": group,
                 "head": head,
             }
         )
-    return pd.DataFrame(
+    frame = pd.DataFrame(
         rows,
-        columns=["series_id", "table", "places", "archive", "family", "group", "head"],
+        columns=[
+            "series_id",
+            "table",
+            "places",
+            "country",
+            "archive",
+            "family",
+            "group",
+            "head",
+        ],
     )
+    return frame.assign(country=_countries_of_tables(frame))
+
+
+def _countries_of_tables(frame: pd.DataFrame) -> list[str]:
+    """Keep the country name only where its whole datagroup is a country
+    breakdown, and drop the ISO code once it has done its counting."""
+    codes: dict[str, set[str]] = {}
+    for group, match in zip(frame["group"], frame["country"], strict=True):
+        if match is not None:
+            codes.setdefault(str(group), set()).add(match[1])
+    return [
+        match[0]
+        if match is not None and len(codes.get(str(group), ())) >= MIN_COUNTRY_CODES
+        else ""
+        for group, match in zip(frame["group"], frame["country"], strict=True)
+    ]
 
 
 def evds_hierarchy() -> pd.DataFrame | None:
@@ -318,6 +418,17 @@ def rank(
     asked = tables_asked(query, meta)
     info = meta.set_index("series_id")
     has_groups = "group" in info.columns
+    folded_query = _fold(query)
+    # Both read off columns an older index may not carry, so both are guarded:
+    # the index is derived and gitignored, and a stale copy must rank worse
+    # rather than raise.
+    known_countries = (
+        {name for name in meta["country"].dropna() if name}
+        if "country" in meta.columns
+        else set()
+    )
+    named_countries = {name for name in known_countries if name in folded_query}
+    superseded = _superseded(meta) if has_groups and "table" in meta.columns else {}
 
     def _row(series_id: str) -> pd.Series | None:
         return info.loc[series_id] if series_id in info.index else None
@@ -355,6 +466,20 @@ def rank(
         named = frozenset(filter(None, str(row["places"] or "").split("|")))
         if wanted is not None and named and not named & wanted:
             late += 1
+        # Another country's copy of a figure, when the query named no
+        # country. Measured 23 Sep: "tüketici fiyat endeksi" returned
+        # Germany's CPI first, ahead of both Turkish ones, because the IMF's
+        # cross-country table spells out the query as well as TÜİK's does.
+        abroad = str(row.get("country") or "")
+        if abroad and abroad not in named_countries:
+            late += 1
+        # An older base year of a table that also exists rebased, unless the
+        # query asks for that base. Both editions are live and neither is
+        # marked "(Arşiv)", so nothing else separates them -- and the 2003
+        # one outscored the 2025 one on cosine.
+        own_base = superseded.get(str(row.get("group") or ""))
+        if own_base and own_base not in folded_query:
+            late += 1
         if _sub_item(row):
             late += 1
         return (0 if late == 0 and _asked_total(row) else 1, late)
@@ -383,9 +508,21 @@ def rank(
 
 def tables_asked(query: str, meta: pd.DataFrame) -> set[str]:
     """The EVDS datagroups whose name the query spells out ("tüketici fiyat
-    endeksi" -> "Tüketici Fiyat Endeksi (2025=100)"): every word of the query
-    is in the table's name. Such a query asks for the table's own total, not
-    for one of its rows."""
+    endeksi" -> "Tüketici Fiyat Endeksi (2025=100)"). Such a query asks for
+    the table's own total, not for one of its rows.
+
+    Every word of the query has to be in the table's name, and not the other
+    way round. The reverse reading is tempting and was measured on 23 Sep:
+    it fixes the agent's own phrasing ("tüketici fiyat endeksi TÜFE genel
+    endeks", where "tufe" is not in the table name, so nothing is asked for
+    and the CPI's sub-items crowd out its total) and costs more than it
+    buys. The pool search fell from 25/27 to 23/27: "Ankara konut fiyat
+    endeksi" spells out "Konut Fiyat Endeksi", so the national total is
+    promoted over the Ankara series the query actually names, and "sanayi
+    üretim endeksi" fell from first to twentieth. Promoting a table's total
+    and honouring a named province pull against each other; until that is
+    settled, the strict reading stays.
+    """
     if "group" not in meta.columns:
         return set()
     words = set(re.findall(r"[a-z]+", _fold(query)))

@@ -1502,3 +1502,62 @@ Sonuç:  Açık kalan iş: agent'ın havuzdaki onlarca TÜFE serisinden sözleş
         A4'ün `cevapta_gecmeli: "baz"` kontrolü de kelime arıyordu: agent
         bazı "TÜFE 2025=100" diye yazdı, kavramı verip kelimeyi vermedi;
         kontrol bazın kendisini arar hale getirildi.
+
+## Havuz sıralaması: başka ülkenin kopyası ve eskimiş baz yılı (23 Eyl)
+Bağlam: `answer_eval`'in A6 bulgusunu kovalarken sıralamayı ölçtüm.
+        "tüketici fiyat endeksi" sorgusunda ilk sıra **Almanya'nın TÜFE'si**
+        (0,6680), ikinci 2003=100 Türk endeksi (0,6665), sözleşmenin şart
+        koştuğu seri üçüncü (0,6484). Onay kartı çıkıyor ama varsayılanı
+        Almanya.
+Neden:  İki ayrı boşluk. Havuzda bir serinin başka bir ülkeyi anlattığını
+        gösteren hiçbir işaret yoktu; il için `places` vardı, ülke için
+        yoktu. İkincisi, TÜFE havuzda iki canlı sürümle duruyor (2003=100 ve
+        2025=100) ve EVDS ikisini de "(Arşiv)" işaretlemiyor, yani baz yılı
+        dışında onları ayıran hiçbir şey yok. İki aday metin olarak
+        ayırt edilemez: aynı konu, aynı etiketler, aynı not.
+Karar:  İki kural, ikisi de mevcut kalıba oturuyor ve ikisi de kaynağın
+        serisi hakkında söylediğini okuyor, sorgunun konusunu değil.
+        1) `country`: seri adı "Ülke (ISO3) ..." ile başlıyorsa o ülkeye
+        aittir; sorgu ülke adı anmıyorsa geri çekilir. Türkiye'nin kendi
+        satırları (TUR) yabancı sayılmaz. Kalıp tek başına yetmiyor, çünkü
+        "Konut Fiyat Endeksi (KFE)" de üç kelime artı üç büyük harf; bu
+        yüzden işaret veri grubuna bağlandı. Ölçüldü: gerçek ülke tabloları
+        39–185 farklı kod taşıyor, yanlış pozitifler tam olarak 1, arada
+        hiçbir şey yok. Eşik 10.
+        2) `_superseded`: bir tablonun daha yeni bazlı sürümü varsa eski
+        sürüm geri çekilir, sorgu o baz yılını anmadıkça. Karşılaştırmadan
+        önce bütün parantezler atılıyor, çünkü sürümler adın geri kalanında
+        anlaşmıyor ("Tüketici Fiyat Endeksi (Genel) (2003=100)" ile
+        "Tüketici Fiyat Endeksi (2025=100)" aynı tablonun iki sürümü).
+        Ölçüldü: baz yılı taşıyan 25 veri grubundan yalnızca iki ailenin
+        rakibi var, diğer 20'si etkilenmiyor.
+Sonuç:  Arama ölçümü: 25/27 aynı kaldı, iki sorgu iyileşti. "tüketici fiyat
+        endeksi" 3. sıradan 1.'ye, "cari işlemler dengesi" 5.'ten 4.'e.
+        Gerileme yok. İndeks yeniden kuruldu, gömme önbellekten geldi
+        (45.422/45.422 cache, sıfır MIA çağrısı).
+        **A6 yine de kapanmadı** ve nedeni üçüncü bir şey çıktı, aşağıda.
+
+## `tables_asked` sorguya kelime eklenince çöküyor — denendi, geri alındı (23 Eyl)
+Bağlam: İki sıralama kuralından sonra A6 hâlâ 2003=100 serisini seçiyordu.
+        Agent'ın gerçek sorgusunu izledim: "tüketici fiyat endeksi TÜFE
+        genel endeks". Bu sorguda ilk beş aday TÜFE'nin **alt kalemleri**:
+        "08. Bilgi Ve İletişim", "133. Sosyal Koruma", "011. Gıda". Ana
+        endeks listede yok.
+Neden:  `tables_asked` "sorgunun HER kelimesi tablo adında geçmeli" diyor.
+        Sorguya kendi eş anlamlısını ekleyen bir kullanıcı ("tufe") kuralı
+        devre dışı bırakıyor: hiçbir tablo istenmemiş sayılıyor, dolayısıyla
+        alt kalem indirimi de çalışmıyor ve alt kalemler kosinüste ana
+        endeksi geçiyor. Kural yalnızca sorgu tam olarak tablo adı olduğunda
+        tutuyor.
+Karar:  Ters okuma denendi (tablonun adı sorgunun içinde olsun, fazladan
+        kelime serbest). Agent'ın sorgusunu düzeltiyor ama **arama ölçümünü
+        bozuyor: 25/27 -> 23/27**, ayrık sorgularda 6/6 -> 5/6. "Ankara
+        konut fiyat endeksi" 3. sıradan listeden düştü, çünkü sorgu "Konut
+        Fiyat Endeksi" adını heceliyor ve tablonun ulusal toplamı, sorgunun
+        asıl istediği Ankara serisinin önüne geçiyor. "sanayi üretim
+        endeksi" 1.'den 20.'ye düştü. GERİ ALINDI.
+Sonuç:  Açık iş. Bir tablonun toplamını öne almakla, adı anılan ili
+        onurlandırmak birbirini çekiştiriyor; bu çözülmeden gevşek okuma
+        gelemez. A6 kırmızı kalıyor ve nedeni artık kayıtlı: sorun modelde
+        ya da gömmede değil, `tables_asked`'ın hep-ya-hiç olmasında.
+        Ölçüm: 11/12, `eval/results/answer_eval_2026-09-23.json`.
