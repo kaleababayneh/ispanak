@@ -1395,3 +1395,19 @@ Uygulanmadı (gerekçesiyle):
           ve `force` parametresinin çağıranı yok.
         - **Yeni araç testleri** hâlâ `sys.modules` saplaması kuran dosyanın
           içinde; gerçek sözleşme nesneleriyle denenmiyor.
+
+## Alıntılanan adresin içindeki rakam iddia değildir (23 Eyl, canlı koşumdan)
+Bağlam: Çit düzeltmesinden sonraki ilk `--real` koşusunda doğru bir cevap iki
+        bayrakla çıktı: '906699' ve '900606'. İkisi de modelin kısaltarak
+        yazdığı haber adreslerinin içindeki numaralar
+        (`ekonomim.com/…-906699`).
+Neden:  Çit, arama sonucundaki adresleri `_stated_text`'ten çıkarıyor, ki asıl
+        istenen buydu. Ama cevaptaki kısaltılmış adres `https://` taşımadığı
+        için `_URL` ile de eşleşmiyordu, dolayısıyla içindeki rakamlar çıplak
+        sayı iddiası sayılıyordu. Kendi düzeltmemin yan etkisi.
+Karar:  Şemasız adresler de (`_BARE_URL`) diğer kimliklerle birlikte, sayı
+        okunmadan önce boşaltılıyor. `answer.md` 4. kuralı adresin yazılmasını
+        istiyor ve `_mentions` kısa biçimi kabul ediyor; bir alıntının gerçek
+        biçimi bu.
+Sonuç:  Ölçüm: alıntılı cevap geçiyor, arama parçacığındaki sayı ve uydurma
+        sayı hâlâ bayrak alıyor. Doğrulayıcının iki işi de yerinde.

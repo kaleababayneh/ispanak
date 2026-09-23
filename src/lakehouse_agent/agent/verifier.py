@@ -121,6 +121,14 @@ _INDEX_BASE = re.compile(r"(?<!\d)(?:19|20)\d{2}\s*=\s*100(?!\d)")
 _SERIES_ID = re.compile(r"\b(?:evds|bddk):[A-Za-z0-9_.:]*[A-Za-z0-9_]")
 _SERIES_CODE = re.compile(r"(?<![\w:])TP\.[A-Za-z0-9_.]*[A-Za-z0-9_]")
 _URL = re.compile(r"https?://[^\s)\]>'\"]+[^\s)\]>'\".,;:]")
+#: An address written without its scheme, usually elided: "ekonomim.com/…-906699",
+#: "tcmb.gov.tr/…/Calisma+Tebligleri/2026/26-13". `answer.md` rule 4 asks the
+#: model to cite the address, and `_mentions` deliberately accepts a short
+#: form, so this is the shape a citation really takes. The digits in it are
+#: part of an address, not measurements: measured 23 Sep, a correct answer
+#: was flagged for "906699" and "900606", the article ids inside two cited
+#: links. Blanked with the other identifiers before any number is read.
+_BARE_URL = re.compile(r"\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}(?:/[^\s)\]>'\"]*)?", re.I)
 _CODE_SPAN = re.compile(r"`[^`]*`")
 _IDENTIFIER = re.compile(r"\b[A-Za-z_]+[A-Za-z0-9_.:]*\d[A-Za-z0-9_.:]*\b")
 
@@ -323,6 +331,7 @@ def _without_dates_and_ids(answer: str) -> tuple[str, list[str]]:
     for pattern in (
         _CODE_SPAN,
         _URL,
+        _BARE_URL,
         _SERIES_ID,
         _SERIES_CODE,
         _INDEX_BASE,

@@ -616,3 +616,21 @@ def test_a_number_a_lake_tool_printed_is_still_grounded():
     )
 
     assert VERIFY("288 haftalik veri var.", state).passed
+
+
+def test_digits_inside_a_cited_address_are_not_claims():
+    """`answer.md` rule 4 asks for the address and `_mentions` accepts a short
+    form, so a citation really looks like "ekonomim.com/…-906699". Once the
+    fence stopped those URLs from grounding numbers, their article ids became
+    unexplained figures: measured 23 Sep on a live run, a correct answer
+    shipped with two flags for '906699' and '900606'."""
+    from lakehouse_agent.agent.formatting import fence
+
+    state = _state(
+        tool_text="5 sonuc.\n" + fence("3. Haber — https://www.ekonomim.com/x-906699"),
+        v=[230.2844, 8.0102],
+    )
+
+    answer = "Seviye %230,3 artti, sicrama %8,0 (ekonomim.com/…-906699)."
+
+    assert VERIFY(answer, state).passed, _flagged(VERIFY(answer, state))
